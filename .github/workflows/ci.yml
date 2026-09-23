@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 最小権限: どのジョブも repo を読むだけ（push / comment / deploy はしない）
+permissions:
+  contents: read
+
+# 新しい push が来たら古い実行を止める（無料枠の分を積み上げない）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # gitleaks が履歴を見る
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      # 公開ツリーに作業ディレクトリ・ホーム・セッション URL・メール・私設 IP が無いこと
+      - run: node scripts/release/scan-public-tree.mjs
+      - name: gitleaks (pinned binary, no third-party action)
+        run: |
+          set -euo pipefail
+          curl -sSfL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          echo "ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --source . --redact -v --log-opts="--all"
+      - run: npm run build
+      # 配布物が作れること（VSIX を作るのは release だけだが、壊れているのは今知りたい）
+      - run: npm run -w packages/extension package
+      # 束ねた第三者パッケージの表示が配布物に入っていること（MIT / ISC / BSD の条件）。
+      # 一覧は esbuild.mjs が束ねた中身から生成し、許可外のライセンスならビルドが止まる
+      - name: VSIX carries THIRD-PARTY-NOTICES.txt
+        run: unzip -l packages/extension/*.vsix | grep -q 'extension/THIRD-PARTY-NOTICES.txt'
+      # 配布物そのもの（束ねた JS・sourcemap・同梱文書）にも同じ走査を当てる
+      - name: Scan the VSIX contents
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d)
+          unzip -q packages/extension/*.vsix -d "$d"
+          (cd "$d" && find . -type f | sed 's|^\./||') > "$d.list"
+          node scripts/release/scan-public-tree.mjs --root "$d" --list "$d.list"
+      # クライアント非依存の1層目: 独立した MCP クライアントから 10 本のツールが見えること
+      - name: MCP Inspector smoke (tools/list = 10)
+        run: |
+          set -euo pipefail
+          n=$(npx --yes @modelcontextprotocol/inspector@2.6.0 --cli \
+                node packages/extension/bridge/index.js \
+                --method tools/list --format json --connect-timeout 15000 \
+              | jq '.result.tools | length')
+          echo "tools/list returned $n tool(s)"
+          test "$n" -eq 10
+
+  integration-linux:
+    # 重い。PR と手動のときだけ走らせる（push: main では PR で既に測ってある）
+    if: github.event_name != 'push'
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [test:integration, test:integration:two-windows, test:integration:locale-ja]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # SHOWME_SOCK は制限モードと tmux で死ぬ経路なので、CI では必ず外して走らせる
+      - run: env -u SHOWME_SOCK npm run -w packages/extension ${{ matrix.suite }}:xvfb
+
+  # 単体も Windows では**非ブロッキングの観測**である。
+  # 2026-09-23 に実測して、前提のほうを改めた: 区切り文字の決め打ち（11 件）を直して
+  # dist を作って走らせたら、残り **67 件**が落ちた。中身は POSIX の権限モデルと
+  # Unix socket に束縛された検査（実行時ディレクトリの 0700、ソケットの 0600、
+  # `mode 777` の断りの文言、ソケットサーバの受け入れ/拒否）で、Windows には
+  # その概念が無い。設計書が Windows を「達成済みと数えない」と書いているのと同じ面である。
+  # したがってここは門ではなく、**何がどこで落ちるかを記録する場所**として走らせる。
+  unit-windows:
+    if: github.event_name != 'push'
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # typecheck（tsc --build）が packages/*/dist を作る。これを飛ばすと
+      # @zvx/... の main が解決できず、テストファイルが「0 test」で静かに落ちる（実測）
+      - run: npm run typecheck
+      - run: npm run test
+
+  integration-windows:
+    # 設計書が Windows を「達成済みと数えない」と書いている間は**非ブロッキングの観測**。
+    # 何がどこで壊れるかを、推測ではなく記録するために走らせる。
+    if: github.event_name != 'push'
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run -w packages/extension test:integration
+        shell: bash
+        env:
+          # RUNNER~1 の 8.3 短縮名を避ける（realpath と綴りの比較がこの repo の設計の要）。
+          # runner コンテキストはステップ階層でしか使えない ―― ジョブ階層の env に書くと
+          # ワークフロー自体が不正になり、ジョブが1つも作られないまま run が failure になる（実測）。
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}

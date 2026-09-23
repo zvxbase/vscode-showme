@@ -1,0 +1,27 @@
+name: Nightly (macOS / insiders)
+
+# private の間は**手動のみ**。macOS は分を10倍消費するので、無料枠を持つ public 化まで
+# schedule は足さない（公開後に `schedule: - cron: "0 18 * * 0"` を足す）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration-macos:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    continue-on-error: true # 未達成の面の観測であって、門ではない
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test
+      # macOS は Unix socket なので xvfb は不要（Linux 以外は素で走る）
+      - run: env -u SHOWME_SOCK npm run -w packages/extension test:integration

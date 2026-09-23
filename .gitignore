@@ -1,0 +1,29 @@
+node_modules/
+dist/
+out/
+*.vsix
+.vscode-test/
+coverage/
+*.log
+.DS_Store
+out-test/
+*.tsbuildinfo
+
+# 実機を叩いて確かめるための使い捨てスクリプト（コミットしない）
+probe-*.cjs
+probe-*.mjs
+probe-*.js
+
+# 拡張に同梱するブリッジ（esbuild が束ねる生成物）。
+# パスを絞る: `bridge/` と書くと packages/bridge/ まで無視される。
+/packages/extension/bridge/
+
+# package 時にルートから写す（scripts/release/sync-extension-docs.mjs）。真実はルート。
+/packages/extension/README.md
+/packages/extension/CHANGELOG.md
+/packages/extension/LICENSE
+
+# エージェントのローカル設定（許可ルール）。公開ツリーに置き場所を見せない。
+.claude/*.local.json
+# esbuild.mjs が束ねた中身から生成する（scripts/release/third-party-notices.mjs）。真実はビルド。
+/packages/extension/THIRD-PARTY-NOTICES.txt

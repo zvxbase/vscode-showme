@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# push 前の走査。(1) ツリー: scan-public-tree.mjs（固有名の一覧は private の SHOWME_FORBIDDEN_TERMS ――
+# 無ければ汎用パターンだけ）。(2) 公開 repo 向けの push では、push 範囲のコミット本文も同じ走査器に通す。
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+REMOTE_URL="${2:-}"
+EXTRA_ARGS=()
+if [ -n "${SHOWME_FORBIDDEN_TERMS:-}" ] && [ -f "$SHOWME_FORBIDDEN_TERMS" ]; then
+  EXTRA_ARGS=(--extra "$SHOWME_FORBIDDEN_TERMS")
+else
+  echo "[pre-push] SHOWME_FORBIDDEN_TERMS not set: scanning with built-in patterns only" >&2
+fi
+node "$ROOT/scripts/release/scan-public-tree.mjs" --root "$ROOT" "${EXTRA_ARGS[@]}"
+
+case "$REMOTE_URL" in
+  *github.com/zvxbase/*|*github.com:zvxbase/*) ;;
+  *) exit 0 ;;
+esac
+ZERO="0000000000000000000000000000000000000000"
+TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ -z "${local_sha:-}" ] && continue
+  [ "$local_sha" = "$ZERO" ] && continue
+  if [ "$remote_sha" = "$ZERO" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+  git log --format=%B "$range" > "$TMP"
+  if ! node "$ROOT/scripts/release/scan-public-tree.mjs" --text "$TMP" "${EXTRA_ARGS[@]}"; then
+    echo "[pre-push] refusing: a commit message in $range contains something that must not be public." >&2
+    exit 1
+  fi
+done

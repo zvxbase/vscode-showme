@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# 公開 repo の clone でだけ効く: コミット本文に内部の参照（エージェントのセッション等）を残さない。
+# private の開発 repo（origin が zvxbase/ でない）では何もしない ―― そこでは trailer は記録として有用。
+# 何を拒むかは scan-public-tree.mjs が決める（ここにパターンを書かない）。
+set -euo pipefail
+ORIGIN="$(git remote get-url origin 2>/dev/null || true)"
+case "$ORIGIN" in
+  *github.com/zvxbase/*|*github.com:zvxbase/*) ;;
+  *) exit 0 ;;
+esac
+ROOT="$(git rev-parse --show-toplevel)"
+EXTRA_ARGS=()
+if [ -n "${SHOWME_FORBIDDEN_TERMS:-}" ] && [ -f "$SHOWME_FORBIDDEN_TERMS" ]; then EXTRA_ARGS=(--extra "$SHOWME_FORBIDDEN_TERMS"); fi
+if ! node "$ROOT/scripts/release/scan-public-tree.mjs" --text "$1" "${EXTRA_ARGS[@]}"; then
+  echo "[commit-msg] refusing: the commit message contains something that must not be public." >&2
+  exit 1
+fi
