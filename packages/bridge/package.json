@@ -1,0 +1,24 @@
+{
+  "name": "@zvx/vscode-showme-bridge",
+  "version": "0.0.0",
+  "description": "stdio MCP server that lets an AI agent drive VS Code through the vscode-showme extension.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "bin": {
+    "vscode-showme-bridge": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@zvx/vscode-showme-protocol": "*",
+    "zod": "^3.24.0"
+  },
+  "private": true
+}

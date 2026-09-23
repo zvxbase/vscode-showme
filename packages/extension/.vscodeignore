@@ -1,0 +1,32 @@
+# VSIX に入れないもの。
+#
+# 無いと `src/**` `test/**` `out-test/**` `tsconfig.tsbuildinfo` がそのまま
+# 配布物に入る（実測: `vsce ls --no-dependencies` で 119 ファイル）。
+# 出荷するのは、拡張ホストが読む `out/` と、エージェントが node で起動する
+# `bridge/`（設計書 D26 / 不変条件12「ブリッジは拡張に同梱する」）だけでよい。
+
+src/**
+test/**
+out-test/**
+
+# `out/` には tsc の逐次出力（out/server.js など）と esbuild の束ね出力
+# （out/extension.js）が混在する。前者は実行時に一切読まれないうえ、
+# tsbuildinfo の有無で入ったり入らなかったりして VSIX の中身が非決定的に
+# なる。束ねた1本だけを残す。
+out/**
+!out/extension.js
+!out/extension.js.map
+
+**/*.tsbuildinfo
+**/*.d.ts
+**/*.d.ts.map
+esbuild.mjs
+tsconfig.json
+
+# 統合テストが落としてくる VS Code 本体（数百 MB）。既定でも除外されるが、
+# 一度でも入ったら致命的なので明示する。
+.vscode-test/**
+
+# アイコンの元絵（SVG）。拡張に入れるのは media/icon.png だけ ―― Marketplace は利用者が用意した
+# SVG の画像を受け付けない（アイコン・バッジ・README の画像）。元絵は作り直せるように repo に残す。
+media/*.svg

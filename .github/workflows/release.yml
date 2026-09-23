@@ -1,0 +1,117 @@
+name: Release
+
+# タグ `vX.Y.Z` で VSIX を作り、GitHub Release に添付する。
+#
+# - Marketplace: **手動アップロード**が既定。Marketplace 向けのトークン（Azure DevOps の PAT）は
+#   organization の作成に Azure サブスクリプションが要り、しかも 2026-12-01 に廃止されるので使わない。
+#   実行結果の要約に、Release の VSIX を管理ページへアップロードする案内を出す。
+#   `VSCE_PAT` を置いた場合だけ自動で送る（置かなければ飛ばす。失敗にはしない）。
+# - Open VSX: トークン不要の Trusted Publishing。namespace に trusted publisher を登録し、
+#   repo の変数 `OPENVSX_TRUSTED_PUBLISHING` を `true` にしたときだけ動く。
+# - 手動実行（workflow_dispatch）は試し実行: VSIX を作って成果物に残すところまでで、公開はしない。
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: node scripts/release/scan-public-tree.mjs
+      # タグと manifest の版は同じ量である。食い違ったまま公開しない（試し実行ではタグが無いので見ない）
+      - name: Tag must match the manifest version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./packages/extension/package.json').version")
+          test "$GITHUB_REF" = "refs/tags/v$v" || { echo "tag $GITHUB_REF != manifest v$v" >&2; exit 1; }
+      - run: npm run build
+      - run: npm run -w packages/extension package
+      # 束ねた第三者パッケージの表示が配布物に入っていること（MIT / ISC / BSD の条件）
+      - name: VSIX carries THIRD-PARTY-NOTICES.txt
+        run: unzip -l packages/extension/*.vsix | grep -q 'extension/THIRD-PARTY-NOTICES.txt'
+      # 配布物そのもの（束ねた JS・sourcemap・同梱文書）にも同じ走査を当てる
+      - name: Scan the VSIX contents
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d)
+          unzip -q packages/extension/*.vsix -d "$d"
+          (cd "$d" && find . -type f | sed 's|^\./||') > "$d.list"
+          node scripts/release/scan-public-tree.mjs --root "$d" --list "$d.list"
+      - name: Checksums
+        run: cd packages/extension && sha256sum *.vsix > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vsix
+          path: |
+            packages/extension/*.vsix
+            packages/extension/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    # 公開はタグのときだけ（手動実行は試し実行）
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # GitHub Release を作る
+      id-token: write # Open VSX の Trusted Publishing（OIDC）
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vsix
+          path: vsix
+      - name: GitHub Release
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          sed -n "/^## $v/,/^## /p" CHANGELOG.md | sed '$d' > notes.md
+          test -s notes.md || echo "See CHANGELOG.md" > notes.md
+          gh release create "$GITHUB_REF_NAME" vsix/* --title "$GITHUB_REF_NAME" --notes-file notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Publish to Open VSX (trusted publishing)
+        if: vars.OPENVSX_TRUSTED_PUBLISHING == 'true'
+        run: npx --yes ovsx@1.2.0 publish vsix/*.vsix --trusted-publishing
+      - name: Publish to VS Marketplace (only when VSCE_PAT is set)
+        if: env.VSCE_PAT != ''
+        run: npx --yes @vscode/vsce@4.0.0 publish --packagePath vsix/*.vsix
+      - name: Marketplace upload instructions
+        if: env.VSCE_PAT == ''
+        run: |
+          {
+            echo "## VS Marketplace: upload manually"
+            echo
+            echo "1. Download the VSIX from the GitHub Release for \`$GITHUB_REF_NAME\`."
+            echo "2. Open https://marketplace.visualstudio.com/manage/publishers/zvxbase"
+            echo "3. For a first release: **New extension → Visual Studio Code** and drop the VSIX."
+            echo "   For an update: **… (More actions) → Update** on the extension and drop the VSIX."
+            echo
+            echo "SHA-256:"
+            echo
+            echo '```'
+            cat vsix/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
