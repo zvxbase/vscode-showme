@@ -8,16 +8,146 @@ Claude Code はコードを変えられるが、あなたの画面を変えら�
 
 未知のリポジトリを読むとき、隣に座ったエージェントが実際にファイルを開き、該当行をハイライトし、2箇所を並べ、行に注釈を付け、図を描いてメモを残す — そういう読み方をするための層。
 
-**残るものは、戻れて、消せる。** `show_code` のハイライト（スポットライト）は「今ここ」を指すためのもので、
-次の `show_code` で消える。後で戻るためのものは注釈で、色つきの注釈は行にも同じ色で塗られ、
-注釈と一緒に消える。注釈には読む順番（`1/7 ·`）が付き、人間は吹き出しの **Resolve** で「読んだ」を返せる。
-人間向けの命令はコマンドパレットに4つ: **ShowMe: Next annotation / Previous annotation**
-（エージェントの順で案内）と **ShowMe: Clear highlights / Clear annotations**（消す）。
-
 ## これは何ではないか
 
 - コード編集・シェル実行・診断/LSP は**提供しない**。Claude Code / Copilot CLI / Codex と既存の VS Code 向け MCP サーバが既に持っている
 - ツアーの事前生成も、独自の LLM 呼び出しもしない。教え方はエージェントが持っている
+
+## 使い始める
+
+要るものは2つ。拡張（VS Code の中の「手」）と、エージェント側への一度だけの登録（エージェントが
+拡張と話せるようにする）。エージェントが起動するブリッジは拡張に同梱されているので、npm から
+入れるものは無い。
+
+### 1. 拡張を入れる
+
+VS Code Marketplace か Open VSX から入れる（`zvxbase.vscode-showme`）。または
+[Releases](https://github.com/zvxbase/vscode-showme/releases) から VSIX を取ってきて
+`code --install-extension vscode-showme-<版>.vsix`。
+
+### 2. エージェントに登録する
+
+コマンドパレットで **ShowMe: エージェント設定を表示** を実行する。Claude Code / Codex CLI /
+Copilot CLI 向けの、そのまま貼れる断片（実際のインストール先入り）が untitled 文書で開くので、
+使っているエージェントの分を写す。ShowMe が他のツールの設定ファイルを書き換えることはない。
+
+- **Claude Code** — `claude mcp add showme -- node …` の1行と、`.claude/settings.json` の
+  `permissions.allow` に足す許可ルールの一覧。許可ルールが無いと、表示するだけのツールでも
+  毎回確認が出る
+- **Codex CLI** — `~/.codex/config.toml` に足す `[mcp_servers.showme]` の節。許可の設定は要らない
+- **Copilot CLI** — `~/.copilot/mcp-config.json` に足す `"showme"` の項目。起動時に
+  `--allow-tool 'showme'` を付ける
+- **VS Code 内蔵の Copilot（エージェントモード）** — 設定不要。拡張が MCP サーバとして自分を
+  登録する（制限モードでは効かない）
+
+断片は「入っている中でいちばん新しい ShowMe」を起動するので、拡張を更新しても貼り直さなくてよい。
+
+Claude Code の許可ルールに `arrange_editors` を入れていないのは意図的で、タブを閉じうる唯一の
+ツールだから。使いたければ `"mcp__showme__arrange_editors"` を自分で1行足す。
+
+エージェントと VS Code は同じマシンの同じ環境で動いている必要がある。devcontainer なら両方
+コンテナの中、Remote-SSH なら両方リモート側。
+
+### 3. エージェントに使わせる窓でオンにする
+
+許可するまで、どの窓も操作されない。その窓のステータスバーの **`ShowMe: オフ`**（英語表示なら
+`ShowMe: Off`）をクリックすると **`ShowMe: オン`** になり、エージェントが繋がると
+**`ShowMe: 接続中`** になる。もう一度クリックすればオフに戻る。同じフォルダを2窓で開いて片方だけ
+オンにすることもでき、エージェントはオンの窓を使う。
+
+### 4. エージェントに頼む
+
+いつも通りエージェントと話し、見せてほしいものを頼む。例えば:
+
+- 「このリポジトリでリクエストがどう処理されるか、エディタで順に見せながら説明して」
+- 「`parseConfig` の定義と使われている場所を並べて見せて」
+- 「`src/server.ts` の大事な行に、読む順で注釈を付けて」
+- 「このモジュール同士の依存関係を図にして」
+
+## 画面に出るもの
+
+- **ハイライト** — エージェントが「今ここ」と指している行。次の `show_code` で置き換わる
+- **注釈** — 行の下の吹き出し。エージェントの読む順に番号（`1/7 ·`）が付く。吹き出しの `‹ ›`
+  か、**次の注釈へ / 前の注釈へ** で順にたどれる。**解決済みにする** で「読んだ」を返せる
+- **HTML パネル** — 表や図。スクリプトは動かない
+- **メモ** — untitled のエディタ。保存するかどうかはあなたが決める
+- **片づけ** — **ShowMe: ハイライトを消す** と **ShowMe: 注釈を消す**
+
+## ツール
+
+| ツール | すること |
+|---|---|
+| `list_workspaces` | 繋がっている VS Code の窓をエージェントに教える |
+| `get_editor_state` | あなたが見ているところ（ファイル・カーソル・選択・見えている行・開いているタブ） |
+| `show_code` | ファイルを開き、その場所までスクロールしてハイライトする |
+| `annotate` | 行の下に番号付きの吹き出しを付ける |
+| `show_html` | 表や図をパネルに出す（スクリプトは動かない） |
+| `show_note` | untitled のメモを開く |
+| `find_definition` | シンボルの定義場所（「定義へ移動」と同じ答え） |
+| `find_references` | シンボルが使われている場所 |
+| `show_view` | エクスプローラーでファイルを示す・サイドバーの切り替え・パネルの開閉・Zen モード |
+| `arrange_editors` | エディタの列を並べ替え・片づける（既定では自分が出したパネルしか閉じない） |
+
+どのツールもファイルの中身を返さない。中身はエージェントが自分の道具で読む。
+
+## 設定
+
+どれもユーザー設定。読んでいるリポジトリの `.vscode/settings.json` から安全に関わる設定は変えられない。
+
+| 設定 | 既定 | 意味 |
+|---|---|---|
+| `showme.stage.enabled` | `true` | ファイルを開く・スクロール・分割をエージェントに許す。切ると `show_code` は印だけ |
+| `showme.html.enabled` | `true` | `show_html` を許す |
+| `showme.layout.enabled` | `true` | `arrange_editors` と `show_view` を許す |
+| `showme.layout.closeHumanTabs` | `false` | あなたが開いたタブも `arrange_editors` が閉じたり動かしたりしてよい |
+| `showme.layout.closeDirtyTabs` | `false` | 未保存のタブも閉じてよい |
+| `showme.redactedPathPatterns` | `[]` | エージェントから隠すパスを足す。組み込みの一覧（`.env`・鍵など）は外せない |
+| `showme.maxSelectionChars` | `4000` | `get_editor_state` が返す選択テキストの上限 |
+| `showme.injectTerminalEnv` | `true` | 統合ターミナルに `SHOWME_SOCK` を入れる |
+| `showme.listAllWorkspaces` | `false` | 他の窓のフォルダのパスもエージェントに見せる |
+
+全部まとめて止めるには **ShowMe: 拡張を停止する／再開する**。ツール呼び出しはすべて
+**ShowMe: 操作ログを表示** に記録される（選択テキストは記録しない）。
+
+## 動かないとき
+
+まずステータスバーを見る。ShowMe は自分のしていることをそこに出す。
+
+| 表示 | 意味 |
+|---|---|
+| `ShowMe: オフ` | この窓はエージェントに預けていない。クリックでオン |
+| `ShowMe: オン` | オンだが、エージェントはまだ繋がっていない |
+| `ShowMe: 接続中` | 動いている |
+| `ShowMe: 停止中` | 拡張が止まっている。**ShowMe: 拡張を停止する／再開する** で再開 |
+| `ShowMe: 起動できません` | 理由は tooltip に出る。ディレクトリが出ていたら `ls -ld` で所有者と権限を確かめる |
+| `ShowMe: 2本目の接続を拒否` | 同時に繋げるエージェントは1つまで。もう片方を止める。2つ目を動かした覚えが無いなら、あなたの別のプロセスが先に繋いでいる。何かを確かめること |
+| `ShowMe: 見つからず …` / `複数一致 …` | エージェントが場所を探して、ちょうど1つに決まらなかった。エージェント側で指定を絞る必要がある |
+| `ShowMe: 回数制限 …` | エージェントが同じ要求を短時間に繰り返した |
+
+**エージェントが「VS Code ウィンドウが見つからない」と言う。** どこかの窓で ShowMe がオンか、
+エージェントが VS Code と同じ環境で動いているか（手順2）、両方が同じ `$TMPDIR` を見ているかを確かめる。
+
+**`.env` や鍵ファイルが「見つからない」と言われる。** 仕様。ShowMe はそれらのパスを隠し、
+場所も教えない。
+
+## 撤去
+
+**ShowMe: 撤去手順と設定の削除方法を表示** を実行する。要するに、エージェントから `showme` の登録を
+消し（`claude mcp remove showme`、または Codex / Copilot の設定ファイルから削除）、拡張を
+アンインストールする。既に開いていたターミナルには、開き直すまで `SHOWME_SOCK` が残る。
+
+## 安全性の要点
+
+- **ネットワークリスナーを持たない**（Unix socket / 名前付きパイプのみ）
+- **どのツールもファイルの中身を返さない**
+- webview は **egress ゼロ**（`connect-src 'none'` / `img-src data:`）の二重 iframe
+- エージェントの舞台（editor group）は**有界**（上限2列）で、**人間が使っている列を含まない**
+- 画面を片づける `arrange_editors` は、**既定ではエージェント自身が出したパネルしか閉じない**
+- 安全に関わる設定はユーザー設定だけを読む（読んでいるリポジトリの設定では広げられない）
+- 全ツール `openWorldHint: false`
+- 既定はオフ。ステータスバー1クリックで停止。Restricted Mode で動く
+
+セキュリティ報告の対象範囲は [`SECURITY.md`](SECURITY.md) にある。
 
 ## 構成
 
@@ -29,65 +159,20 @@ Claude Code はコードを変えられるが、あなたの画面を変えら�
 
 拡張が「手」で、MCP サーバが「口」。VS Code の API 境界により、両方が必要。
 
-## 安全性の要点
-
-- **ネットワークリスナーを持たない**（Unix socket / 名前付きパイプのみ）
-- **どのツールもファイルの中身を返さない**
-- webview は **egress ゼロ**（`connect-src 'none'` / `img-src data:`）の二重 iframe
-- エージェントの舞台（editor group）は**有界**（上限2列）で、**人間が使っている列を含まない**
-- 画面を片づける `arrange_editors` は、**既定ではエージェント自身が出したパネルしか閉じない**
-  （人間のタブに届くのは `showme.layout.closeHumanTabs`、未保存にはさらに
-  `showme.layout.closeDirtyTabs` を人間が立てたときだけ。どちらも既定は `false`）
-- 機能は3つの設定で切れる: `showme.stage.enabled`（開く・スクロール・split・`show_note`。
-  切ると `show_code` は**印だけ**）/ `showme.html.enabled`（`show_html`）/
-  `showme.layout.enabled`（`arrange_editors`・`show_view`）。注釈・読み取り・`show_code` の印は切れない。
-  設定が縛るのはエージェントで、人間の Next / Clear は設定に関わらず動く
-- 全ツール `openWorldHint: false`
-- ステータスバー1クリックで停止。Restricted Mode で動く
-
 ## 言語
 
 エージェントが読む文字列（ツールの説明・エラー）は**英語のみ**。人間が読む文字列
 （ステータスバー・通知・コマンド名・設定の説明・設定断片と撤去手順の文書）は**英語が既定**で、
-VS Code の表示言語が日本語なら日本語になる（`vscode.l10n` / `package.nls.ja.json`。設計 D58）。
+VS Code の表示言語が日本語なら日本語になる。
 
-## 開発の場所
+## 現在地と開発の場所
+
+**プレビュー版。**Linux で確認済み（単体テストと、実 VS Code での統合テスト）。
+macOS は同じ Unix socket の経路だがまだ確かめていない。Windows の名前付きパイプは実装済みで未確認。
 
 この公開 repo は**リリースのミラー**です。開発は private の repo で行い、リリースごとに
 1 コミットとしてここに載せます。Issue / PR は歓迎で読みます。
 取り込んだ PR は private 側に当て直して次のリリースに入り、`CHANGELOG.md` でクレジットします。
-
-## 現在地
-
-版は `0.1.0`（preview）。増分6 まで完了（2026-09-13）。
-
-**エージェント操作の既定は「不可」です。** 拡張を入れただけでは、どの窓も操作されません。
-VS Code のステータスバー右下の `$(shield) ShowMe: Off`（日本語表示なら
-`ShowMe: オフ`）をクリックして、その窓で ShowMe をオンにしてください
-（＝その窓をエージェントに預ける。`ShowMe: Stopped` と出ていれば、先にコマンドパレットの
-「ShowMe: Stop / Resume the extension」で再開する）。
-
-ツールは10本（`packages/protocol/src/tools.ts` の `TOOL_NAMES`）: `list_workspaces` /
-`get_editor_state` / `show_code` / `annotate` / `show_html` / `show_note` / `find_definition` /
-`find_references` / `show_view` / `arrange_editors`。
-
-| | |
-|---|---|
-| 単体テスト | 1563（75ファイル） |
-| 統合テスト（実 VS Code・1窓） | 294（信頼198 / 制限96） |
-| 統合テスト（実 VS Code・2窓） | 9 |
-| 統合テスト（実 VS Code・日本語の言語パック） | 3 |
-
-同じフォルダを2窓で開き、片方だけを預ける運用ができます。ブリッジは**役割で**窓を選ぶので、
-`$SHOWME_SOCK`（制限モードと tmux で死ぬ）にも `workspace_path`（同一フォルダでは判別できない）
-にも依存しません。
-
-使い方と、まだできないことの一覧は [`docs/runbook.md`](docs/runbook.md) にあります。
-
-## ドキュメント
-
-- セキュリティ: [`SECURITY.md`](SECURITY.md)
-- 運用手順: [`docs/runbook.md`](docs/runbook.md)
 
 ## ライセンス
 

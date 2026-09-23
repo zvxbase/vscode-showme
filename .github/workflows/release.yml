@@ -87,7 +87,9 @@ jobs:
         run: |
           set -euo pipefail
           v="${GITHUB_REF_NAME#v}"
-          sed -n "/^## $v/,/^## /p" CHANGELOG.md | sed '$d' > notes.md
+          # その版の節を、次の見出しの手前まで（最後の節なら末尾まで）。以前の `sed '$d'` は
+          # 次の見出しを消すつもりで、最後の節では本文の最終行を消していた（0.1.0 で実際に欠けた）
+          awk -v h="## $v" 'index($0, h) == 1 { f = 1; print; next } f && /^## / { exit } f' CHANGELOG.md > notes.md
           test -s notes.md || echo "See CHANGELOG.md" > notes.md
           gh release create "$GITHUB_REF_NAME" vsix/* --title "$GITHUB_REF_NAME" --notes-file notes.md
         env:

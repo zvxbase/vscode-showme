@@ -14,6 +14,136 @@ annotations, draw a diagram and pin a note — the way a colleague sitting next 
 - No code editing, no shell, no diagnostics/LSP — your agent already has those.
 - No pre-generated tours, no LLM calls of its own. The teaching is the agent's job.
 
+## Getting started
+
+You need two things: the extension (the "hands" inside VS Code) and a one-time registration in
+your agent (so the agent can talk to it). The bridge the agent talks to is bundled with the
+extension — there is nothing to install from npm.
+
+### 1. Install the extension
+
+From the VS Code Marketplace or Open VSX (`zvxbase.vscode-showme`), or download the VSIX from
+[Releases](https://github.com/zvxbase/vscode-showme/releases) and run
+`code --install-extension vscode-showme-<version>.vsix`.
+
+### 2. Register ShowMe with your agent
+
+Run **ShowMe: Show agent configuration** from the Command Palette. It opens an untitled document
+with ready-to-paste snippets for Claude Code, Codex CLI and Copilot CLI, filled in with the real
+install path. Copy the one for your agent. ShowMe never edits other tools' configuration files
+itself.
+
+- **Claude Code** — one `claude mcp add showme -- node …` line, plus a list of permission rules to
+  add to `permissions.allow` in `.claude/settings.json`. Without those rules, Claude Code asks for
+  confirmation on every call, even for display-only tools.
+- **Codex CLI** — a `[mcp_servers.showme]` section for `~/.codex/config.toml`. No permission
+  setup is needed.
+- **Copilot CLI** — a `"showme"` entry for `~/.copilot/mcp-config.json`; start it with
+  `--allow-tool 'showme'`.
+- **Copilot agent mode inside VS Code** — nothing to do. The extension registers itself as an
+  MCP server (this does not work in Restricted Mode).
+
+The snippets start the newest ShowMe installed, so you do not need to paste them again after the
+extension updates.
+
+`arrange_editors` is left out of the Claude Code allow list on purpose: it is the only tool that
+can close tabs. Add `"mcp__showme__arrange_editors"` yourself if you want it.
+
+The agent and VS Code must run on the same machine and in the same environment: in a
+devcontainer, both inside the container; with Remote-SSH, both on the remote side.
+
+### 3. Turn it on in the window you want the agent to use
+
+Nothing is driven until you allow it. Click **`ShowMe: Off`** in the status bar of that window →
+it becomes **`ShowMe: On`**, and **`ShowMe: Connected`** once the agent connects. Click again to
+turn it off. You can open the same folder in two windows and turn ShowMe on in only one of them;
+the agent uses that one.
+
+### 4. Ask your agent
+
+Talk to your agent as usual and ask it to show you things, for example:
+
+- "Walk me through how a request is handled in this repo. Show me each step in the editor."
+- "Show me where `parseConfig` is defined and where it is used, side by side."
+- "Annotate the important lines of `src/server.ts` in reading order."
+- "Draw a diagram of how these modules depend on each other."
+
+## What you will see
+
+- **Highlight** — the lines the agent is talking about right now. The next `show_code` replaces it.
+- **Annotations** — speech bubbles under lines, numbered in the agent's reading order (`1/7 ·`).
+  Use the `‹ ›` buttons in the bubble, or **Next annotation / Previous annotation**, to follow
+  them. **Resolve** marks one as read.
+- **HTML panels** — tables and diagrams. Scripts never run in them.
+- **Notes** — an untitled editor. Nothing is saved unless you save it.
+- **Clean up** — **ShowMe: Clear highlights** and **ShowMe: Clear annotations**.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `list_workspaces` | Tells the agent which VS Code window it is connected to |
+| `get_editor_state` | Where you are looking: active file, cursor, selection, visible lines, open tabs |
+| `show_code` | Opens a file, scrolls to a location and highlights it |
+| `annotate` | Leaves numbered speech bubbles under lines |
+| `show_html` | Shows a table or diagram in a panel (no scripts) |
+| `show_note` | Opens an untitled note |
+| `find_definition` | Where a symbol is defined (like Go to Definition) |
+| `find_references` | Where a symbol is used |
+| `show_view` | Reveals a file in the explorer, switches the sidebar, toggles the panel, Zen mode |
+| `arrange_editors` | Arranges and tidies editor columns (closes only its own panels by default) |
+
+No tool returns file contents. The agent reads files with its own tools.
+
+## Settings
+
+All of these are user settings. A repository's `.vscode/settings.json` cannot change the safety
+settings.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `showme.stage.enabled` | `true` | Let the agent open files, scroll and split. When off, `show_code` only marks lines |
+| `showme.html.enabled` | `true` | Allow `show_html` |
+| `showme.layout.enabled` | `true` | Allow `arrange_editors` and `show_view` |
+| `showme.layout.closeHumanTabs` | `false` | Let `arrange_editors` close or move tabs you opened |
+| `showme.layout.closeDirtyTabs` | `false` | …including unsaved ones |
+| `showme.redactedPathPatterns` | `[]` | More paths to hide from the agent. The built-in list (`.env`, keys, …) cannot be removed |
+| `showme.maxSelectionChars` | `4000` | How much selected text `get_editor_state` may return |
+| `showme.injectTerminalEnv` | `true` | Put `SHOWME_SOCK` into integrated terminals |
+| `showme.listAllWorkspaces` | `false` | Let the agent see other windows' folder paths |
+
+To stop everything at once: **ShowMe: Stop / Resume the extension**. Every tool call is recorded
+in **ShowMe: Show the operations log** (selected text is not recorded).
+
+## Troubleshooting
+
+Look at the status bar first — ShowMe shows what it is doing there.
+
+| Status bar | Meaning |
+|---|---|
+| `ShowMe: Off` | This window is not lent to the agent. Click to turn it on |
+| `ShowMe: On` | Turned on, but no agent is connected yet |
+| `ShowMe: Connected` | Working |
+| `ShowMe: Stopped` | The extension is stopped. Run **ShowMe: Stop / Resume the extension** |
+| `ShowMe: Failed to start` | The tooltip says why. If it names a directory, check its owner and permissions with `ls -ld` |
+| `ShowMe: second connection refused` | Only one agent can connect at a time. Stop the other one. If you are not running a second agent, some other process of yours connected first — find out what it is |
+| `ShowMe: not found …` / `multiple matches …` | The agent looked for a location and did not find exactly one. The agent needs to be more specific |
+| `ShowMe: rate limited …` | The agent repeated the same request too quickly |
+
+**The agent says it cannot find a VS Code window.** Check that ShowMe is `On` in a window, that
+the agent runs in the same environment as VS Code (see step 2), and that both see the same
+`$TMPDIR`.
+
+**`.env` or a key file is "not found".** That is intended: ShowMe hides those paths and does not
+reveal where they are.
+
+## Uninstall
+
+Run **ShowMe: Show teardown steps and how to remove the configuration**. In short: remove the
+`showme` entry from your agent (`claude mcp remove showme`, or delete it from the Codex / Copilot
+config file), then uninstall the extension. Terminals that were already open keep `SHOWME_SOCK`
+until you reopen them.
+
 ## Safety, in one table
 
 | Property | How |
@@ -28,19 +158,9 @@ annotations, draw a diagram and pin a note — the way a colleague sitting next 
 
 What is in scope for security reports, and what is not, is in [`SECURITY.md`](SECURITY.md).
 
-## Install
-
-1. Install the extension from the VS Code Marketplace or Open VSX (`zvxbase.vscode-showme`), or download the VSIX from Releases.
-2. Click `ShowMe: Off` in the status bar of the window you want the agent to drive → it becomes `ShowMe: On`.
-3. Run **ShowMe: Show agent configuration** from the Command Palette and paste the snippet for your agent (Claude Code / Copilot CLI / Codex CLI). The bridge is bundled with the extension — nothing to install from npm.
-
-Ten tools: `list_workspaces`, `get_editor_state`, `show_code`, `annotate`, `show_html`, `show_note`,
-`find_definition`, `find_references`, `show_view`, `arrange_editors`. Details and the list of
-things that do not work yet: [`docs/runbook.md`](docs/runbook.md) (Japanese).
-
 ## Status
 
-`0.1.0` — **preview**. Verified on Linux (unit + integration tests in a real VS Code). macOS uses the same Unix-socket path but has not been verified yet; Windows named-pipe support is written but not yet verified. CI runs both as non-blocking observations. This is a personal project without an SLA; issues and PRs are welcome and are answered by the maintainer when time allows. Development happens in a private repository and each release is published here as one commit — see `CONTRIBUTING.md`.
+**Preview.** Verified on Linux (unit + integration tests in a real VS Code). macOS uses the same Unix-socket path but has not been verified yet; Windows named-pipe support is written but not yet verified. CI runs both as non-blocking observations. This is a personal project without an SLA; issues and PRs are welcome and are answered by the maintainer when time allows. Development happens in a private repository and each release is published here as one commit — see `CONTRIBUTING.md`.
 
 ## How this was built
 

@@ -416,8 +416,8 @@ async function probeDocumentSymbols(uri: vscode.Uri, timeoutMs = 10_000): Promis
  * `annotate`（comment thread）と `symbol` 解決はその推定の上に立っている。
  * 推定のまま設計に書かないために、ここで測る。
  *
- * 測った値は `docs/runbook.md`「制限モードでの確認」に写す。だから各測定は
- * 結果を `console.log` にも出す ―― assert が通ったことだけでは、runbook に
+ * 測った値は記録に写す。だから各測定は
+ * 結果を `console.log` にも出す ―― assert が通ったことだけでは、記録に
  * 何を書けばよいかが分からない。
  */
 suite("実 VS Code / 制限モード / 2B の前提測定", () => {

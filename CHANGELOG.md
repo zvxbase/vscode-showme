@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 — preview
+
+- README: how to set up and use ShowMe — registering it with your agent, what you will see, the tools, settings, troubleshooting and uninstalling.
+- The Japanese developer notes are no longer part of the published repository. Everything a user needs is in the README.
+
 ## 0.1.0 — preview
 
 First public release.
