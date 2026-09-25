@@ -50,7 +50,10 @@ export interface VisibleLines {
  * 「`selectedText` が入る経路は1つだけ」を型で言えることである。
  */
 export interface ActiveEditorObservation {
-  /** ワークスペース相対パス。ワークスペースの外・file 以外の scheme なら undefined。 */
+  /**
+   * ワークスペース相対パス（映しのタブも `observedRelPath` で rel に戻る。D83）。
+   * ワークスペースの外・それ以外の scheme なら undefined。
+   */
   relPath: string | undefined;
   /** 人間が使っているエディタか（設計書 §3.1 条件2）。 */
   isActiveEditor: boolean;

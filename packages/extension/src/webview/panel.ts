@@ -2,7 +2,7 @@ import type { PanelSlot } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
 import { ownViewTypeFor } from "../own-view-type.js";
 import { SinglePendingTimer } from "../single-pending-timer.js";
-import type { Stage } from "../stage.js";
+import type { Stage, StageColumnSettings } from "../stage.js";
 import { FRAME_MESSAGE, buildDisplayDocument, buildOuterHtml } from "./frames.js";
 import { type PanelSource, panelPlacement, recreatePanel } from "./panel-recreate.js";
 import { watchablePattern } from "./watch-pattern.js";
@@ -86,6 +86,8 @@ export class ShowMePanel implements vscode.Disposable {
     private readonly stage: Stage,
     /** この面がどの枠か。**`viewType` を決めるためだけ**に持つ（判断には使わない）。 */
     private readonly slot: PanelSlot,
+    /** 舞台の列の選び方の設定。新しく作るときに1回だけ読む（D90）。 */
+    private readonly columnSettings: () => StageColumnSettings,
   ) {}
 
   /**
@@ -355,7 +357,10 @@ export class ShowMePanel implements vscode.Disposable {
       // 既定の置き場は枠で決まる（`panelPlacement`: 枠1は舞台の1列目、枠2は2列目）。
       // `StagePlacement.slot` は**舞台の列の番号**で、パネルの枠とは別の量。
       {
-        viewColumn: column ?? this.stage.targetColumn(panelPlacement(this.slot)),
+        // 置ける列が無ければ `targetColumn` が `no-stage-column` で断る（D90）。パネルを作る前なので
+        // 何も残らない。既にあるパネルを出し直すときはここを通らない（その列に居続ける）。
+        viewColumn:
+          column ?? this.stage.targetColumn(panelPlacement(this.slot), this.columnSettings()),
         preserveFocus: true,
       },
       {

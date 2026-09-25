@@ -70,10 +70,18 @@ Talk to your agent as usual and ask it to show you things, for example:
 
 ## What you will see
 
+- **The agent's tabs** — files the agent shows open in its own tabs: a read-only mirror of the file
+  that also shows your unsaved edits. The tab name is colored and carries an **SM** badge (read-only
+  tabs show a lock icon instead), so you can tell them apart from your own; Go to Definition and
+  Find References work there too. They stay the agent's even if you move them, so it can tidy them
+  up. A tab you open yourself on the same file stays yours.
+- **Open the real file** — the **`ShowMe: Open the real file`** button in the tab title bar opens
+  the same file at the same line in the column you're in (next to the agent's tab). That tab is yours, not the agent's.
 - **Highlight** — the lines the agent is talking about right now. The next `show_code` replaces it.
-- **Annotations** — speech bubbles under lines, numbered in the agent's reading order (`1/7 ·`).
+- **Annotations** — speech bubbles under lines in the agent's tabs, numbered in the agent's reading order (`1/7 ·`).
   Use the `‹ ›` buttons in the bubble, or **Next annotation / Previous annotation**, to follow
-  them. **Resolve** marks one as read.
+  them. They open the agent's tab, possibly in your column, and the agent may tidy it up once
+  you look away. **Resolve** marks one as read.
 - **HTML panels** — tables and diagrams. Scripts never run in them.
 - **Notes** — an untitled editor. Nothing is saved unless you save it.
 - **Clean up** — **ShowMe: Clear highlights** and **ShowMe: Clear annotations**.
@@ -84,8 +92,8 @@ Talk to your agent as usual and ask it to show you things, for example:
 |---|---|
 | `list_workspaces` | Tells the agent which VS Code window it is connected to |
 | `get_editor_state` | Where you are looking: active file, cursor, selection, visible lines, open tabs |
-| `show_code` | Opens a file, scrolls to a location and highlights it |
-| `annotate` | Leaves numbered speech bubbles under lines |
+| `show_code` | Opens a file, scrolls to a location and highlights it. `realFile: true` opens the real file instead, for you to edit |
+| `annotate` | Leaves numbered speech bubbles under lines (`realFile: true` puts them on the real file, for use after `show_code realFile: true`) |
 | `show_html` | Shows a table or diagram in a panel (no scripts) |
 | `show_note` | Opens an untitled note |
 | `find_definition` | Where a symbol is defined (like Go to Definition) |
@@ -103,6 +111,9 @@ settings.
 | Setting | Default | Meaning |
 |---|---|---|
 | `showme.stage.enabled` | `true` | Let the agent open files, scroll and split. When off, `show_code` only marks lines |
+| `showme.stage.agentTabs` | `true` | Open the agent's editors as its own tabs (a mirror of the file). When off, it opens ordinary file tabs as before |
+| `showme.stage.editable` | `false` | Let you edit and save in the agent's tabs. Saving writes the real file; a file you can't write (read-only on disk, or a hard link) opens read-only |
+| `showme.stage.definitionTarget` | `"file"` | Where Go to Definition / Find References from the agent's tab take you: the real file, or the agent's tab |
 | `showme.html.enabled` | `true` | Allow `show_html` |
 | `showme.layout.enabled` | `true` | Allow `arrange_editors` and `show_view` |
 | `showme.layout.closeHumanTabs` | `false` | Let `arrange_editors` close or move tabs you opened |
@@ -111,6 +122,7 @@ settings.
 | `showme.maxSelectionChars` | `4000` | How much selected text `get_editor_state` may return |
 | `showme.injectTerminalEnv` | `true` | Put `SHOWME_SOCK` into integrated terminals |
 | `showme.listAllWorkspaces` | `false` | Let the agent see other windows' folder paths |
+| `showme.stage.avoidToolColumns` | `false` | Keep the agent's editors, notes and panels out of a column whose visible tab is a terminal, another extension's panel, or another non-file tab such as Settings. It uses another column instead, and refuses if none can be used; `arrange_editors` also refuses presets and moves that would use such a column. `showme.stage.editorGroup: "active"` only affects where the agent opens things — the `arrange_editors` refusals still apply |
 
 To stop everything at once: **ShowMe: Stop / Resume the extension**. Every tool call is recorded
 in **ShowMe: Show the operations log** (selected text is not recorded).
@@ -139,10 +151,23 @@ reveal where they are.
 
 ## Uninstall
 
-Run **ShowMe: Show teardown steps and how to remove the configuration**. In short: remove the
-`showme` entry from your agent (`claude mcp remove showme`, or delete it from the Codex / Copilot
-config file), then uninstall the extension. Terminals that were already open keep `SHOWME_SOCK`
-until you reopen them.
+Remove your agent's registration first and the extension last. The full steps are in
+**ShowMe: Show teardown steps and how to remove the configuration**, which lives in the extension
+and disappears with it.
+
+1. Remove ShowMe from your agent:
+   - Claude Code: `claude mcp remove showme`, and delete the `mcp__showme__*` lines you added to
+     `permissions.allow` in `.claude/settings.json`
+   - Codex CLI: delete the `[mcp_servers.showme]` section in `~/.codex/config.toml`
+   - Copilot CLI: delete the `"showme"` entry in `~/.copilot/mcp-config.json`
+2. Uninstall the extension: `code --uninstall-extension zvxbase.vscode-showme`. It removes its
+   socket and registration files by itself. `showme.*` entries in your user settings stay until
+   you delete them.
+3. Reopen terminals that were already open (or `unset SHOWME_SOCK`).
+
+If you uninstall the extension but leave the agent's registration, the agent only fails to start
+ShowMe with `ShowMe is not installed in …`. Nothing else happens, but remove the entry to stop
+the error.
 
 ## Safety, in one table
 

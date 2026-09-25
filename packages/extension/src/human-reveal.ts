@@ -14,8 +14,9 @@ import { toRange } from "./line-range-vscode.js";
  *   もう1枚開かない）
  * - 無ければ**人間の今の列**（`ViewColumn.Active`）に開く
  * - **フォーカスも移す**（人間が押したのだから。`preserveFocus: false`）
- * - 開いたタブは**人間のもの**。own には記録しない（`OpenedByAgent` を知らない）ので、
- *   `arrange_editors close-own` の対象にならず、`get_editor_state` にも `own` は付かない
+ * - **ここは何も記録しない**（`OpenedByAgent` を知らない）。開いたタブの own は URI で決まる:
+ *   映し（`showme-ro:` / `showme-rw:`）ならスキームで own（D85。人間が見ている間は床1 が守る）、
+ *   `file:` なら own ではない（`close-own` の対象にならず、`get_editor_state` にも `own` は付かない）
  *
  * `selection` には触らない（不変条件3）。人間の命令であっても、`selection` を書けば
  * `get_editor_state` の選択テキストがその範囲になる ―― 位置合わせは `revealRange` だけ。

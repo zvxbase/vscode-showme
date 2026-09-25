@@ -76,6 +76,31 @@ export interface ShowMeConfig {
   /** `show_code` が開く列。鍵は `showme.stage.editorGroup`（D74 で `showme.editorGroup` から移った）。 */
   editorGroup: "dedicated" | "active";
   /**
+   * 舞台を映しの URI（`showme-ro:` / `showme-rw:`）で開くかどうか（D84・D86）。
+   *
+   * `agentTabs` は `showme.stage.agentTabs`（既定 `true`。`false` で従来の D53 の `file:` タブに
+   * 戻る）、`editable` は `showme.stage.editable`（既定 `false`）。**どちらもタブを開く／
+   * 保存を本物のファイルに書く**という安全に関わる量なので `trusted()` 以外で読まない
+   * （不変条件9）。スキームを実際に決める分岐は `stage-uri.ts` の `effectiveStageScheme` 1箇所
+   * ―― ここでは値を運ぶだけで判断しない。
+   */
+  stageTabs: { agentTabs: boolean; editable: boolean };
+  /**
+   * `showme.stage.avoidToolColumns`（D90。既定 `false`）。`true` なら、表示中のタブがターミナル・
+   * 他の拡張のパネル・型の分からない入力である列に舞台を置かず、置ける列が無ければ
+   * `no-stage-column` で断る。**どの列に開くか**を決める量なので `trusted()` 以外で読まない
+   * （不変条件9）。判断は `stage-column.ts` の `placeStageColumn` 1つ ―― ここは値を運ぶだけ。
+   * `editorGroup: "active"` のときは効かない（その設定は人間の列を使う）。
+   */
+  avoidToolColumns: boolean;
+  /**
+   * 人間がエージェントのタブで Ctrl+クリック / F12 したとき、**別のファイル**の名前の行き先（D88）。
+   * `showme.stage.definitionTarget`（既定 `"file"`）。同じファイルの中は設定に依らず映しのまま
+   * （TS が映しの上で答える。`stage-language.ts`）。人間の画面のどのタブが開くかを決める量なので
+   * `trusted()` 以外で読まない（不変条件9）。
+   */
+  definitionTarget: DefinitionTarget;
+  /**
    * `show_html` のパネル（増分6.2 D80）。`maxPanels` は `showme.html.maxPanels`
    * （設定は整数 0〜999、`0` が無制限。既定 2。線上の `number | "unlimited"` に畳むのは
    * `panelLimitOr` 1箇所）。**上限は人間の作業面を守る量**なので
@@ -120,6 +145,14 @@ export function editorGroupOr(value: unknown): "dedicated" | "active" {
   return value === "active" ? "active" : "dedicated";
 }
 
+/** `showme.stage.definitionTarget` の値（D88）。`file` = 本物のファイル、`agentTab` = エージェントのタブ。 */
+export type DefinitionTarget = "file" | "agentTab";
+
+/** 知らない値は既定の `"file"` に倒す（`editorGroupOr` と同じ形）。 */
+export function definitionTargetOr(value: unknown): DefinitionTarget {
+  return value === "agentTab" ? "agentTab" : "file";
+}
+
 /**
  * `showme.html.maxPanels` の値を型で守る（D80）。
  *
@@ -147,6 +180,12 @@ export function readConfig(): ShowMeConfig {
       layout: trusted<boolean>("showme.layout.enabled") ?? true,
     },
     editorGroup: editorGroupOr(trusted<unknown>("showme.stage.editorGroup")),
+    stageTabs: {
+      agentTabs: trusted<boolean>("showme.stage.agentTabs") ?? true,
+      editable: trusted<boolean>("showme.stage.editable") ?? false,
+    },
+    definitionTarget: definitionTargetOr(trusted<unknown>("showme.stage.definitionTarget")),
+    avoidToolColumns: trusted<boolean>("showme.stage.avoidToolColumns") ?? false,
     html: {
       maxPanels: panelLimitOr(trusted<unknown>("showme.html.maxPanels"), DEFAULT_PANEL_LIMIT),
     },

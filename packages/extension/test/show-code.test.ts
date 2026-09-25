@@ -13,6 +13,7 @@ import {
 import type { SymbolLookup, SymbolSurface } from "../src/handlers/symbol-prefetch.js";
 import { MIN_MS_SINCE_OWN_TOOL_CALL, OwnToolCallClock } from "../src/human-selection.js";
 import { RATE_LIMIT_MAX_HITS, RateLimiter } from "../src/rate-limit.js";
+import { ToolError } from "../src/tool-error.js";
 
 /**
  * `handleShowCode` の単体テスト。
@@ -86,6 +87,8 @@ function symbolSpy(answer: SymbolLookup): SymbolSpy {
 interface Spy {
   deps: ShowCodeDeps;
   revealed: { relPath: string; range: LineRange; placement: StagePlacement }[];
+  /** `reveal` に渡った枠（開けたかに依らない）。 */
+  attempted: StagePlacement[];
   /** `setSpotlight` の呼び出し1回ごとに、渡された窓を丸ごと記録する。 */
   spotlights: ReadonlyMap<string, readonly LineRange[]>[];
   miss: { path: string; needle: string }[];
@@ -101,12 +104,15 @@ function spy(
   options: {
     limiter?: RateLimiter;
     revealFails?: boolean;
+    /** 舞台の列が無いと断る面（D90。`Stage.targetColumn` が `no-stage-column` を投げる形）。 */
+    revealRefuses?: boolean;
     clock?: OwnToolCallClock;
     symbols?: SymbolSurface;
     config?: ShowMeConfig;
   } = {},
 ): Spy {
   const revealed: Spy["revealed"] = [];
+  const attempted: StagePlacement[] = [];
   const spotlights: Spy["spotlights"] = [];
   const miss: Spy["miss"] = [];
   const many: Spy["many"] = [];
@@ -117,6 +123,7 @@ function spy(
   const cfg = options.config ?? config;
   return {
     revealed,
+    attempted,
     spotlights,
     miss,
     many,
@@ -132,6 +139,10 @@ function spy(
       editor: {
         reveal: async (relPath, range, placement) => {
           if (options.revealFails === true) throw new Error("エディタを開けない");
+          attempted.push(placement);
+          if (options.revealRefuses === true) {
+            throw new ToolError("no-stage-column", "no stage column");
+          }
           revealed.push({ relPath, range, placement });
         },
         setSpotlight: (byPath) => {
@@ -317,6 +328,39 @@ describe("handleShowCode", () => {
     expect(s.miss).toEqual([{ path: "src/a.ts", needle: "TARGET" }]);
     // **空の窓でも1回置き換える**（D67）。前回のスポットライトが残ると、開けなかった
     // 位置の代わりに前の呼び出しの指差しが「今ここ」に見える。
+    expect(s.spotlights).toEqual([new Map()]);
+  });
+
+  it("舞台の列が無ければ no-stage-column を返し、位置は返さない（D90）", async () => {
+    const root = workspace({ "src/a.ts": "TARGET\n", "src/b.ts": "OTHER\n" });
+    const s = spy(root, { revealRefuses: true });
+    const out = await handleShowCode(
+      {
+        locations: [
+          { path: "src/a.ts", text: "TARGET" },
+          { path: "src/b.ts", text: "OTHER" },
+        ],
+        layout: "split",
+      },
+      s.deps,
+    );
+
+    // 開けなかった位置の範囲を返さないのは `not-found` の枝と同じ（無音のオラクルを作らない）。
+    // 理由だけが違う ―― エージェントは「文字列が無い」と「開く列が無い」を区別できる。
+    expect(out.resolutions).toEqual([
+      { resolvedBy: "none", match: "none", reason: "no-stage-column", normalizedPath: "src/a.ts" },
+      { resolvedBy: "none", match: "none", reason: "no-stage-column", normalizedPath: "src/b.ts" },
+    ]);
+    // 開けなかった位置は枠を消費しない（2件目も枠0で試す）。
+    expect(s.attempted).toEqual([
+      { slot: 0, layout: "split" },
+      { slot: 0, layout: "split" },
+    ]);
+    // 人間にも見せる（開かなかった結果を黙らせない）。塗りは登録しない。
+    expect(s.miss).toEqual([
+      { path: "src/a.ts", needle: "TARGET" },
+      { path: "src/b.ts", needle: "OTHER" },
+    ]);
     expect(s.spotlights).toEqual([new Map()]);
   });
 

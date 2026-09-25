@@ -3,7 +3,7 @@
   "private": true,
   "displayName": "ShowMe",
   "description": "Give AI agents hands in VS Code: show, annotate and diagram code alongside a human reader.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "preview": true,
   "license": "MIT",
   "publisher": "zvxbase",
@@ -20,7 +20,7 @@
   },
   "extensionKind": ["workspace"],
   "categories": ["AI", "Other"],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["onStartupFinished", "onFileSystem:showme-ro", "onFileSystem:showme-rw"],
   "main": "./out/extension.js",
   "l10n": "./l10n",
   "capabilities": {
@@ -31,6 +31,10 @@
         "showme.enabled",
         "showme.stage.enabled",
         "showme.stage.editorGroup",
+        "showme.stage.agentTabs",
+        "showme.stage.editable",
+        "showme.stage.definitionTarget",
+        "showme.stage.avoidToolColumns",
         "showme.html.enabled",
         "showme.html.maxPanels",
         "showme.layout.enabled",
@@ -92,6 +96,23 @@
         "command": "showme.annotation.next",
         "title": "%showme.command.annotation.next%",
         "icon": "$(arrow-right)"
+      },
+      {
+        "command": "showme.openRealFile",
+        "title": "%showme.command.openRealFile%",
+        "icon": "$(go-to-file)"
+      }
+    ],
+    "colors": [
+      {
+        "id": "showme.agentTabForeground",
+        "description": "%showme.color.agentTabForeground%",
+        "defaults": {
+          "dark": "#E8A33D",
+          "light": "#B35C00",
+          "highContrast": "#FFB000",
+          "highContrastLight": "#8A4500"
+        }
       }
     ],
     "menus": {
@@ -117,6 +138,13 @@
           "group": "inline@3"
         }
       ],
+      "editor/title": [
+        {
+          "command": "showme.openRealFile",
+          "when": "resourceScheme =~ /^showme-(ro|rw)$/",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
           "command": "showme.annotation.resolve",
@@ -133,6 +161,10 @@
         {
           "command": "showme.annotation.next",
           "when": "false"
+        },
+        {
+          "command": "showme.openRealFile",
+          "when": "resourceScheme =~ /^showme-(ro|rw)$/"
         }
       ]
     },
@@ -156,6 +188,35 @@
           "enum": ["dedicated", "active"],
           "default": "dedicated",
           "description": "%showme.config.stage.editorGroup%",
+          "scope": "machine"
+        },
+        "showme.stage.agentTabs": {
+          "type": "boolean",
+          "default": true,
+          "description": "%showme.config.stage.agentTabs%",
+          "scope": "machine"
+        },
+        "showme.stage.editable": {
+          "type": "boolean",
+          "default": false,
+          "description": "%showme.config.stage.editable%",
+          "scope": "machine"
+        },
+        "showme.stage.definitionTarget": {
+          "type": "string",
+          "enum": ["file", "agentTab"],
+          "enumDescriptions": [
+            "%showme.config.stage.definitionTarget.file%",
+            "%showme.config.stage.definitionTarget.agentTab%"
+          ],
+          "default": "file",
+          "description": "%showme.config.stage.definitionTarget%",
+          "scope": "machine"
+        },
+        "showme.stage.avoidToolColumns": {
+          "type": "boolean",
+          "default": false,
+          "description": "%showme.config.stage.avoidToolColumns%",
           "scope": "machine"
         },
         "showme.html.enabled": {

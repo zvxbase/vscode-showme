@@ -215,6 +215,115 @@ export const MARKDOWN_ATTACK_REL = "docs/markdown-attack.md";
 /** `MARKDOWN_ATTACK_REL` にちょうど1回だけ現れる目印。 */
 export const MARKDOWN_ATTACK_MARKER = "MARKDOWN_ATTACK_TARGET";
 
+/**
+ * 映し（`showme-ro:` / `showme-rw:`。設計 D81）の検査だけに使うファイル群（検査ごとに1本）。
+ *
+ * `src/sample.ts` を使い回さない。映しの検査は人間の側（`file:`）で未保存の編集を作り、
+ * `showme-rw:` からは**本物のファイルに書く**。共有すると、戻し損ねたときに他の節の
+ * 前提（中身・行番号・未保存のタブ）を黙って壊す。未保存用と書き込み用も分ける ――
+ * 書き込みの後始末と未保存の後始末が同じファイルの上で競合しないように。
+ */
+export const MIRROR_UNSAVED_REL = "mirror/unsaved.md";
+export const MIRROR_EDITABLE_REL = "mirror/editable.md";
+/** 版が上がっても rw の保存が通ることを見る検査だけに使う（上の書き込みの検査と後始末を競合させない）。 */
+export const MIRROR_EDITABLE_BUMP_REL = "mirror/editable-bump.md";
+/** 上の検査で版を上げるために人間が編集する、無関係なファイル（他の検査と共有しない）。 */
+export const MIRROR_OTHER_REL = "mirror/other.md";
+/** ディスクの変更が両方の映しに届くことを見る検査だけに使う。 */
+export const MIRROR_DISK_REL = "mirror/disk.md";
+/** 未保存のまま revert して閉じたとき、映しがディスクへ戻ることを見る検査だけに使う。 */
+export const MIRROR_CLOSE_REL = "mirror/close.md";
+
+/** 人間の file: と showme-rw: の両方が未保存のときの保存の競合を見る検査だけに使う。 */
+export const MIRROR_CONFLICT_REL = "mirror/conflict.md";
+/** 片方だけ未保存のとき、保存がそのまま通りもう片方が追従することを見る検査だけに使う。 */
+export const MIRROR_FOLLOW_REL = "mirror/follow.md";
+/** ディスクの権限で書けないファイルの showme-rw: を見る検査だけに使う（検査の中で chmod する）。 */
+export const MIRROR_READONLY_DISK_REL = "mirror/readonly-disk.md";
+
+/** 映しの検査用ファイルの元の中身（すべて同じ。1行目で見分ける）。 */
+export const MIRROR_ORIGINAL_TEXT = "# mirror\n\noriginal line\n";
+
+/**
+ * 舞台を映しで開く検査（D84 / D85）だけに使うファイル群（検査ごとに1本）。
+ *
+ * 映しのタブと人間の `file:` タブを同時に開き、塗りと吹き出しがどちらに付くかを見る。
+ * 他の節のファイルを使い回すと、既に開いているタブや残った塗りで「付いていない」が
+ * 判別しなくなる。どれも**3行目**に `STAGE_TABS_MARKER` がちょうど1回だけ現れる。
+ */
+export const STAGE_TABS_RELS = {
+  show: "tabs/show.md",
+  human: "tabs/human.md",
+  annotate: "tabs/annotate.md",
+  markOnly: "tabs/mark-only.md",
+  editable: "tabs/editable.md",
+  // D82 / D83: 所有はスキーム・観測で映しを相対パスに戻す
+  observe: "tabs/observe.md",
+  moved: "tabs/moved.md",
+  humanFile: "tabs/human-file.md",
+  arrange: "tabs/arrange.md",
+  select: "tabs/select.md",
+  navFrom: "tabs/nav-from.md",
+  navTo: "tabs/nav-to.md",
+  // D82: 閉じたあとの show_code で映しが own に戻る
+  reopen: "tabs/reopen.md",
+  // 人間が起こしたレイアウトの合流でも映しは own のまま
+  mergeStay: "tabs/merge-stay.md",
+  mergeMoved: "tabs/merge-moved.md",
+} as const;
+
+/** `STAGE_TABS_RELS` の各ファイルの3行目にちょうど1回だけ現れる目印。 */
+export const STAGE_TABS_MARKER = "STAGE_TABS_TARGET";
+
+/**
+ * 映しから本物のファイルを開く検査（D87）だけに使うファイル。
+ *
+ * `deep` は目印を**初期表示に入らない深さ**（0始まりで `REAL_FILE_DEEP_LINE` 行目）に置く ――
+ * 3行目のままだと、開き直した本物のファイルが行を持ってこなくても先頭で見えてしまい判別しない。
+ * `palette` は同じ形で、引数なし（パレット・キーバインド）の経路に使う。`plain` は映しでない
+ * 編集器で押す検査に使う（目印は3行目）。
+ */
+export const REAL_FILE_RELS = {
+  deep: "tabs/real-file-deep.md",
+  palette: "tabs/real-file-palette.md",
+  plain: "tabs/real-file-plain.md",
+  // エージェントの `show_code` の `realFile: true`（目印は3行目）。映しの窓と従来の窓で1本ずつ、
+  // 従来の窓で `realFile` なしが own になる対照に1本。
+  agent: "tabs/real-file-agent.md",
+  agentLegacy: "tabs/real-file-agent-legacy.md",
+  legacyOwn: "tabs/real-file-legacy-own.md",
+  // `annotate` の `realFile: true`（`show_code` の `realFile` と対で使う）。
+  annotate: "tabs/real-file-annotate.md",
+} as const;
+export const REAL_FILE_DEEP_LINE = 300;
+
+/**
+ * 映しのタブで定義・参照が重なるかを測る検査（D88）だけに使う TS の2ファイル。
+ *
+ * `LANG_DEF_REL` が関数を1つ公開し、`LANG_USE_REL` がそれを import して2回呼び、同じファイルの
+ * 中だけの関数も2回呼ぶ。位置は `LANG_POSITIONS`（0始まり）で、中身と同じ場所で決める ――
+ * 本文を変えたら位置も変える。他の検査と共有しない（TS の結果の件数がそのまま判定になる）。
+ */
+export const LANG_DEF_REL = "lang/a.ts";
+export const LANG_USE_REL = "lang/b.ts";
+const LANG_DEF_TEXT = ["export function greet(name: string): string {", "  return name;", "}", ""];
+const LANG_USE_TEXT = [
+  'import { greet } from "./a";',
+  "function local(): number {",
+  "  return 1;",
+  "}",
+  'export const first = greet("a");',
+  'export const second = greet("b");',
+  "export const third = local() + local();",
+  "",
+];
+export const LANG_POSITIONS = {
+  /** `LANG_USE_REL` の `first = greet(` の `greet`（別のファイルで定義）。 */
+  importedCall: { line: 4, character: 21 },
+  /** `LANG_USE_REL` の `third = local(` の `local`（同じファイルで定義）。 */
+  localCall: { line: 6, character: 21 },
+} as const;
+
 /** DEEP_TEXT の前に挟む埋め草の行数。初期表示に収まらない位置へ押し出す。 */
 const FILLER_LINES = 400;
 
@@ -263,6 +372,9 @@ export function createFixtureWorkspace(label: string): FixtureWorkspace {
   fs.mkdirSync(path.join(root, "mark"), { recursive: true });
   fs.mkdirSync(path.join(root, "tour"), { recursive: true });
   fs.mkdirSync(path.join(root, "data"), { recursive: true });
+  fs.mkdirSync(path.join(root, "mirror"), { recursive: true });
+  fs.mkdirSync(path.join(root, "tabs"), { recursive: true });
+  fs.mkdirSync(path.join(root, "lang"), { recursive: true });
   fs.mkdirSync(outsideDir, { recursive: true });
 
   fs.writeFileSync(path.join(root, SAMPLE_REL), sampleSource(), "utf8");
@@ -362,6 +474,44 @@ export function createFixtureWorkspace(label: string): FixtureWorkspace {
     "utf8",
   );
   fs.writeFileSync(path.join(outsideDir, "secret.txt"), `${OUTSIDE_MARKER}\n`, "utf8");
+  for (const rel of [
+    MIRROR_UNSAVED_REL,
+    MIRROR_EDITABLE_REL,
+    MIRROR_EDITABLE_BUMP_REL,
+    MIRROR_OTHER_REL,
+    MIRROR_DISK_REL,
+    MIRROR_CLOSE_REL,
+    MIRROR_CONFLICT_REL,
+    MIRROR_FOLLOW_REL,
+    MIRROR_READONLY_DISK_REL,
+  ]) {
+    fs.writeFileSync(path.join(root, rel), MIRROR_ORIGINAL_TEXT, "utf8");
+  }
+  for (const rel of Object.values(STAGE_TABS_RELS)) {
+    // 目印は3行目（1始まり）。1行目に置くと「行を渡していない実装」でも一致する。
+    fs.writeFileSync(path.join(root, rel), `# tabs\n\n${STAGE_TABS_MARKER}\n`, "utf8");
+  }
+
+  for (const rel of [REAL_FILE_RELS.deep, REAL_FILE_RELS.palette]) {
+    const filler = Array.from({ length: REAL_FILE_DEEP_LINE }, (_, i) => `filler ${i}`);
+    fs.writeFileSync(
+      path.join(root, rel),
+      `${[...filler, STAGE_TABS_MARKER, ""].join("\n")}`,
+      "utf8",
+    );
+  }
+  for (const rel of [
+    REAL_FILE_RELS.plain,
+    REAL_FILE_RELS.agent,
+    REAL_FILE_RELS.agentLegacy,
+    REAL_FILE_RELS.legacyOwn,
+    REAL_FILE_RELS.annotate,
+  ]) {
+    fs.writeFileSync(path.join(root, rel), `# tabs\n\n${STAGE_TABS_MARKER}\n`, "utf8");
+  }
+
+  fs.writeFileSync(path.join(root, LANG_DEF_REL), LANG_DEF_TEXT.join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, LANG_USE_REL), LANG_USE_TEXT.join("\n"), "utf8");
 
   return { root, outsideDir };
 }

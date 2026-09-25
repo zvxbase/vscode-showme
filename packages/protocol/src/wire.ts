@@ -49,6 +49,17 @@ export const showCodeArgsSchema = z
           '("defined here, used here"); single stacks them as tabs in one column. Default is single. ' +
           "Either way the column the human is using is never used, and the stage never exceeds 2 columns",
       ),
+    // 本物のファイルを開く選択肢（D87）。開いたタブは人間のもの（own にしない）で、`close-own` は
+    // 閉じない ―― 「自分で片づけられないタブを増やす」ことを、説明で知ってから使わせる。
+    realFile: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, opens the real file instead of your own tab (your tab is the default and is read-only under default settings). " +
+          "The human can edit the real file; use this only when the human should edit it, and prefer the default otherwise. " +
+          "That tab is not own in get_editor_state, and arrange_editors close-own leaves it open (it belongs to the human). " +
+          "Has no effect when the human has turned off showme.stage.enabled (nothing is opened then).",
+      ),
   })
   .strict();
 
@@ -138,11 +149,22 @@ export const annotateArgsObjectSchema = z
           "add appends to the existing annotations. " +
           "clear removes all annotations in this window (do not pass items; the result is { resolutions: [] })",
       ),
+    // `show_code` の `realFile`（D87）と対。本物のファイルを見せたあとの吹き出しが映しに付くと、
+    // 人間が見ている `file:` の編集器には出ない。
+    realFile: z
+      .boolean()
+      .optional()
+      .describe(
+        "Put the bubbles on the real file (use together with show_code realFile: true); " +
+          "by default they go on the agent's own tab.",
+      ),
   })
   .strict();
 
 /** `annotate` の引数（検証後の形）。`clear` は `items` を持たない。 */
-export type AnnotateArgs = { mode: "clear" } | { items: AnnotateItem[]; mode?: "replace" | "add" };
+export type AnnotateArgs =
+  | { mode: "clear" }
+  | { items: AnnotateItem[]; mode?: "replace" | "add"; realFile?: boolean };
 
 /**
  * `annotate` の引数。**規則はここに1つ**（設計 D54）:
@@ -163,6 +185,7 @@ export const annotateArgsSchema = annotateArgsObjectSchema.transform((args, ctx)
       });
       return z.NEVER;
     }
+    // `realFile` は受けて捨てる: clear は窓の吹き出しを全部消すので、どこに付けるかは意味を持たない。
     return { mode: "clear" };
   }
   if (args.items === undefined) {
@@ -174,7 +197,11 @@ export const annotateArgsSchema = annotateArgsObjectSchema.transform((args, ctx)
     return z.NEVER;
   }
   // `exactOptionalPropertyTypes` なので、未指定の鍵は省く（undefined を入れない）。
-  return args.mode === undefined ? { items: args.items } : { items: args.items, mode: args.mode };
+  return {
+    items: args.items,
+    ...(args.mode === undefined ? {} : { mode: args.mode }),
+    ...(args.realFile === undefined ? {} : { realFile: args.realFile }),
+  };
 });
 
 /**
@@ -399,7 +426,8 @@ export const arrangeEditorsArgsSchema = z
       .describe(
         "Only for move-tab / move-panel. Destination column (1-based). " +
           "Up to the current column count + 1 is accepted (a larger number is invalid-request). " +
-          "The column the human is in is refused by default (withheld: [human-column-target])",
+          "The column the human is in is refused by default (withheld: [human-column-target]); " +
+          "with showme.stage.avoidToolColumns on, so is a column showing a terminal or another extension's panel (withheld: [tool-column-target])",
       ),
     slot: panelSlotSchema
       .optional()
@@ -567,6 +595,12 @@ export const errorCodeSchema = z.enum([
   "invalid-path",
   "not-found",
   "rate-limited",
+  /**
+   * 開ける舞台の列が無い（D90。`showme.stage.avoidToolColumns` がオンで、人間の列の右が
+   * ターミナルや他の拡張のパネルの列で埋まり、列も足せない）。`show_note` / `show_html` が返す。
+   * `show_code` は位置ごとの `reason` で同じ語を返す（`RESOLUTION_REASONS`）。
+   */
+  "no-stage-column",
   "internal",
 ]);
 export type WireErrorCode = z.infer<typeof errorCodeSchema>;
@@ -670,6 +704,12 @@ export const listWorkspacesResultSchema = z
     disabledTools: z.array(z.enum(TOOL_NAMES)).max(TOOL_NAMES.length),
     /** `active` なら `show_code` は人間の列に開く。`showme.stage.editorGroup` の enum と同じ。 */
     editorGroup: z.enum(["dedicated", "active"]),
+    /**
+     * `showme.stage.avoidToolColumns` を写す（D90）。`true` なら、ターミナルや他の拡張のパネルを
+     * 表示している列には開かず、開ける列が無ければ `no-stage-column` で断る。**必須** ――
+     * 欄が消えると、エージェントはその断りを設定と結びつけられない。
+     */
+    avoidToolColumns: z.boolean(),
     /**
      * `show_html` のパネルの上限（増分6.2 D80）。`showme.html.maxPanels` を写す
      * （線上は整数 1〜999 か `"unlimited"`。`panelLimitSchema`。設定の `0` は拡張の
@@ -912,6 +952,25 @@ export const ARRANGE_WITHHELD_REASONS = [
    * `showme.layout.closeHumanTabs` が true なら通る（人間の面に触ってよいと言われている）。
    */
   "human-column-target",
+  /**
+   * `gather-own` の集め先の列が作れない（D90）。`showme.stage.avoidToolColumns` がオンで、人間の
+   * 列の右がターミナルや他の拡張のパネルの列で埋まり、`ViewColumn.Nine` の外にしか置けないとき。
+   * 人間の列にも避ける列にも集めない。
+   */
+  "no-stage-column",
+  /**
+   * レイアウトのプリセットで**道具の列**（表示中のタブがターミナル・他の拡張のパネル・型の
+   * 分からない入力の列）が別の列に合流するので、呼ばなかった（D90）。`human-column-would-merge`
+   * と同じ形で、`showme.stage.avoidToolColumns` がオンのときだけ出る。人間の列も合流するときは
+   * そちらだけが出る（設定では外れないので）。
+   */
+  "tool-column-would-merge",
+  /**
+   * `move-tab` / `move-panel` の移動先が**道具の列**なので、動かさなかった（D90）。動かしたタブが
+   * ターミナルや他の拡張のパネルに被さる。`showme.stage.avoidToolColumns` がオンのときだけ出る
+   * （`closeHumanTabs` では外れない）。道具の列から出す移動は断らない。
+   */
+  "tool-column-target",
 ] as const;
 export type ArrangeWithheldReason = (typeof ARRANGE_WITHHELD_REASONS)[number];
 

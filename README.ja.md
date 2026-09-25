@@ -66,9 +66,17 @@ Claude Code の許可ルールに `arrange_editors` を入れていないのは�
 
 ## 画面に出るもの
 
+- **エージェントのタブ** — エージェントが見せるファイルは、エージェント専用のタブに開く。ファイルの
+  読み取り専用の映しで、あなたの未保存の変更も映る。タブの名前に色が付き、**SM** のバッジが付く
+  （読み取り専用のタブは代わりに鍵のアイコン）ので、自分のタブと見分けられる。「定義へ移動」と
+  「すべての参照を検索」もここで効く。あなたが動かしてもエージェントのタブのままなので、
+  エージェントが自分で片づけられる。同じファイルをあなたが自分で開いたタブは、あなたのもののまま
+- **本物のファイルを開く** — タブのタイトルバーの **ShowMe: 本物のファイルを開く** ボタンで、
+  同じファイルの同じ行を今いる列（エージェントのタブの隣）に開く。そのタブはあなたのもので、エージェントの `close-own` では閉じない
 - **ハイライト** — エージェントが「今ここ」と指している行。次の `show_code` で置き換わる
-- **注釈** — 行の下の吹き出し。エージェントの読む順に番号（`1/7 ·`）が付く。吹き出しの `‹ ›`
-  か、**次の注釈へ / 前の注釈へ** で順にたどれる。**解決済みにする** で「読んだ」を返せる
+- **注釈** — エージェントのタブの行の下の吹き出し。エージェントの読む順に番号（`1/7 ·`）が付く。吹き出しの `‹ ›`
+  か、**次の注釈へ / 前の注釈へ** で順にたどれる。開くのはエージェントのタブで、あなたの列に開くこともあり、
+  あなたが目を離せばエージェントが片づけることがある。**解決済みにする** で「読んだ」を返せる
 - **HTML パネル** — 表や図。スクリプトは動かない
 - **メモ** — untitled のエディタ。保存するかどうかはあなたが決める
 - **片づけ** — **ShowMe: ハイライトを消す** と **ShowMe: 注釈を消す**
@@ -79,8 +87,8 @@ Claude Code の許可ルールに `arrange_editors` を入れていないのは�
 |---|---|
 | `list_workspaces` | 繋がっている VS Code の窓をエージェントに教える |
 | `get_editor_state` | あなたが見ているところ（ファイル・カーソル・選択・見えている行・開いているタブ） |
-| `show_code` | ファイルを開き、その場所までスクロールしてハイライトする |
-| `annotate` | 行の下に番号付きの吹き出しを付ける |
+| `show_code` | ファイルを開き、その場所までスクロールしてハイライトする。`realFile: true` で本物のファイルを開き、あなたが編集できるようにする |
+| `annotate` | 行の下に番号付きの吹き出しを付ける（`realFile: true` で本物のファイルに付ける。`show_code realFile: true` の後に使う） |
 | `show_html` | 表や図をパネルに出す（スクリプトは動かない） |
 | `show_note` | untitled のメモを開く |
 | `find_definition` | シンボルの定義場所（「定義へ移動」と同じ答え） |
@@ -97,6 +105,9 @@ Claude Code の許可ルールに `arrange_editors` を入れていないのは�
 | 設定 | 既定 | 意味 |
 |---|---|---|
 | `showme.stage.enabled` | `true` | ファイルを開く・スクロール・分割をエージェントに許す。切ると `show_code` は印だけ |
+| `showme.stage.agentTabs` | `true` | エージェントの編集器を専用のタブ（ファイルの映し）で開く。切ると今までどおり普通のファイルのタブ |
+| `showme.stage.editable` | `false` | エージェントのタブでの編集・保存を許す。保存は本物のファイルに書く。書けないファイル（ディスクで読み取り専用・ハードリンク）は読み取り専用で開く |
+| `showme.stage.definitionTarget` | `"file"` | エージェントのタブでの「定義へ移動」「参照を検索」の行き先：本物のファイルか、エージェントのタブか |
 | `showme.html.enabled` | `true` | `show_html` を許す |
 | `showme.layout.enabled` | `true` | `arrange_editors` と `show_view` を許す |
 | `showme.layout.closeHumanTabs` | `false` | あなたが開いたタブも `arrange_editors` が閉じたり動かしたりしてよい |
@@ -105,6 +116,7 @@ Claude Code の許可ルールに `arrange_editors` を入れていないのは�
 | `showme.maxSelectionChars` | `4000` | `get_editor_state` が返す選択テキストの上限 |
 | `showme.injectTerminalEnv` | `true` | 統合ターミナルに `SHOWME_SOCK` を入れる |
 | `showme.listAllWorkspaces` | `false` | 他の窓のフォルダのパスもエージェントに見せる |
+| `showme.stage.avoidToolColumns` | `false` | エージェントの編集器・メモ・パネルを、ターミナル・他の拡張のパネル・Settings のようなファイルでないタブを表示している列には開かせない。別の列を使い、使える列が無ければ断る。`arrange_editors` もそうした列を巻き込むプリセットや、そこへの移動を断る。`showme.stage.editorGroup` が `"active"` のときは開く動作にしか効かない ―― `arrange_editors` の断りは変わらず効く |
 
 全部まとめて止めるには **ShowMe: 拡張を停止する／再開する**。ツール呼び出しはすべて
 **ShowMe: 操作ログを表示** に記録される（選択テキストは記録しない）。
@@ -132,9 +144,21 @@ Claude Code の許可ルールに `arrange_editors` を入れていないのは�
 
 ## 撤去
 
-**ShowMe: 撤去手順と設定の削除方法を表示** を実行する。要するに、エージェントから `showme` の登録を
-消し（`claude mcp remove showme`、または Codex / Copilot の設定ファイルから削除）、拡張を
-アンインストールする。既に開いていたターミナルには、開き直すまで `SHOWME_SOCK` が残る。
+エージェント側の登録を先に消し、拡張は最後に消す。詳しい手順は
+**ShowMe: 撤去手順と設定の削除方法を表示** で開けるが、このコマンドは拡張の中にあるので、
+拡張を消すと一緒に消える。
+
+1. エージェントから ShowMe の登録を消す:
+   - Claude Code: `claude mcp remove showme`。`.claude/settings.json` の `permissions.allow` に
+     足した `mcp__showme__*` の行も消す
+   - Codex CLI: `~/.codex/config.toml` の `[mcp_servers.showme]` の節を消す
+   - Copilot CLI: `~/.copilot/mcp-config.json` の `"showme"` の項目を消す
+2. 拡張をアンインストールする: `code --uninstall-extension zvxbase.vscode-showme`。ソケットと
+   登録ファイルは拡張が自分で消す。ユーザー設定に書いた `showme.*` は、消すまで残る
+3. 既に開いていたターミナルは開き直す（または `unset SHOWME_SOCK`）
+
+拡張だけ消してエージェント側の登録が残っても、エージェントが ShowMe の起動に失敗して
+`ShowMe is not installed in …` と出るだけで、ほかには何も起きない。エラーを止めるには登録を消す。
 
 ## 安全性の要点
 

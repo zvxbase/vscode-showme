@@ -11,13 +11,13 @@ import {
 import {
   type ArrangePermissions,
   TARGET_GROUPS,
-  firstStageColumn,
-  layoutWouldMergeHumanColumn,
+  layoutVerdict,
   mayClose,
   mayTouch,
   moveTargetVerdict,
 } from "../arrange-policy.js";
 import type { ShowMeConfig } from "../config.js";
+import { placeStageColumn } from "../stage-column.js";
 import { ToolError } from "../tool-error.js";
 import type { WorkspacePathVerdict } from "../workspace-path-gate.js";
 
@@ -46,6 +46,16 @@ import type { WorkspacePathVerdict } from "../workspace-path-gate.js";
 export interface FreshColumns {
   columns: readonly number[];
   humanColumn: number | undefined;
+  /**
+   * いま存在する列の数（`tabGroups.all.length`）。`Stage.targetColumn` が丸めに使うのと同じ量で、
+   * `gather-own` の集め先を `show_code` と同じ答えにするために渡す。
+   */
+  groupCount: number;
+  /**
+   * 道具の列（表示中のタブがターミナル・他の拡張のパネル・型の分からない入力の列。D90）。
+   * 面は設定に依らず観測して渡し、使うかどうかはハンドラが `showme.stage.avoidToolColumns` で決める。
+   */
+  toolColumns: ReadonlySet<number>;
 }
 
 /**
@@ -55,7 +65,14 @@ export interface FreshColumns {
 export type MoveTargetDecider = (fresh: FreshColumns) => MoveTargetDecision;
 export type MoveTargetDecision =
   | { ok: true; column: number }
-  | { ok: false; reason: "invalid-request" | "human-column-target" };
+  | { ok: false; reason: MoveHaltReason };
+
+/** 移動を止めた理由。`invalid-request` 以外は `withheld` の語彙（`ArrangeWithheldReason`）でもある。 */
+export type MoveHaltReason =
+  | "invalid-request"
+  | "human-column-target"
+  | "tool-column-target"
+  | "no-stage-column";
 
 /** `moveTabs` の結果。`moved` は**実際に列が変わった枚数**（既に居たものは数えない）。 */
 export interface MoveOutcome {
@@ -63,7 +80,7 @@ export interface MoveOutcome {
   /** 引けなかった札（観測後に人間が閉じた）と、開けなかった／閉じられなかった枚数。 */
   failed: number;
   /** `decide` が止めた理由。止めたら残りは動かしていない。 */
-  halted?: "invalid-request" | "human-column-target";
+  halted?: MoveHaltReason;
 }
 
 /**
@@ -133,6 +150,13 @@ export interface ArrangeSurface {
    * 2つの表現に畳む（増分4 設計 §8.1 の形）。
    */
   groupColumns(): number[];
+  /**
+   * 道具の列（D90。`tool-column.ts` の判定を、いまの `tabGroups` の表示中のタブに当てたもの）。
+   * **観測を返すだけ。** 避けるかどうかは設定を見るハンドラが決める。
+   */
+  toolColumns(): ReadonlySet<number>;
+  /** いま存在する列の数（`tabGroups.all.length`。`Stage` の丸めと同じ量）。観測を返すだけ。 */
+  groupCount(): number;
   /**
    * 人間が居る列（`activeTabGroup.viewColumn`）。**観測する。推測しない**（D55-2 の3）。
    * 列の位置（「最左が人間」）から推測すると、人間が舞台の列を覗いた瞬間に外れる
@@ -238,20 +262,21 @@ export async function handleArrangeEditors(
     // グループは最後の枠に合流し、合流は一方通行 ―― 呼んでから戻すことはできない。
     // 判定は `arrange-policy.ts` の純関数、枠の数は `TARGET_GROUPS`、人間の列は面の
     // **観測**（`activeTabGroup.viewColumn`）。ここで列の位置を推測しない（増分2B）。
-    if (
-      layoutWouldMergeHumanColumn(
-        TARGET_GROUPS[action],
-        deps.surface.groupColumns().length,
-        deps.surface.humanColumn(),
-      )
-    ) {
+    // 道具の列（D90）も同じ判定で見る。設定がオフなら渡さない ―― 以前の答えのまま。
+    const verdict = layoutVerdict(
+      TARGET_GROUPS[action],
+      deps.surface.groupColumns().length,
+      deps.surface.humanColumn(),
+      deps.config().avoidToolColumns ? deps.surface.toolColumns() : undefined,
+    );
+    if (!verdict.ok) {
       // **呼ばない。** `done: false` と理由を返す ―― 理由が無いと、エージェントは
-      // 「コマンドが無かった」と「人間の列を守った」を区別できず、呼び直す。
+      // 「コマンドが無かった」と「人間の列（道具の列）を守った」を区別できず、呼び直す。
       deps.log.info("arrange_editors withheld", {
         action: args.action,
-        reason: "human-column-would-merge",
+        reason: verdict.reason,
       });
-      return { done: false, closed: 0, withheld: ["human-column-would-merge"] };
+      return { done: false, closed: 0, withheld: [verdict.reason] };
     }
     const done = await deps.surface.applyLayout(action);
     deps.log.info("arrange_editors", { action: args.action, done: String(done) });
@@ -406,8 +431,8 @@ async function handleClose(
  *
  * 床1（人間が見ているものは触らない）は掛かり、床2（未保存）は掛からない ――
  * 動かしても何も失われない。移動先の判定は `moveTargetVerdict` 1つ
- * （`move-tab` も `move-panel` も）。`gather-own` の集め先は `firstStageColumn` が
- * 構成するので、人間の列にはならない。
+ * （`move-tab` も `move-panel` も）。`gather-own` の集め先は `show_code` と同じ
+ * `placeStageColumn` が構成するので、人間の列にはならない（`firstStageColumn` と同じ列）。
  *
  * ## タブは `path` で指す。題では指さない（D41）
  *
@@ -440,7 +465,10 @@ async function handleMove(
   // 既定の枠は protocol の `DEFAULT_PANEL_SLOT`（`show_html` の既定と同じ値。別に書かない）。
   const wantedSlot: PanelSlot = args.slot ?? DEFAULT_PANEL_SLOT;
 
-  const permissions: ArrangePermissions = deps.config().layout;
+  // 設定は1回だけ読む（許可と「道具の列を避けるか」を同じ写しから）。
+  const config = deps.config();
+  const permissions: ArrangePermissions = config.layout;
+  const avoidToolColumns = config.avoidToolColumns;
 
   // **移動先の決め方は1つの純関数にして、面に渡す。** 面は1枚動かすごとに新しい観測
   // （`groupColumns` / `humanColumn`）でこれを呼ぶ（レビュー I3: 元の列が空になると
@@ -448,17 +476,39 @@ async function handleMove(
   // 居るとき収束しない）。人間が途中で移動先の列を覗いたら、そこで止まる（M1）。
   const decide: MoveTargetDecider =
     action === "gather-own"
-      ? ({ columns, humanColumn }) => {
-          const first = firstStageColumn(columns, humanColumn);
+      ? ({ columns, humanColumn, toolColumns, groupCount }) => {
           // 人間の列が観測できない → どこが舞台か言えない。推測で集めない。
-          return first === undefined
-            ? { ok: false, reason: "human-column-target" }
-            : { ok: true, column: first };
+          // `placeStageColumn` は人間の列を省くと最小の列と仮定するので、先に断る。
+          if (humanColumn === undefined) return { ok: false, reason: "human-column-target" };
+          // 道具の列を避けるのは設定がオンのときだけ（D90）。オフなら観測があっても渡さない ――
+          // 以前の答えのまま。
+          const avoid = avoidToolColumns ? toolColumns : undefined;
+          // 集め先は `show_code` が開く列と**同じ関数・同じ量**で決める（`Stage.targetColumn` の
+          // `placeStageColumn`。存在する列の数も `Stage` と同じ `tabGroups.all.length`）。丸めた
+          // 後の列をそのまま使う ―― 丸める前の番号に動かすと、`show_code` と違う列に集めうる。
+          const placed = placeStageColumn(columns, "single", 0, humanColumn, groupCount, avoid);
+          // オンで Nine の外にしか置けなければ断る ―― 人間の列にも避ける列にも集めない。
+          if (placed === "none") return { ok: false, reason: "no-stage-column" };
+          // "beside" は列が1つも無いとき（人間の列が観測できた以上、起きないはず）。番号の
+          // 無い行き先へは集めない。
+          if (placed === "beside") return { ok: false, reason: "human-column-target" };
+          // 設定がオフの以前の道は丸めた先を調べない。列が飛び番（実際の VS Code には無い形）だと
+          // 丸めが人間の列に落ちうるので、集める側では人間の列を断る（床。§C2）。
+          if (placed === humanColumn) return { ok: false, reason: "human-column-target" };
+          return { ok: true, column: placed };
         }
-      : ({ columns, humanColumn }) => {
+      : ({ columns, humanColumn, toolColumns }) => {
           // `toColumn` は形の検査で必須にしてある。
           const toColumn = args.toColumn ?? Number.NaN;
-          const verdict = moveTargetVerdict(toColumn, columns.length, humanColumn, permissions);
+          // 道具の列へは入れない（D90。設定がオンのときだけ。行き先だけを見るので、道具の列から
+          // 出すのは通る）。
+          const verdict = moveTargetVerdict(
+            toColumn,
+            columns.length,
+            humanColumn,
+            permissions,
+            avoidToolColumns ? toolColumns : undefined,
+          );
           return verdict.ok ? { ok: true, column: toColumn } : verdict;
         };
 
@@ -522,7 +572,7 @@ async function handleMove(
 
   let moved = 0;
   let done = true;
-  let halted: "invalid-request" | "human-column-target" | undefined;
+  let halted: MoveHaltReason | undefined;
   if (textIds.length > 0) {
     // **1回で渡す。** 面は最初の `await` の前に札を全部引く（レビュー I1）。
     const outcome = await deps.surface.moveTabs(textIds, decide);
@@ -546,7 +596,7 @@ async function handleMove(
     done = false;
     // 途中で列の数が変わって範囲外になるのは、同じ文書のタブが2枚以上あるときだけ
     // （1枚目の移動で元の列が空く）。語彙に無い理由は `done: false` だけで言う。
-    if (halted === "human-column-target" && !withheld.includes(halted)) withheld.push(halted);
+    if (halted !== "invalid-request" && !withheld.includes(halted)) withheld.push(halted);
   }
 
   deps.log.info("arrange_editors", {
@@ -562,10 +612,15 @@ async function handleMove(
 
 /** 面の観測を1回分まとめる。**同じ瞬間**の `groupColumns` と `humanColumn`。 */
 function freshColumns(surface: ArrangeSurface): FreshColumns {
-  return { columns: surface.groupColumns(), humanColumn: surface.humanColumn() };
+  return {
+    columns: surface.groupColumns(),
+    humanColumn: surface.humanColumn(),
+    toolColumns: surface.toolColumns(),
+    groupCount: surface.groupCount(),
+  };
 }
 
-/** 動かさずに断る（移動先が人間の列、または人間の列が観測できない）。 */
+/** 動かさずに断る（移動先が人間の列・道具の列、または人間の列が観測できない）。 */
 function withheldMove(
   deps: ArrangeEditorsDeps,
   action: ArrangeMoveAction,

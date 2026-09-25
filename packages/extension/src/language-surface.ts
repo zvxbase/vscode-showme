@@ -178,7 +178,7 @@ export function createLanguageSurface(
       }, sleep);
     },
 
-    async references(anchor, includeDeclaration) {
+    async references(anchor) {
       const at = await openAt(anchor);
       if (at === undefined) return undefined;
       return probeUntilNonEmpty(async () => {
@@ -187,7 +187,6 @@ export function createLanguageSurface(
             "vscode.executeReferenceProvider",
             at.uri,
             at.position,
-            { includeDeclaration },
           );
           return toFound(raw);
         } catch {

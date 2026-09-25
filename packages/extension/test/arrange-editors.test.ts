@@ -11,6 +11,7 @@ import {
   type ArrangePermissions,
   TARGET_GROUPS,
   firstStageColumn,
+  layoutVerdict,
   layoutWouldMergeHumanColumn,
 } from "../src/arrange-policy.js";
 import type { ShowMeConfig } from "../src/config.js";
@@ -20,9 +21,11 @@ import {
   type ArrangeLayoutAction,
   type ArrangeSurface,
   type ArrangeTab,
+  type FreshColumns,
   type MoveOutcome,
   handleArrangeEditors,
 } from "../src/handlers/arrange-editors.js";
+import { placeStageColumn } from "../src/stage-column.js";
 import { ToolError } from "../src/tool-error.js";
 import type { WorkspacePathVerdict } from "../src/workspace-path-gate.js";
 
@@ -63,7 +66,7 @@ const surface = (
     moveTabs: vi.fn(async (ids, decide) => {
       const outcome: MoveOutcome = { moved: 0, failed: 0 };
       for (const id of ids) {
-        const decision = decide({ columns: s.groupColumns(), humanColumn: s.humanColumn() });
+        const decision = decide(freshOf(s));
         if (!decision.ok) {
           outcome.halted = decision.reason;
           break;
@@ -78,10 +81,22 @@ const surface = (
     // 巻き込みの検査は、この2つを明示して上書きする。
     groupColumns: () => columns(1),
     humanColumn: () => 1,
+    // 既定は道具の列なし。D90 の検査が上書きする。
+    toolColumns: () => new Set<number>(),
+    // 既定は可視の列の数（実際の VS Code では列は詰まっていて、両者は同じ）。
+    groupCount: () => s.groupColumns().length,
     ...over,
   };
   return s;
 };
+
+/** 面の観測を1回分（本物の面の `fresh()` と同じ形）。偽物の `moveTabs` が `decide` に渡す。 */
+const freshOf = (s: ArrangeSurface): FreshColumns => ({
+  columns: s.groupColumns(),
+  humanColumn: s.humanColumn(),
+  toolColumns: s.toolColumns(),
+  groupCount: s.groupCount(),
+});
 
 /** `moveTabs` に渡った札の並び（呼び出しごと）。 */
 const movedIds = (s: ArrangeSurface): string[][] =>
@@ -96,10 +111,14 @@ const tab = (over: Partial<ArrangeTab> & { id: string }): ArrangeTab => ({
   ...over,
 });
 
-const config = (layout: Partial<ArrangePermissions> = {}): (() => ShowMeConfig) => {
+const config = (
+  layout: Partial<ArrangePermissions> = {},
+  avoidToolColumns = false,
+): (() => ShowMeConfig) => {
   const full: ShowMeConfig = {
     enabled: true,
     editorGroup: "dedicated",
+    avoidToolColumns,
     html: { maxPanels: 2 },
     disabledTools: [],
     redactedPathPatterns: [],
@@ -1205,7 +1224,7 @@ describe("handleArrangeEditors: move-tab（D59）", () => {
       async (ids: readonly string[], decide) => {
         const outcome: MoveOutcome = { moved: 0, failed: 0 };
         for (const _ of ids) {
-          const d = decide({ columns: s.groupColumns(), humanColumn: s.humanColumn() });
+          const d = decide(freshOf(s));
           if (!d.ok) {
             outcome.halted = d.reason;
             break;
@@ -1578,7 +1597,7 @@ describe("handleArrangeEditors: gather-own（D55-1）", () => {
       async (ids: readonly string[], decide) => {
         const outcome: MoveOutcome = { moved: 0, failed: 0 };
         for (const _ of ids) {
-          const d = decide({ columns: s.groupColumns(), humanColumn: s.humanColumn() });
+          const d = decide(freshOf(s));
           if (!d.ok) {
             outcome.halted = d.reason;
             break;
@@ -1600,35 +1619,102 @@ describe("handleArrangeEditors: gather-own（D55-1）", () => {
     let evaluated = 0;
     for (const groupCount of [1, 2, 3, 4]) {
       for (let human = 1; human <= groupCount; human += 1) {
-        const decided: number[] = [];
-        // own を全列に1枚ずつ置く。
-        const tabs = columns(groupCount).map((c) =>
-          tab({ id: `t${c}`, path: `f${c}.ts`, column: c, own: true }),
-        );
-        const s = surface({
-          listTabs: () => tabs,
-          groupColumns: () => columns(groupCount),
-          humanColumn: () => human,
-        });
-        (s.moveTabs as ReturnType<typeof vi.fn>).mockImplementation(
-          async (ids: readonly string[], decide) => {
-            for (const _ of ids) {
-              const d = decide({ columns: s.groupColumns(), humanColumn: s.humanColumn() });
-              if (d.ok) decided.push(d.column);
+        // 道具の列（D90）は人間の列以外の全部分集合。設定のオン・オフの両方で回す。
+        const others = columns(groupCount).filter((c) => c !== human);
+        for (let mask = 0; mask < 1 << others.length; mask += 1) {
+          const tools = new Set(others.filter((_, i) => mask & (1 << i)));
+          for (const avoidToolColumns of [false, true]) {
+            const decided: number[] = [];
+            // own を全列に1枚ずつ置く。
+            const tabs = columns(groupCount).map((c) =>
+              tab({ id: `t${c}`, path: `f${c}.ts`, column: c, own: true }),
+            );
+            const s = surface({
+              listTabs: () => tabs,
+              groupColumns: () => columns(groupCount),
+              humanColumn: () => human,
+              toolColumns: () => tools,
+            });
+            (s.moveTabs as ReturnType<typeof vi.fn>).mockImplementation(
+              async (ids: readonly string[], decide) => {
+                for (const _ of ids) {
+                  const d = decide(freshOf(s));
+                  if (d.ok) decided.push(d.column);
+                }
+                return { moved: ids.length, failed: 0 };
+              },
+            );
+            await handleArrangeEditors(
+              { action: "gather-own" },
+              deps({ surface: s, config: config({}, avoidToolColumns) }),
+            );
+            // 設定がオフなら道具の列は見ない（以前の答え）。オンなら避ける。
+            const avoid = avoidToolColumns ? tools : undefined;
+            const target = firstStageColumn(columns(groupCount), human, avoid);
+            // `show_code` が同じ観測で開く列（`Stage.targetColumn` の `placeStageColumn`）と同じ。
+            const showCode = placeStageColumn(
+              columns(groupCount),
+              "single",
+              0,
+              human,
+              groupCount,
+              avoid,
+            );
+            const label = `groups=${groupCount} human=${human} tools=${[...tools]} on=${avoidToolColumns}`;
+            expect(decided.length, label).toBeGreaterThan(0);
+            for (const to of decided) {
+              expect(to, label).toBe(target);
+              expect(to, label).toBe(showCode);
+              expect(to, label).not.toBe(human);
+              if (avoidToolColumns) expect(tools.has(to), label).toBe(false);
             }
-            return { moved: ids.length, failed: 0 };
-          },
-        );
-        await handleArrangeEditors({ action: "gather-own" }, deps({ surface: s }));
-        const target = firstStageColumn(columns(groupCount), human);
-        for (const to of decided) {
-          expect(to, `groups=${groupCount} human=${human}`).toBe(target);
-          expect(to, `groups=${groupCount} human=${human}`).not.toBe(human);
+            evaluated += 1;
+          }
         }
-        evaluated += 1;
       }
     }
-    expect(evaluated).toBe(10);
+    // 人間の列ごとの部分集合の数: 1 + 2*2 + 3*4 + 4*8 = 49、オン・オフで 98。
+    expect(evaluated).toBe(98);
+  });
+
+  it("設定がオンで集め先が ViewColumn.Nine の外なら、何も動かさず no-stage-column で断る（D90）", async () => {
+    const s = scattered({
+      groupColumns: () => columns(9),
+      humanColumn: () => 1,
+      toolColumns: () => new Set([2, 3, 4, 5, 6, 7, 8, 9]),
+    });
+    const result = await handleArrangeEditors(
+      { action: "gather-own" },
+      deps({ surface: s, config: config({}, true) }),
+    );
+    expect(s.moveTabs).not.toHaveBeenCalled();
+    expect(s.movePanel).not.toHaveBeenCalled();
+    expect(result).toEqual({ done: false, closed: 0, moved: 0, withheld: ["no-stage-column"] });
+    expect(arrangeEditorsResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it("集め先は丸めた後の列（show_code が実際に開く列）で、存在する列の数は面の groupCount", async () => {
+    // 可視列は 1,2（人間は列2）、面の数えた列の数は 2。論理の集め先は列3で、丸めても 3。
+    // groupCount を 1 と観測したら丸めの上限は 2 ＝人間の列 → 集めずに断る（丸める前の 3 へ動かさない）。
+    const s = scattered({
+      groupColumns: () => columns(2),
+      humanColumn: () => 2,
+      groupCount: () => 1,
+    });
+    const result = await handleArrangeEditors({ action: "gather-own" }, deps({ surface: s }));
+    expect(s.moveTabs).not.toHaveBeenCalled();
+    expect(result.withheld).toEqual(["human-column-target"]);
+  });
+
+  it("設定がオフなら道具の列があっても以前どおり集める（D90 は既定で効かない）", async () => {
+    const s = scattered({
+      groupColumns: () => columns(3),
+      humanColumn: () => 1,
+      toolColumns: () => new Set([2, 3]),
+    });
+    const result = await handleArrangeEditors({ action: "gather-own" }, deps({ surface: s }));
+    expect(result.withheld).toBeUndefined();
+    expect(s.moveTabs).toHaveBeenCalled();
   });
 
   it("人間の列が観測できないなら何も動かさず断る", async () => {
@@ -2036,5 +2122,184 @@ describe("handleArrangeEditors: 動かす語の結果も線上のスキーマを
       deps({ surface: surface({ groupColumns: () => columns(2) }) }),
     ).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ToolError);
+  });
+});
+
+/**
+ * **設定がオンなら、プリセットも移動も道具の列を巻き込まない**（D90。`showme.stage.avoidToolColumns`）。
+ *
+ * 判定そのもの（表）は `arrange-policy.test.ts` の `layoutVerdict` / `moveTargetVerdict`。ここで見るのは
+ * ハンドラが設定のとおりに道具の列を渡し、判定のとおりに面を呼ぶ／呼ばないこと。
+ */
+describe("handleArrangeEditors: 道具の列を巻き込まない（D90）", () => {
+  it("オンで人間が列1・道具が列2の3列 → two-columns は呼ばずに tool-column-would-merge で断る", async () => {
+    const applyLayout = vi.fn(async () => true);
+    const result = await handleArrangeEditors(
+      { action: "two-columns" },
+      deps({
+        config: config({}, true),
+        surface: surface({
+          applyLayout,
+          groupColumns: () => columns(3),
+          humanColumn: () => 1,
+          toolColumns: () => new Set([2]),
+        }),
+      }),
+    );
+    expect(applyLayout).not.toHaveBeenCalled();
+    expect(result).toEqual({ done: false, closed: 0, withheld: ["tool-column-would-merge"] });
+  });
+
+  it("対照: 同じ画面で設定がオフなら two-columns は今どおり呼ばれる", async () => {
+    const applyLayout = vi.fn(async () => true);
+    const result = await handleArrangeEditors(
+      { action: "two-columns" },
+      deps({
+        surface: surface({
+          applyLayout,
+          groupColumns: () => columns(3),
+          humanColumn: () => 1,
+          toolColumns: () => new Set([2]),
+        }),
+      }),
+    );
+    expect(applyLayout).toHaveBeenCalledWith("two-columns");
+    expect(result).toEqual({ done: true, closed: 0 });
+  });
+
+  it("枠の語すべて × 列 × 人間 × 道具の列 × 設定で、判定のとおりに呼ばれる／呼ばれない", async () => {
+    // **判定を書き直さない**（不変条件14）。`layoutVerdict` に、設定がオンなら観測した道具の列を、
+    // オフなら空を渡した値と突き合わせる。
+    const layoutActions = ARRANGE_ACTIONS.filter(
+      (a) => !arrangeActionCloses(a) && !arrangeActionMoves(a),
+    ) as ArrangeLayoutAction[];
+    let evaluated = 0;
+    let toolRefusals = 0;
+    for (const action of layoutActions) {
+      for (const groupCount of [1, 2, 3, 4]) {
+        for (let human = 1; human <= groupCount; human += 1) {
+          for (let mask = 0; mask < 1 << groupCount; mask += 1) {
+            const tools = new Set(columns(groupCount).filter((c) => mask & (1 << (c - 1))));
+            for (const on of [false, true]) {
+              const applyLayout = vi.fn(async () => true);
+              const result = await handleArrangeEditors(
+                { action },
+                deps({
+                  config: config({}, on),
+                  surface: surface({
+                    applyLayout,
+                    groupColumns: () => columns(groupCount),
+                    humanColumn: () => human,
+                    toolColumns: () => tools,
+                  }),
+                }),
+              );
+              const verdict = layoutVerdict(
+                TARGET_GROUPS[action],
+                groupCount,
+                human,
+                on ? tools : new Set(),
+              );
+              const label = `${action} groups=${groupCount} human=${human} tools=[${[...tools]}] on=${on}`;
+              if (verdict.ok) {
+                expect(applyLayout, label).toHaveBeenCalledWith(action);
+                expect(result, label).toEqual({ done: true, closed: 0 });
+              } else {
+                expect(applyLayout, label).not.toHaveBeenCalled();
+                expect(result, label).toEqual({
+                  done: false,
+                  closed: 0,
+                  withheld: [verdict.reason],
+                });
+                if (verdict.reason === "tool-column-would-merge") toolRefusals += 1;
+              }
+              // オフは以前の答え（人間の列だけの判定）と同じ。
+              if (!on) {
+                expect(verdict.ok, label).toBe(
+                  !layoutWouldMergeHumanColumn(TARGET_GROUPS[action], groupCount, human),
+                );
+              }
+              evaluated += 1;
+            }
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe(5 * (1 * 2 + 2 * 4 + 3 * 8 + 4 * 16) * 2);
+    expect(toolRefusals).toBeGreaterThan(0);
+  });
+
+  /** 人間が列1、道具が列2、own のタブが列3にある画面。 */
+  const toolScreen = (over: Partial<ArrangeSurface> = {}): ArrangeSurface =>
+    surface({
+      listTabs: () => [
+        tab({ id: "h", path: "human.md", column: 1, isActive: true, viewing: true }),
+        tab({ id: "t", kind: "other", column: 2, isActive: true }),
+        tab({ id: "a", path: "src/a.ts", column: 2, own: true }),
+        tab({ id: "b", path: "src/b.ts", column: 3, own: true, isActive: true }),
+        tab({ id: "p", kind: "webview", slot: 1, column: 3, own: true }),
+      ],
+      groupColumns: () => columns(3),
+      humanColumn: () => 1,
+      toolColumns: () => new Set([2]),
+      ...over,
+    });
+
+  it("オンなら move-tab で道具の列へ入れない（tool-column-target）", async () => {
+    const s = toolScreen();
+    const result = await handleArrangeEditors(
+      { action: "move-tab", path: "src/b.ts", toColumn: 2 },
+      deps({ surface: s, config: config({}, true) }),
+    );
+    expect(s.moveTabs).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      done: false,
+      closed: 0,
+      moved: 0,
+      withheld: ["tool-column-target"],
+    });
+  });
+
+  it("対照: オフなら同じ move-tab は今どおり動く", async () => {
+    const s = toolScreen();
+    const result = await handleArrangeEditors(
+      { action: "move-tab", path: "src/b.ts", toColumn: 2 },
+      deps({ surface: s }),
+    );
+    expect(movedIds(s)).toEqual([["b"]]);
+    expect(result).toEqual({ done: true, closed: 0, moved: 1 });
+  });
+
+  it("オンでも道具の列から自分のタブを出すのは通る", async () => {
+    const s = toolScreen();
+    const result = await handleArrangeEditors(
+      { action: "move-tab", path: "src/a.ts", toColumn: 3 },
+      deps({ surface: s, config: config({}, true) }),
+    );
+    expect(movedIds(s)).toEqual([["a"]]);
+    expect(result).toEqual({ done: true, closed: 0, moved: 1 });
+  });
+
+  it("オンなら move-panel で道具の列へ入れない。オフなら動く", async () => {
+    const on = toolScreen();
+    const refused = await handleArrangeEditors(
+      { action: "move-panel", toColumn: 2 },
+      deps({ surface: on, config: config({}, true) }),
+    );
+    expect(on.movePanel).not.toHaveBeenCalled();
+    expect(refused).toEqual({ done: false, closed: 0, moved: 0, withheld: ["tool-column-target"] });
+
+    const off = toolScreen();
+    const result = await handleArrangeEditors(
+      { action: "move-panel", toColumn: 2 },
+      deps({ surface: off }),
+    );
+    expect(off.movePanel).toHaveBeenCalledWith(1, 2);
+    expect(result).toEqual({ done: true, closed: 0, moved: 1 });
+  });
+
+  it("断った理由はスキーマの語彙にある", () => {
+    expect(ARRANGE_WITHHELD_REASONS).toContain("tool-column-would-merge");
+    expect(ARRANGE_WITHHELD_REASONS).toContain("tool-column-target");
   });
 });

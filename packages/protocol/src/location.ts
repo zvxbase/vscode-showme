@@ -94,6 +94,12 @@ export const RESOLUTION_REASONS = [
   "not-found",
   "rate-limited",
   "no-selector",
+  /**
+   * 位置は解決できたが、開ける舞台の列が無かった（D90）。`showme.stage.avoidToolColumns` が
+   * オンで、人間の列の右がターミナルや他の拡張のパネルの列で埋まり、列も足せないとき。
+   * 位置（範囲）は返さない ―― 開けなかった位置を返さないのは他の理由と同じ。
+   */
+  "no-stage-column",
 ] as const;
 
 export type ResolutionReason = (typeof RESOLUTION_REASONS)[number];

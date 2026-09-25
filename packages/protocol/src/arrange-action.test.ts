@@ -267,6 +267,17 @@ describe("arrange_editors の結果（何枚断ったかは返さない）", () 
     expect(ARRANGE_WITHHELD_REASONS).toContain("human-column-target");
   });
 
+  it("no-stage-column は語彙にある（gather-own の集め先が作れない断りを無言にしない。D90）", () => {
+    expect(ARRANGE_WITHHELD_REASONS).toContain("no-stage-column");
+  });
+
+  it("tool-column-would-merge / tool-column-target は語彙にある（道具の列を巻き込む断りを無言にしない。D90）", () => {
+    // 人間の列の2語と同じ形。無いと、設定がオンで断ったとき `done: false` しか言えず、
+    // エージェントは「人間の列を守った」と「道具の列を守った」を区別できない。
+    expect(ARRANGE_WITHHELD_REASONS).toContain("tool-column-would-merge");
+    expect(ARRANGE_WITHHELD_REASONS).toContain("tool-column-target");
+  });
+
   it("human-column-would-merge は語彙にある（プリセットの断りを無言にしない。増分5 §C3 / D55-2）", () => {
     // 無いと、ハンドラは `done: false` しか言えず、エージェントは「コマンドが無かった」と
     // 「人間の列を守った」を区別できない ―― 同じ操作を呼び続ける。

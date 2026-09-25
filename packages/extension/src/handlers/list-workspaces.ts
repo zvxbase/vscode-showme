@@ -72,6 +72,9 @@ export function handleListWorkspaces(config: ShowMeConfig): Record<string, unkno
     features: config.features,
     disabledTools: disabledToolsFor(config.features),
     editorGroup: config.editorGroup,
+    // 道具の列を避けるか（D90）。`Stage.targetColumn` と `gather-own` が見るのと同じ
+    // `config.avoidToolColumns` を写すだけ（申告と実際の判断がずれない。不変条件14）。
+    avoidToolColumns: config.avoidToolColumns,
     // `show_html` のパネルの上限（増分6.2 D80）。`config.html.maxPanels` を**写すだけ**
     // （2回目の読み口を作らない）。`handleShowHtml` が `slot` を断るのと同じ値なので、
     // 申告と実際の判断がずれない（不変条件14）。

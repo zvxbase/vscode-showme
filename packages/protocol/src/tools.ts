@@ -157,6 +157,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "disabledTools is derived from features and lists the tools that are refused with disabled when called; " +
     "annotate, show_code and the reading tools are never in it. " +
     "If editorGroup is active, show_code opens in the human's column (dedicated means a column of its own). " +
+    "If avoidToolColumns is true, show_code / show_note / show_html do not open in columns showing a terminal or " +
+    "another extension's panel, and are refused with no-stage-column when no other column can be used. " +
     'panels.max is how many show_html panels the human allows (a number, or "unlimited"). ' +
     "Call this first to learn what you can do; being refused should be the last resort for finding out.",
   show_code:
@@ -165,8 +167,13 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "Regular expressions are not accepted. File contents are not returned; if you need the contents, use your own read tool. " +
     "When there are multiple matches, up to 3 candidates are returned; pick one with occurrence. " +
     'Passing layout: "split" places the locations side by side in at most 2 columns (the default "single" stacks them as tabs in one column). ' +
+    "By default the file opens as your own tab (read-only under the default settings), which you can close with arrange_editors close-own. " +
+    "Passing realFile: true opens the real file instead so the human can edit it; close-own leaves it open " +
+    "(it belongs to the human), so use it only when the human should edit the file. " +
     "If the human has turned off showme.stage.enabled, the file is not opened or scrolled: the location is resolved " +
-    "and marked, and the highlight appears when the human opens the file (list_workspaces.features.stage tells you).",
+    "and marked, and the highlight appears when the human opens the file (list_workspaces.features.stage tells you). " +
+    "If the human has turned on showme.stage.avoidToolColumns, columns showing a terminal or another extension's panel " +
+    "are skipped; when no column can be used, the location is returned without a range and with reason no-stage-column.",
   get_editor_state:
     "Returns where the human is currently looking and the screen layout: the workspace-relative path of " +
     "the active file, cursor position, selection range, the lines visible on screen, " +
@@ -198,6 +205,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "so calling again with the same arguments does not add bubbles. " +
     'mode: "add" appends to the existing annotations (each call adds more). ' +
     'mode: "clear" removes all annotations in this window (do not pass items; the result is resolutions: []). ' +
+    "Bubbles go on your own tab by default; after show_code with realFile: true, pass realFile: true here too " +
+    "so they appear on the real file the human is looking at. " +
     "Each resolved item gets an id (stable for this window) and an index (1-based reading order = the order of items; " +
     "the author name shows 3/7 · when there are 2 or more annotations). " +
     'mode: "add" continues the numbering and renumbers existing bubbles\' denominators. ' +
@@ -212,6 +221,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "How many panels exist is the human's setting showme.html.maxPanels (default 2; list_workspaces.panels.max tells you); " +
     "a slot above the limit is refused with invalid-request naming the limit. " +
     "Nothing ever goes out to the network (external images and fonts cannot be loaded). " +
+    "If the human has turned on showme.stage.avoidToolColumns and no column can be used for a new panel, " +
+    "the call is refused with no-stage-column. " +
     "Instead of html you can pass path (a workspace-relative HTML file); the extension reads and renders the file and " +
     "**re-renders it every time that file is saved**. Use path when growing a diagram: to change it, " +
     "just edit the file (no need to resend the whole text or call again, so you can grow a diagram without spending tokens). " +
@@ -220,7 +231,9 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "Opens an untitled editor and writes a note (the human decides where to save it; nothing is written to disk unprompted). " +
     "If the human has edited the note that is already open, it is **not overwritten: a new document is opened instead**, " +
     "so nothing the human added is ever lost. " +
-    "reusedDocument: false means a new document was opened.",
+    "reusedDocument: false means a new document was opened. " +
+    "If the human has turned on showme.stage.avoidToolColumns (columns showing a terminal or another extension's panel " +
+    "are skipped) and no column can be used, the call is refused with no-stage-column.",
   find_definition:
     "Returns **where the symbol at the given location is defined**. " +
     'Same answer as VS Code\'s "Go to Definition", and **unlike grep it does not confuse different things with the same name**. ' +
@@ -272,6 +285,10 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "**Moving into the column the human is in is refused by default** (withheld: [human-column-target]; allowed with closeHumanTabs). " +
     "gather-own collects your own tabs and panels into the first stage column (the lowest column to the right of the human's; if there is none, a new column to its right). " +
     "The human's column is not touched. " +
+    "With showme.stage.avoidToolColumns on, gather-own skips columns showing a terminal or another extension's panel, " +
+    "the same way show_code does, and is refused (withheld: [no-stage-column]) when no column can be used; " +
+    "presets that would merge such a column are refused (withheld: [tool-column-would-merge]) " +
+    "and moving into one is refused (withheld: [tool-column-target]). " +
     'The resulting layout is not returned: done: true means "the operation ran", not "it landed in the intended column" ' +
     "(VS Code may reuse a column where the same document is already open). **Re-read with get_editor_state after calling.** " +
     "**By default only your own things are closed**: " +

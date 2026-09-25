@@ -22,6 +22,7 @@ import {
   annotateResultSchema,
   arrangeEditorsArgsSchema,
   arrangeEditorsResultSchema,
+  errorCodeSchema,
   findDefinitionArgsSchema,
   findReferencesArgsSchema,
   getEditorStateResultSchema,
@@ -184,6 +185,7 @@ describe("応答の結果スキーマ", () => {
       features: { stage: true, html: true, layout: true },
       disabledTools: [],
       editorGroup: "dedicated",
+      avoidToolColumns: false,
       panels: { max: 2 },
       otherWindowsListed: false,
     };
@@ -209,6 +211,7 @@ describe("応答の結果スキーマ", () => {
       features: { stage: true, html: true, layout: false },
       disabledTools: ["show_view"],
       editorGroup: "dedicated",
+      avoidToolColumns: true,
       panels: { max: 2 },
     };
 
@@ -221,7 +224,23 @@ describe("応答の結果スキーマ", () => {
       expect(r.data.features).toEqual({ stage: true, html: true, layout: false });
       expect(r.data.disabledTools).toEqual(["show_view"]);
       expect(r.data.editorGroup).toBe("dedicated");
+      expect(r.data.avoidToolColumns).toBe(true);
       expect(r.data.panels).toEqual({ max: 2 });
+    });
+
+    /**
+     * `avoidToolColumns` は `showme.stage.avoidToolColumns` を写す（D90）。**必須** ―― 欄が消えると
+     * エージェントは `no-stage-column` の断りを「設定のせい」と読めない。boolean だけ。
+     */
+    it("avoidToolColumns は必須の boolean（D90）", () => {
+      const { avoidToolColumns: _a, ...noAvoid } = full;
+      expect(listWorkspacesResultSchema.safeParse(noAvoid).success).toBe(false);
+      expect(
+        listWorkspacesResultSchema.safeParse({ ...full, avoidToolColumns: "yes" }).success,
+      ).toBe(false);
+      const off = listWorkspacesResultSchema.safeParse({ ...full, avoidToolColumns: false });
+      expect(off.success).toBe(true);
+      if (off.success) expect(off.data.avoidToolColumns).toBe(false);
     });
 
     /**
@@ -488,6 +507,39 @@ describe("wire schemas — 上限とハンドシェイク", () => {
     expect(showCodeArgsSchema.safeParse({ locations: [loc, loc, loc, loc] }).success).toBe(false);
   });
 
+  it("realFile は省略できる boolean で、型違いを拒む（D87）", () => {
+    const locations = [{ path: "a.ts", text: "x" }];
+    expect(showCodeArgsSchema.safeParse({ locations, realFile: true }).success).toBe(true);
+    expect(showCodeArgsSchema.safeParse({ locations, realFile: false }).success).toBe(true);
+    expect(showCodeArgsSchema.safeParse({ locations }).success).toBe(true);
+    for (const wrong of ["true", 1, null, {}]) {
+      expect(
+        showCodeArgsSchema.safeParse({ locations, realFile: wrong }).success,
+        JSON.stringify(wrong),
+      ).toBe(false);
+    }
+    // 線の要求（`requestSchema`）の上でも同じ形で通る。
+    const r = requestSchema.safeParse({
+      id: "1",
+      tool: "show_code",
+      args: { locations, realFile: true },
+    });
+    expect(r.success).toBe(true);
+    if (r.success && r.data.tool === "show_code") expect(r.data.args.realFile).toBe(true);
+  });
+
+  it("realFile の説明は、人間のタブになり close-own で閉じられないことを言う（D87）", () => {
+    const description = showCodeArgsSchema.shape.realFile.description ?? "";
+    expect(description).toContain("real file");
+    expect(description).toContain("close-own");
+    expect(description).toContain("close-own leaves it open (it belongs to the human)");
+    expect(description).toContain(
+      "instead of your own tab (your tab is the default and is read-only under default settings)",
+    );
+    expect(description).not.toContain("you cannot close it");
+    expect(description.endsWith(".")).toBe(true);
+  });
+
   it("プロトコル版が違うハンドシェイクを拒否する", () => {
     const token = "a".repeat(64);
     expect(helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION, token }).success).toBe(
@@ -514,6 +566,18 @@ describe("結果スキーマに自由文字列の口を残さない", () => {
         resolutions: [{ ...base, reason: "const secret = process.env.TOKEN;" }],
       }).success,
     ).toBe(false);
+  });
+
+  it("no-stage-column は語彙にある（舞台の列が作れない断りを無言にしない。D90）", () => {
+    // 無いと、開けなかった位置は `not-found` しか言えず、エージェントは「文字列が無い」と
+    // 「設定で開く列が無い」を区別できない ―― 綴りを変えて呼び続ける。
+    expect(RESOLUTION_REASONS).toContain("no-stage-column");
+  });
+
+  it("エラーの語彙に no-stage-column がある（show_note / show_html の断り。D90）", () => {
+    expect(errorCodeSchema.safeParse("no-stage-column").success).toBe(true);
+    // 陰性の対照 ―― 閉じた語彙のまま（自由文字列を通さない）。
+    expect(errorCodeSchema.safeParse("no-stage-columns").success).toBe(false);
   });
 
   it("RESOLUTION_REASONS の語はすべて通る（型と線が食い違わない）", () => {
@@ -607,6 +671,28 @@ describe("annotate の引数スキーマ", () => {
 
   it("知らない mode を拒否する", () => {
     expect(annotateArgsSchema.safeParse({ items: [item], mode: "append" }).success).toBe(false);
+  });
+
+  it("realFile は省略できる boolean で、型違いを拒み、検証後の形に残る（D87）", () => {
+    expect(annotateArgsSchema.parse({ items: [item], realFile: true })).toEqual({
+      items: [item],
+      realFile: true,
+    });
+    expect(annotateArgsSchema.parse({ items: [item], mode: "add", realFile: false })).toEqual({
+      items: [item],
+      mode: "add",
+      realFile: false,
+    });
+    expect(annotateArgsSchema.parse({ items: [item] })).toEqual({ items: [item] });
+    for (const wrong of ["true", 1, null]) {
+      expect(
+        annotateArgsSchema.safeParse({ items: [item], realFile: wrong }).success,
+        JSON.stringify(wrong),
+      ).toBe(false);
+    }
+    // clear は窓の全部を消すので、どこに付けるかは意味を持たない（受けて捨てる）。
+    expect(annotateArgsSchema.parse({ mode: "clear", realFile: true })).toEqual({ mode: "clear" });
+    expect(annotateArgsObjectSchema.shape.realFile.description).toContain("real file");
   });
 
   it("items は1〜20件", () => {

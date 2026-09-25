@@ -47,6 +47,23 @@ export function run(): Promise<void> {
   mocha.addFile(path.resolve(__dirname, "./show-html-path.test.js"));
   // パネル2枚目（`slot`。D61 / C5）。**両方の回で走らせる** ―― 「制限モードでも2枚」は推定。
   mocha.addFile(path.resolve(__dirname, "./panel-slots.test.js"));
+  // 映しの FileSystemProvider（D81）。**両方の回で走らせる** ―― 登録と関門は
+  // 信頼の有無に依らないはずだが、制限モードで provider が使えるかは実測する。
+  mocha.addFile(path.resolve(__dirname, "./stage-mirror.test.js"));
+  // 舞台を映しで開く（D84 / D85）。**両方の回で走らせる** ―― 位置は `text` で渡すので
+  // 言語機能に依らない。制限モードで映しの編集器が開けるかは実測する。
+  mocha.addFile(path.resolve(__dirname, "./stage-tabs.test.js"));
+  // 道具の列を避ける（D90）。**両方の回で走らせる** ―― ターミナルや他の拡張の webview を
+  // 編集器の領域に置けるか、制限モードでも同じ列を選ぶかは実測する。
+  mocha.addFile(path.resolve(__dirname, "./stage-avoid.test.js"));
+  // エージェントのタブの定義・参照（D88）。**両方の回で走らせる** ―― 制限モードでは TS が動かないので
+  // 「代理が何も返さず例外にならない」だけを見る。
+  mocha.addFile(path.resolve(__dirname, "./stage-language.test.js"));
+  // 映しのタブの定義・参照が TS 自身の結果と重なるか（D88 の前提の実測）。**信頼の回だけ** ――
+  // 制限モードでは TS が何も返さないので、重なりを測る対象が無い。
+  if (mode === "trusted") {
+    mocha.addFile(path.resolve(__dirname, "./stage-language-measure.test.js"));
+  }
 
   return runMocha(mocha);
 }

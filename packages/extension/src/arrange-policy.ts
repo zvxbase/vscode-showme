@@ -16,10 +16,11 @@
  *
  * レイアウトのプリセットが人間の列を巻き込むかも、ここ（`layoutWouldMergeHumanColumn`）で
  * 決める（§C3 / D55-2）。面は `groupCount()` と `humanColumn()` の**数を返すだけ**。
+ * 道具の列（D90）を巻き込むかも同じ形でここ（`layoutWouldMergeToolColumn` / `layoutVerdict`）。
  */
 
 import type { ArrangeLayoutAction } from "./handlers/arrange-editors.js";
-import { stageColumnForSlot } from "./stage-column.js";
+import { NO_AVOIDED_COLUMNS, stageColumnForSlot } from "./stage-column.js";
 
 /** 触る許可。**2つは直交する**（設計 D43）。 */
 export interface ArrangePermissions {
@@ -141,7 +142,67 @@ export function layoutWouldMergeHumanColumn(
 ): boolean {
   if (!layoutReducesGroups(targetGroups, currentGroups)) return false; // 減らさない／減らない
   if (humanColumn === undefined) return true; // 観測できない → 断る（推測で通さない）
-  return humanColumn >= targetGroups; // 人間が最後の枠以降に居る
+  return columnIsCaughtInMerge(humanColumn, targetGroups); // 人間が最後の枠以降に居る
+}
+
+/**
+ * 減らすプリセットで、列 `column` が合流に巻き込まれるか: 最後の枠（`targetGroups`）に居れば
+ * 後ろの列が流れ込み、それより後ろに居ればその列そのものが流れ込む。人間の列（D55-2）と
+ * 道具の列（D90）の**両方がこれ1つ**を通す ―― 境界を2箇所で書くと片方だけ `>` になりうる。
+ */
+function columnIsCaughtInMerge(column: number, targetGroups: number): boolean {
+  return column >= targetGroups;
+}
+
+/**
+ * プリセットで道具の列（ターミナル・他の拡張のパネル・型の分からない入力の列。D90）が合流するか。
+ *
+ * `layoutWouldMergeHumanColumn` と**同じ形**: 減らさない／減らないなら無関係、減らすなら
+ * 道具の列のどれかが最後の枠以降に居れば合流する。避ける列が空（設定がオフ）なら常に false。
+ */
+export function layoutWouldMergeToolColumn(
+  targetGroups: number,
+  currentGroups: number,
+  avoid: ReadonlySet<number>,
+): boolean {
+  if (!layoutReducesGroups(targetGroups, currentGroups)) return false;
+  for (const column of avoid) {
+    if (columnIsCaughtInMerge(column, targetGroups)) return true;
+  }
+  return false;
+}
+
+/** プリセットを呼んでよいかの判定。`reason` は `withheld` の語彙（`ArrangeWithheldReason`）。 */
+export type LayoutVerdict =
+  | { ok: true }
+  | { ok: false; reason: "human-column-would-merge" | "tool-column-would-merge" };
+
+/**
+ * プリセットを呼んでよいか（§C3 / D55-2 と D90）。ハンドラはこれ1つを通す。
+ *
+ * ```
+ * 人間の列が合流する → human-column-would-merge（どの設定でも外れない）
+ * 道具の列が合流する → tool-column-would-merge（avoid は設定がオンのときだけ空でない）
+ * それ以外           → 通す
+ * ```
+ *
+ * **人間の列を先に、理由は1つだけ返す。** 人間の列の合流は設定で外れないので、道具の理由を
+ * 並べると、エージェントは「設定をオフにすれば通る」と読んで人間に頼み、また断られる。
+ * `avoid` の既定は空で、そのときは `layoutWouldMergeHumanColumn` だけの以前の答え。
+ */
+export function layoutVerdict(
+  targetGroups: number,
+  currentGroups: number,
+  humanColumn: number | undefined,
+  avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
+): LayoutVerdict {
+  if (layoutWouldMergeHumanColumn(targetGroups, currentGroups, humanColumn)) {
+    return { ok: false, reason: "human-column-would-merge" };
+  }
+  if (layoutWouldMergeToolColumn(targetGroups, currentGroups, avoid)) {
+    return { ok: false, reason: "tool-column-would-merge" };
+  }
+  return { ok: true };
 }
 
 /**
@@ -215,7 +276,7 @@ export function ownedUrisToRestore(
 /** 移動先の判定の結果。`reason` は閉じた語彙（`invalid-request` はエラー、もう1つは `withheld`）。 */
 export type MoveTargetVerdict =
   | { ok: true }
-  | { ok: false; reason: "invalid-request" | "human-column-target" };
+  | { ok: false; reason: "invalid-request" | "human-column-target" | "tool-column-target" };
 
 /**
  * `toColumn` へ動かしてよいか（設計 D59）。**`move-tab` も `move-panel` もこれ1つ。**
@@ -224,7 +285,14 @@ export type MoveTargetVerdict =
  * toColumn が 1..groupCount+1 の整数でない → invalid-request（VS Code は飛び番の枠を作る）
  * humanColumn が観測できない            → human-column-target（どの列が人間か言えないのに流し込まない）
  * toColumn === humanColumn              → closeHumanTabs が無ければ human-column-target
+ * toColumn が避ける列（D90）             → tool-column-target
  * ```
+ *
+ * 道具の列へ動かすと、動かしたタブがその列の表示中になり、ターミナルや他の拡張のパネルに被さる
+ * ―― `show_code` が避けたのと同じことを移動で起こす。だから設定がオンなら**行き先として**断る。
+ * 道具の列**から**自分のタブを出すのは通る（行き先だけを見る）。`closeHumanTabs` では外れない
+ * （人間のタブの許可であって、道具の列の許可ではない。外すのは設定をオフにすること）。
+ * `avoid` の既定は空で、そのときは以前の答え。
  *
  * 人間の列にタブを流し込むのは `single-column` が起こしたことと同じである。
  * `closeHumanTabs: true` は「人間の面に触ってよい」の宣言なので、そのときだけ通す。
@@ -239,6 +307,7 @@ export function moveTargetVerdict(
   groupCount: number,
   humanColumn: number | undefined,
   permissions: ArrangePermissions,
+  avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
 ): MoveTargetVerdict {
   if (!Number.isInteger(toColumn) || toColumn < 1 || toColumn > groupCount + 1) {
     return { ok: false, reason: "invalid-request" };
@@ -247,6 +316,7 @@ export function moveTargetVerdict(
   if (toColumn === humanColumn && !permissions.closeHumanTabs) {
     return { ok: false, reason: "human-column-target" };
   }
+  if (avoid.has(toColumn)) return { ok: false, reason: "tool-column-target" };
   return { ok: true };
 }
 
@@ -266,12 +336,17 @@ export function moveTargetVerdict(
  * ここで先に止める。可視列が無く番号が決まらない（"beside"）ときも `undefined`。
  *
  * `columns` は `tabGroups.all` の `viewColumn`（観測）。並び順を仮定しない。
+ *
+ * `avoid` は舞台に選ばない列（D90。ターミナルや他の拡張のパネルを表示している列）。
+ * `show_code` と同じ集合を `stageColumnForSlot` にそのまま渡す ―― ここで別に除くと、
+ * 避けた結果の列が2箇所で決まる。既定は空で、そのときは避ける列の無い以前の答え。
  */
 export function firstStageColumn(
   columns: readonly number[],
   humanColumn: number | undefined,
+  avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
 ): number | undefined {
   if (humanColumn === undefined) return undefined;
-  const column = stageColumnForSlot(columns, "single", 0, humanColumn);
+  const column = stageColumnForSlot(columns, "single", 0, humanColumn, avoid);
   return column === "beside" ? undefined : column;
 }

@@ -78,6 +78,33 @@ suite("指す精度（増分3B）", () => {
     }
   });
 
+  test("参照は既定で宣言を含めず、includeDeclaration: true で含める", async () => {
+    // **単体テストは面を偽物にしているので、ここでしか分からない。** VS Code の
+    // `vscode.executeReferenceProvider` は宣言をいつも含めて返し、`includeDeclaration` を
+    // 渡しても捨てる。以前は渡すだけで、既定の「宣言を含めない」が線上で破れていた
+    // （0.1.1 を Marketplace から入れた実機で、3クライアントとも宣言が混ざった）。
+    //
+    // `repeated` は sample.ts の5行目で宣言され、6〜8行目で使われる。
+    const at = { path: SAMPLE_REL, text: "repeated = 1" };
+    const usages = (await vscode.commands.executeCommand("showme.test.findReferences", {
+      location: at,
+    })) as SearchResult;
+    // 制限モードでは TS のプロバイダが動かない（増分1で測定済み）ので、確かめられるのは
+    // 信頼された窓だけ。制限モードでは閉じた語彙で none が返ることだけを見る。
+    if (!vscode.workspace.isTrusted) {
+      assert.strictEqual(usages.match, "none", JSON.stringify(usages));
+      return;
+    }
+    const lines = (r: SearchResult) => (r.locations ?? []).map((l) => l.line).sort((a, b) => a - b);
+    assert.deepStrictEqual(lines(usages), [6, 7, 8], JSON.stringify(usages));
+
+    const withDecl = (await vscode.commands.executeCommand("showme.test.findReferences", {
+      location: at,
+      includeDeclaration: true,
+    })) as SearchResult;
+    assert.deepStrictEqual(lines(withDecl), [5, 6, 7, 8], JSON.stringify(withDecl));
+  });
+
   test("ワークスペースの外は、実機でも探せない", async () => {
     // **単体テストは面をモックしているので、本物の `language-surface.ts` は
     // ここでしか検査されない。** レビューで見つかった CRITICAL がここだった ――

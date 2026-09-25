@@ -133,6 +133,7 @@ describe("package.nls（%key% が英日の両方で解決される）", () => {
     expect(Object.keys(manifest.contributes.menus).sort()).toEqual([
       "commandPalette",
       "comments/commentThread/title",
+      "editor/title",
     ]);
     expect(hiddenFromPalette).toEqual(
       new Set([
@@ -177,6 +178,34 @@ describe("package.nls（%key% が英日の両方で解決される）", () => {
       expect(resolve.test(value), `resolve @ ${value}`).toBe(want.resolve);
       expect(unresolve.test(value), `unresolve @ ${value}`).toBe(!want.resolve);
     }
+  });
+
+  /**
+   * 映しのタブの「本物のファイルを開く」（D87）。編集器のタイトルのボタンで、**映しの
+   * スキームのときだけ**出る。パレットにも出すが、同じ `when` で映しのときだけ ――
+   * 映しでない編集器で押せても何も起きない（嘘のボタンになる）。
+   */
+  it("Open the real file は映しの編集器のタイトルにだけ出て、パレットでも映しのときだけ（D87）", () => {
+    const when = "resourceScheme =~ /^showme-(ro|rw)$/";
+    const command = manifest.contributes.commands.find((c) => c.command === "showme.openRealFile");
+    expect(command?.icon).toBe("$(go-to-file)");
+    expect(nlsEn["showme.command.openRealFile"]).toBe("ShowMe: Open the real file");
+    expect(nlsJa["showme.command.openRealFile"]).toBe("ShowMe: 本物のファイルを開く");
+    expect(manifest.contributes.menus["editor/title"]).toEqual([
+      { command: "showme.openRealFile", when, group: "navigation" },
+    ]);
+    const palette = (manifest.contributes.menus.commandPalette ?? []).filter(
+      (item) => item.command === "showme.openRealFile",
+    );
+    expect(palette).toEqual([{ command: "showme.openRealFile", when }]);
+
+    // 宣言の正規表現は、映しの2つのスキームにだけ当たる（`file` や似た綴りには当たらない）。
+    const m = /^resourceScheme =~ \/(.+)\/$/.exec(when);
+    const scheme = new RegExp(m?.[1] ?? "(?!)");
+    expect(["showme-ro", "showme-rw"].map((s) => scheme.test(s))).toEqual([true, true]);
+    expect(
+      ["file", "untitled", "showme-rx", "xshowme-ro", "showme-row"].some((s) => scheme.test(s)),
+    ).toBe(false);
   });
 
   it("contributes.configuration の description は %key% で、両方の nls にある", () => {

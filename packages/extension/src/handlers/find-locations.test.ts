@@ -121,17 +121,59 @@ describe("find_references", () => {
     expect(result.locations.map((l) => l.path)).toEqual(["src/c.ts"]);
   });
 
-  it("includeDeclaration は既定 false で面に渡る", async () => {
-    const seen: boolean[] = [];
+  // **VS Code の `vscode.executeReferenceProvider` は宣言をいつも含めて返す。** 3つ目の引数
+  // （`{ includeDeclaration }`）は受け取らずに捨てられる。以前は面にこの値を渡すだけで、
+  // 既定（宣言を含めない）が線上で守られていなかった（0.1.1 の実機確認で、Claude Code /
+  // Copilot CLI とも宣言の位置が参照に混ざった）。面の偽物は実物と同じく宣言込みで返す。
+  const DECL: FoundLocation = { path: "src/b.ts", line: 3, column: 2 };
+  const USE: FoundLocation = { path: "src/c.ts", line: 7, column: 0 };
+  const withDeclaration = () =>
+    fakeLanguage({ definitions: async () => [DECL], references: async () => [DECL, USE] });
+
+  it("既定では宣言を含めない（面が宣言込みで返しても）", async () => {
+    const result = await handleFindReferences({ location: LOCATION }, deps(withDeclaration()));
+    expect(result.locations).toEqual([USE]);
+    expect(result.match).toBe("one");
+  });
+
+  it("includeDeclaration: true なら宣言も含める", async () => {
+    const result = await handleFindReferences(
+      { location: LOCATION, includeDeclaration: true },
+      deps(withDeclaration()),
+    );
+    expect(result.locations).toEqual([DECL, USE]);
+  });
+
+  it("宣言だけが当たったら not-found（使われていない）", async () => {
     const language = fakeLanguage({
-      references: async (_anchor, includeDeclaration) => {
-        seen.push(includeDeclaration);
-        return [];
-      },
+      definitions: async () => [DECL],
+      references: async () => [DECL],
     });
-    await handleFindReferences({ location: LOCATION }, deps(language));
+    const result = await handleFindReferences({ location: LOCATION }, deps(language));
+    expect(result.match).toBe("none");
+    expect(result.reason).toBe("not-found");
+  });
+
+  it("定義を引けなければ、どれが宣言か分からないので落とさない", async () => {
+    const language = fakeLanguage({
+      definitions: async () => undefined,
+      references: async () => [DECL, USE],
+    });
+    const result = await handleFindReferences({ location: LOCATION }, deps(language));
+    expect(result.locations).toEqual([DECL, USE]);
+  });
+
+  it("includeDeclaration: true なら定義を引きに行かない", async () => {
+    let asked = 0;
+    const language = fakeLanguage({
+      definitions: async () => {
+        asked++;
+        return [DECL];
+      },
+      references: async () => [DECL, USE],
+    });
     await handleFindReferences({ location: LOCATION, includeDeclaration: true }, deps(language));
-    expect(seen).toEqual([false, true]);
+    expect(asked).toBe(0);
   });
 
   it("秘匿パスを落として0件になったら not-found（no-provider ではない）", async () => {

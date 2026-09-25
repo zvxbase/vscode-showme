@@ -336,6 +336,62 @@ describe("show_note", () => {
   });
 });
 
+/**
+ * 舞台の列が無いときの断り（D90）。面（`Stage.targetColumn`）が `no-stage-column` の
+ * `ToolError` を投げ、ハンドラはそれを**畳まずに**線へ渡す（`internal` にしない）。
+ */
+describe("舞台の列が無いときは no-stage-column で断る（D90）", () => {
+  const refused = () => new ToolError("no-stage-column", "no stage column");
+
+  it("show_note: 断りがそのまま返り、書き込みを覚えない", async () => {
+    const remember = vi.fn();
+    await expect(
+      handleShowNote(
+        { text: "メモ" },
+        {
+          notes: {
+            observe: () => undefined,
+            openNew: async () => {
+              throw refused();
+            },
+            replace: async () => {
+              throw refused();
+            },
+          },
+          lastWrite: () => undefined,
+          rememberWrite: remember,
+          log,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "no-stage-column" });
+    expect(remember).not.toHaveBeenCalled();
+  });
+
+  it("show_html（html）: 断りがそのまま返る", async () => {
+    const panel = fakePanel();
+    panel.surface.showHtml = async () => {
+      throw refused();
+    };
+    await expect(
+      handleShowHtml({ kind: "html", slot: 1, html: "<p>a</p>" }, deps({ panel: panel.surface })),
+    ).rejects.toMatchObject({ code: "no-stage-column" });
+  });
+
+  it("show_html（path）: 断りがそのまま返り、見張りを据えない", async () => {
+    const panel = fakePanel();
+    panel.surface.showHtml = async () => {
+      throw refused();
+    };
+    await expect(
+      handleShowHtml(
+        { kind: "path", slot: 1, path: "docs/a.html" },
+        deps({ panel: panel.surface, readFile: () => "<p>a</p>" }),
+      ),
+    ).rejects.toMatchObject({ code: "no-stage-column" });
+    expect(panel.watches).toEqual([]);
+  });
+});
+
 describe("落とした宣言の件数がエージェントに返る（実地で気づけなかったため）", () => {
   it("show_html は落とした数を返す", async () => {
     const panel = fakePanel();

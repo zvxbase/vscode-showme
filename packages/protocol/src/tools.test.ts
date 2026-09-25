@@ -57,6 +57,19 @@ describe("tool annotations", () => {
     expect(TOOL_ANNOTATIONS.arrange_editors).toBeDefined();
   });
 
+  it("show_code の説明が realFile を言い、そのタブは閉じられないと言っている（D87）", () => {
+    // 自分で片づけられないタブを増やす選択肢であることを、エージェントが知ってから使う。
+    expect(TOOL_DESCRIPTIONS.show_code).toContain("realFile: true");
+    expect(TOOL_DESCRIPTIONS.show_code).toContain(
+      "close-own leaves it open (it belongs to the human)",
+    );
+    expect(TOOL_DESCRIPTIONS.show_code).not.toContain("you cannot close it");
+  });
+
+  it("annotate の説明が realFile を言う（show_code の realFile と対で使う。D87）", () => {
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("realFile: true");
+  });
+
   it("arrange_editors の説明が「既定では自分のものしか閉じない」と言っている", () => {
     // 書いていないと、エージェントは `closed: 0` を故障だと読んで、
     // 同じ呼び出しを繰り返すか、別の手を探しに行く。
@@ -120,6 +133,24 @@ describe("tool annotations", () => {
     // 「done: true は意図した列に入ったではない」―― 呼んだあと読み直す（D59 観測できないこと）。
     expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
       "Re-read with get_editor_state after calling",
+    );
+  });
+
+  it("列が作れないときの断り（no-stage-column）と設定を、開く道具の説明が言っている（D90）", () => {
+    // 語彙に足しただけでは、エージェントは断られたときに「文字列が無い」「壊れた」と読む。
+    for (const name of ["show_code", "show_note", "show_html"] as const) {
+      expect(TOOL_DESCRIPTIONS[name], name).toContain("no-stage-column");
+      expect(TOOL_DESCRIPTIONS[name], name).toContain("showme.stage.avoidToolColumns");
+    }
+    expect(TOOL_DESCRIPTIONS.arrange_editors).toContain("no-stage-column");
+    expect(TOOL_DESCRIPTIONS.list_workspaces).toContain("avoidToolColumns");
+  });
+
+  it("arrange_editors の説明が、設定がオンなら道具の列を巻き込むプリセットと道具の列への移動を断ると言っている（D90）", () => {
+    // **名前ではなく値を主張する**（部分一致は違う理由で通る）。
+    expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
+      "presets that would merge such a column are refused (withheld: [tool-column-would-merge]) " +
+        "and moving into one is refused (withheld: [tool-column-target])",
     );
   });
 

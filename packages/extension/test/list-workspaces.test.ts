@@ -24,6 +24,7 @@ function config(over: Partial<ShowMeConfig> = {}): ShowMeConfig {
     enabled: true,
     features: { stage: true, html: true, layout: true },
     editorGroup: "dedicated",
+    avoidToolColumns: false,
     html: { maxPanels: DEFAULT_PANEL_LIMIT },
     redactedPathPatterns: [],
     maxSelectionChars: 4000,
@@ -50,6 +51,16 @@ describe("handleListWorkspaces", () => {
       const result = handleListWorkspaces(config({ html: { maxPanels: max } }));
       expect(result.panels).toEqual({ max });
       expect(listWorkspacesResultSchema.safeParse(result).success).toBe(true);
+    });
+  }
+
+  /** `showme.stage.avoidToolColumns`（D90）もそのまま写す。 */
+  for (const avoidToolColumns of [false, true]) {
+    it(`showme.stage.avoidToolColumns = ${String(avoidToolColumns)} → avoidToolColumns = ${String(avoidToolColumns)}`, () => {
+      const result = handleListWorkspaces(config({ avoidToolColumns }));
+      const parsed = listWorkspacesResultSchema.safeParse(result);
+      expect(parsed.success, JSON.stringify(result)).toBe(true);
+      if (parsed.success) expect(parsed.data.avoidToolColumns).toBe(avoidToolColumns);
     });
   }
 

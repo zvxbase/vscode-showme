@@ -12,6 +12,7 @@ import type { LineRange } from "../line-range.js";
 import { type RateLimiter, fileRateLimitKey, sharedFileLimiter } from "../rate-limit.js";
 import { readWorkspaceFile } from "../read-workspace-file.js";
 import type { StageLayout } from "../stage-column.js";
+import { ToolError } from "../tool-error.js";
 import { fileRateLimitCanonicalizer } from "../workspace-path-gate.js";
 import { type SymbolSurface, prefetchSymbol } from "./symbol-prefetch.js";
 
@@ -293,9 +294,16 @@ export async function handleShowCode(
         } catch (e) {
           // 見せられなかったのに位置を返すと、人間に何の痕跡も残らないまま
           // エージェントだけが位置を得る（＝無音のオラクル）。返さない。
+          //
+          // 舞台の列が無い（D90。面が `no-stage-column` で断った）ときだけ理由を分ける ――
+          // それ以外の失敗は今までどおり `not-found` に畳む（例外の中身を線に載せない）。
+          const reason: ResolutionReason =
+            e instanceof ToolError && e.code === "no-stage-column"
+              ? "no-stage-column"
+              : "not-found";
           deps.log.info("show_code failed to open", { path: loc.path, error: String(e) });
           deps.statusBar.flashMiss(loc.path, selectorLabel(loc));
-          resolutions.push(unresolved("not-found", rel));
+          resolutions.push(unresolved(reason, rel));
           continue;
         }
         // 枠は**実際に開けたときだけ**進む。印だけのときは1つも進まない。

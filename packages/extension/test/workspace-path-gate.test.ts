@@ -230,3 +230,48 @@ describe("関門の外で canonicalizeWorkspacePath を import していない�
     ).toBe(false);
   });
 });
+
+/**
+ * **判定した実体を開く口（`openJudgedFile`）を映しの外で使っていない**ことの検出。
+ *
+ * `openJudgedFile` は「関門が返した realPath と、それを stat した値」を受け取る前提で、
+ * 自分では関門を当てない。映しの外から任意のパスで呼べば、関門を通らない読み書きの
+ * 口がもう1つ増える（不変条件14 の形）。使ってよいのは `stage-mirror.ts` だけ。
+ * テストは `test/` にあって `src/` の走査に入らないので、許可に数えない。
+ */
+describe("openJudgedFile を stage-mirror.ts の外で使っていない", () => {
+  const SRC_ROOT = path.resolve(__dirname, "../src");
+  const ALLOWED = new Set(["stage-mirror.ts"]);
+  /** 名前に当てる（import の形は問わない。再 export や別名 import も拾う）。 */
+  const USES_OPENER = /\bopenJudgedFile\b/;
+
+  const walk = (dir: string, into: string[]): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, into);
+        continue;
+      }
+      if (full.endsWith(".ts")) into.push(full);
+    }
+  };
+
+  it("src/ に stage-mirror.ts 以外で名前を出しているファイルが無い", () => {
+    const files: string[] = [];
+    walk(SRC_ROOT, files);
+    const offenders = files.filter(
+      (f) => !ALLOWED.has(path.basename(f)) && USES_OPENER.test(fs.readFileSync(f, "utf8")),
+    );
+    expect(offenders, offenders.join("\n")).toEqual([]);
+  });
+
+  it("検査が実際にファイルを読んでいる（空振りの緑を見分ける）", () => {
+    const files: string[] = [];
+    walk(SRC_ROOT, files);
+    const mirror = files.find((f) => path.basename(f) === "stage-mirror.ts");
+    expect(mirror, "stage-mirror.ts が走査に無い").toBeDefined();
+    // 検出器は本物の定義に当たる（名前が変わったら、ここが先に落ちる）。
+    expect(USES_OPENER.test(fs.readFileSync(mirror as string, "utf8"))).toBe(true);
+    expect(files.filter((f) => !ALLOWED.has(path.basename(f))).length).toBeGreaterThan(10);
+  });
+});

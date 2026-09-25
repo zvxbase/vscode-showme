@@ -24,7 +24,9 @@ import type { SymbolLookup, SymbolSurface } from "./handlers/symbol-prefetch.js"
 import { toHighlightRange, toRange } from "./line-range-vscode.js";
 import type { OpenedByAgent } from "./opened-by-agent.js";
 import { slotOfViewType } from "./own-view-type.js";
-import type { Stage } from "./stage.js";
+import { isAgentStageUri, relOfStageUri, stageUriFor } from "./stage-uri-vscode.js";
+import { type StageOpenTarget, type StageScheme, isStageScheme } from "./stage-uri.js";
+import type { Stage, StageColumnSettings } from "./stage.js";
 import {
   collectSymbolRanges,
   probeDocumentSymbols,
@@ -70,7 +72,15 @@ import { canonicalWorkspaceName } from "./workspace-path-gate.js";
  * 別の関数から出ると、エージェントが読んだ名前で指せないタブができる（不変条件14）。
  */
 export function observedRelPath(root: vscode.Uri | undefined, uri: vscode.Uri): string | undefined {
-  const spelled = relativizeToRoot(root, uri);
+  // **綴りを読む枝は2つ、正準化する尾は1つ**（D83）。映し（`showme-ro:` / `showme-rw:`）は
+  // `relOfStageUri`（`stageUriFor` の映し側の唯一の逆。別綴りは拒む）で rel を取り、`file:` は
+  // `relativizeToRoot` で取る。どちらも下の `canonicalWorkspaceName` を通す ―― 映しの rel を
+  // そのまま返すと、映しの側だけシンボリックリンクが実体に直らず、同じ実体が `file:` と映しで
+  // 別の名前になる（不変条件14: 観測した値も同じ関門の規則で正準化する）。
+  //
+  // **照合はこの関数の出力だけで行うこと。** 映しの URI の path から rel を剥がして直接
+  // 比べると、綴り・大文字小文字・リンクの差で `get_editor_state` の `path` と食い違う。
+  const spelled = isStageScheme(uri.scheme) ? relOfStageUri(uri) : relativizeToRoot(root, uri);
   if (spelled === undefined) return undefined;
   // **除外判定はここでしない。** 除外かどうかは下流が決める（そこには設定の
   // パターンがあり、`activePath` は除外でも返すという規則もある。設計書 §3.1）。
@@ -78,21 +88,33 @@ export function observedRelPath(root: vscode.Uri | undefined, uri: vscode.Uri): 
   return canonicalWorkspaceName(root?.fsPath, spelled);
 }
 
+/**
+ * `target` は `show_code` 1回の開き方（`stageOpenTarget` の結果: スキームと記録するか）。
+ * **呼び出しのたびに `extension.ts` が1回だけ決めて渡す**（D84 / D87）。ここ（`reveal` /
+ * `setSpotlight`）で設定や `realFile` を見直すと、呼び出しの途中で設定が変わったときに舞台は映し・
+ * 塗りは `file:` と割れ、塗りが舞台に届かない（不変条件14: 同じ量を2箇所で決めない）。
+ */
 export function createEditorSurface(
   root: vscode.Uri | undefined,
+  target: StageOpenTarget,
   stage: Stage,
   highlights: Highlights,
+  columns: StageColumnSettings,
 ): EditorSurface {
+  const { scheme, record } = target;
   const uriOf = (relPath: string): vscode.Uri => {
     // ハンドラは workspaceRoot が undefined なら先に返すので、通常ここには
     // 来ない。来たときに黙って別の場所を開かないよう、投げて止める。
     if (root === undefined) throw new Error("no workspace folder");
-    return vscode.Uri.joinPath(root, relPath);
+    // 舞台で開く URI・塗りの鍵は `stageUriFor` だけで組む（D84。不変条件14）。
+    // 印だけ（舞台を切った窓）は scheme が "file" なので、実ファイルに付く（D85）。
+    return stageUriFor(root, relPath, scheme);
   };
 
   return {
     async reveal(relPath: string, range: LineRange, placement: StagePlacement): Promise<void> {
-      const shown = await stage.open(uriOf(relPath), placement);
+      // 列の選び方の設定も `target` と同じ写し（`showCodeDeps` が1回だけ作る）。
+      const shown = await stage.open(uriOf(relPath), placement, record, columns);
       // selection は絶対に触らない（設計書 D8' / S2）。
       // 触ると show_code -> get_editor_state の合成で任意ファイルの生テキストが
       // 取れてしまう。位置合わせは revealRange だけで行う。
@@ -174,7 +196,7 @@ export function createSymbolSurface(root: vscode.Uri | undefined): SymbolSurface
 /**
  * `handleAnnotate` に渡す、vscode に触る薄い層。
  *
- * ルートは `createEditorSurface` と同じ理由で呼び出しのたびに渡し直す。
+ * ルートと舞台のスキームは `createEditorSurface` と同じ理由で呼び出しのたびに渡し直す。
  *
  * **本文には触らない。** 受け取った `string` をそのまま `Annotations` に渡す。
  * ここで整形（改行の畳み直し・記法の解釈）を足すと、それは無害化を通った後の
@@ -182,6 +204,7 @@ export function createSymbolSurface(root: vscode.Uri | undefined): SymbolSurface
  */
 export function createAnnotationSurface(
   root: vscode.Uri | undefined,
+  scheme: "file" | StageScheme,
   annotations: Annotations,
 ): AnnotationSurface {
   return {
@@ -193,7 +216,11 @@ export function createAnnotationSurface(
       // 行範囲は**そのまま**渡す。吹き出しの位置と塗りの範囲を同じ1つの `LineRange` から
       // 作るのは注釈ストアの仕事で、ここで vscode の Range に直すと塗りの種類
       // （行全体か文字か）をもう一度決める場所ができる（不変条件14）。
-      return annotations.add(vscode.Uri.joinPath(root, relPath), range, body, color);
+      //
+      // 吹き出しは舞台と**同じ URI**に付ける（D84）。`scheme` は `createEditorSurface` と
+      // 同じく呼び出し側が1回だけ決めたもの。映しが開いていなくてもスレッドは作られ、
+      // 開けばそこに出る。
+      return annotations.add(stageUriFor(root, relPath, scheme), range, body, color);
     },
     indices(): ReadonlyMap<number, number> {
       // **`list()` 1回から作る**（`get_editor_state.annotations` と同じ観測。不変条件14）。
@@ -282,6 +309,21 @@ export function isOwnTab(
   // （不変条件14）。`countTextTabs` を同じ観測の中で1回だけ作って渡すこと。
   // 差分・ノートブック・カスタム編集器は `show_code` が開かないので、own になれない。
   if (tab.input instanceof vscode.TabInputText) {
+    // **映しのタブはスキームで own**（D82。D53 を置き換える）。映しを開くのは `show_code`
+    // だけで、スキームは人間の移動でもプリセットの合流でも残る ―― だから記録も枚数も見ない。
+    // **設定（`agentTabs`）も見ない**（設計 B2）: 途中で切り替えても、開いている映しは own のまま。
+    // 人間が同じファイルを `file:` で開いたタブは別の URI なので、下の D53 の枝に落ちて own に
+    // ならない（同じファイルの2枚の衝突は起きない）。床（見ている・未保存）は `arrange-policy.ts`
+    // が式を変えずに当てる。
+    //
+    // **own になるのは正準の綴りの映しだけ**（`isAgentStageUri`。タブの印も同じ述語を読む ―― D89）。`stageUriFor` は
+    // 別綴り（authority つき・`//`・`/./`・先頭の `/` なし）を決して作らないので、別綴りの映しの
+    // タブは作りから言って人間か別の拡張が開いたものである。own にしない ―― 片づけの方針は
+    // 「閉じない側」に倒れる。記録（D53）の枝にも落とさない（映しは記録しない）。
+    // 判定は**綴りだけ**で、実体の有無は見ない（`observedRelPath` を使わない）: ファイルが消えた
+    // 映しのタブも own のまま `close-own` で片づけられる。大文字小文字だけ違う綴りは正準の形
+    // なので own になる（`stageUriFor` のコメントの設計の注記: 別の文書として扱う）。
+    if (isStageScheme(tab.input.uri.scheme)) return isAgentStageUri(tab.input.uri);
     const key = tab.input.uri.toString();
     return opened.has(key) && (textTabCount.get(key) ?? 0) === 1;
   }

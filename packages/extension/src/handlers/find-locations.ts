@@ -33,11 +33,19 @@ export interface LanguageSurface {
   definitions(anchor: { path: string; line: number; column: number }): Promise<
     readonly FoundLocation[] | undefined
   >;
-  /** 参照を引く。同上 */
-  references(
-    anchor: { path: string; line: number; column: number },
-    includeDeclaration: boolean,
-  ): Promise<readonly FoundLocation[] | undefined>;
+  /**
+   * 参照を引く。同上。**宣言を含めて返す。**
+   *
+   * `vscode.executeReferenceProvider` は宣言をいつも含める（3つ目の引数で
+   * `includeDeclaration` を渡しても受け取らずに捨てる）。面が守れない引数を面に
+   * 持たせない ―― 持たせると、渡すだけで守られたつもりになる（実際にそうなっていた）。
+   * 宣言を除くのは `handleFindReferences` の仕事。
+   */
+  references(anchor: {
+    path: string;
+    line: number;
+    column: number;
+  }): Promise<readonly FoundLocation[] | undefined>;
   /** ワークスペースが信頼されているか */
   isTrusted(): boolean;
 }
@@ -123,14 +131,32 @@ export async function handleFindDefinition(
   return result;
 }
 
+/**
+ * 参照から宣言を除く。宣言は「その位置の定義」と同じ位置として見分ける。
+ *
+ * **定義を引けなければ落とさない。** どれが宣言か分からないまま推測で落とすと、
+ * 本物の使用箇所を消しうる。宣言が混ざる方が害が小さい（位置は正しい）。
+ */
+export function withoutDeclarations(
+  references: readonly FoundLocation[],
+  declarations: readonly FoundLocation[] | undefined,
+): readonly FoundLocation[] {
+  if (declarations === undefined) return references;
+  const key = (f: FoundLocation) => `${f.path}\u0000${f.line}\u0000${f.column}`;
+  const declared = new Set(declarations.map(key));
+  return references.filter((r) => !declared.has(key(r)));
+}
+
 export async function handleFindReferences(
   args: FindReferencesArgs,
   deps: FindLocationsDeps,
 ): Promise<LocationSearchResult> {
   const includeDeclaration = args.includeDeclaration ?? false;
-  const result = await search(args.location, deps, (anchor) =>
-    deps.language.references(anchor, includeDeclaration),
-  );
+  const result = await search(args.location, deps, async (anchor) => {
+    const found = await deps.language.references(anchor);
+    if (found === undefined || includeDeclaration) return found;
+    return withoutDeclarations(found, await deps.language.definitions(anchor));
+  });
   deps.log.info("find_references", { match: result.match });
   return result;
 }

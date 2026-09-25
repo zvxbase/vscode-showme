@@ -148,12 +148,16 @@ describe("revealForHuman は人間の規則で開く（D79 / §C5）", () => {
    * 人間が開いたタブは人間のもので、`arrange_editors close-own` の対象にならない。
    * 「呼ばない」を作法ではなく構造（依存が無い）で固定する。
    */
-  it("舞台にも own の記録にも依存しない（人間のタブは人間のもの）", () => {
-    const source = readFileSync(new URL("../src/human-reveal.ts", import.meta.url), "utf8");
-    expect(source).not.toMatch(/stage\.js|opened-by-agent\.js|editor-surface\.js/);
-    expect(source).not.toMatch(/\.opened\(/);
-    expect(source).not.toMatch(/preserveFocus:\s*true/);
-    // 位置合わせは revealRange だけ。selection は綴りにも出ない（不変条件3）。
-    expect(source).not.toMatch(/\.selection\s*=/);
-  });
+  // 「本物のファイルを開く」（D87、`open-real-file.ts`）も人間の命令で、同じ規則に従う。
+  it.each(["human-reveal.ts", "open-real-file.ts"])(
+    "%s は舞台にも own の記録にも依存しない（人間のタブは人間のもの）",
+    (file) => {
+      const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+      expect(source).not.toMatch(/stage\.js|opened-by-agent\.js|editor-surface\.js/);
+      expect(source).not.toMatch(/\.opened\(/);
+      expect(source).not.toMatch(/preserveFocus:\s*true/);
+      // 位置合わせは revealRange だけ。selection は綴りにも出ない（不変条件3）。
+      expect(source).not.toMatch(/\.selection\s*=/);
+    },
+  );
 });

@@ -10,14 +10,16 @@ import {
   type TouchCandidate,
   firstStageColumn,
   layoutReducesGroups,
+  layoutVerdict,
   layoutWouldMergeHumanColumn,
+  layoutWouldMergeToolColumn,
   mayClose,
   mayTouch,
   moveTargetVerdict,
   ownedUrisToRestore,
 } from "../src/arrange-policy.js";
 import type { ArrangeLayoutAction } from "../src/handlers/arrange-editors.js";
-import { stageColumnForSlot } from "../src/stage-column.js";
+import { NO_AVOIDED_COLUMNS, stageColumnForSlot } from "../src/stage-column.js";
 
 /**
  * **画面に触ってよいかの判断は、ここ1箇所にしかない**（設計 §C1 / D53' / 不変条件14）。
@@ -232,6 +234,113 @@ describe("layoutWouldMergeHumanColumn（D55-2）", () => {
 });
 
 /**
+ * **プリセットが道具の列を巻き込むか**（D90。`showme.stage.avoidToolColumns`）。
+ *
+ * 人間の列（D55-2）と**同じ形**: 減らす操作で、道具の列が最後の枠かそれより後ろに居れば
+ * 合流する（最後の枠に居れば、後ろの列のタブが道具の上に流れ込む。後ろに居れば道具そのものが
+ * 動く）。境界 `c == t` は合流する側。
+ */
+describe("layoutWouldMergeToolColumn（D90）", () => {
+  // [目標の枠数, いまのグループ数, 道具の列] → 道具の列が合流するか
+  const CASES: ReadonlyArray<readonly [number, number, readonly number[], boolean]> = [
+    [2, 3, [], false], // 道具の列なし
+    [2, 3, [1], false], // 最初の枠に居る。列3は列2に合流し、道具は無事
+    [2, 3, [2], true], // 最後の枠。列3が道具の上に流れ込む
+    [2, 3, [3], true], // 道具そのものが列2に流れ込む
+    [2, 3, [1, 3], true],
+    [3, 4, [2], false],
+    [3, 4, [3], true],
+    [2, 2, [2], false], // 減らない
+    [4, 3, [3], false], // 増える（grid）
+    [0, 5, [5], false], // 0 = 減らさない印（even-widths）
+  ];
+  let evaluated = 0;
+  for (const [t, c, tools, expected] of CASES) {
+    it(`target=${t} current=${c} tools=[${tools.join(",")}] → ${expected}`, () => {
+      evaluated += 1;
+      expect(layoutWouldMergeToolColumn(t, c, new Set(tools))).toBe(expected);
+    });
+  }
+  it("表の全行を評価した", () => {
+    expect(evaluated).toBe(CASES.length);
+    expect(CASES.length).toBe(10);
+  });
+});
+
+/**
+ * プリセットの判定を1つにまとめたもの（D55-2 + D90）。人間の列が先 ―― 人間の列の合流は
+ * どの設定でも外れないので、道具の理由を並べると、エージェントは設定を変えれば通ると読む。
+ */
+describe("layoutVerdict（D55-2 / D90）", () => {
+  const layoutActions = ARRANGE_ACTIONS.filter(
+    (x) => !arrangeActionCloses(x) && !arrangeActionMoves(x),
+  ) as ArrangeLayoutAction[];
+
+  it("避ける列が空なら、全組み合わせで人間の列だけの判定と同じ（設定オフは以前の答え）", () => {
+    let evaluated = 0;
+    for (const action of layoutActions) {
+      const t = TARGET_GROUPS[action];
+      for (const c of [1, 2, 3, 4, 5]) {
+        for (const h of [...Array.from({ length: c }, (_, i) => i + 1), undefined]) {
+          const expected = layoutWouldMergeHumanColumn(t, c, h)
+            ? { ok: false, reason: "human-column-would-merge" }
+            : { ok: true };
+          const label = `${action} c=${c} h=${String(h)}`;
+          expect(layoutVerdict(t, c, h, NO_AVOIDED_COLUMNS), label).toEqual(expected);
+          expect(layoutVerdict(t, c, h), label).toEqual(expected);
+          evaluated += 1;
+        }
+      }
+    }
+    expect(evaluated).toBe(5 * (2 + 3 + 4 + 5 + 6));
+  });
+
+  it("全組み合わせで: 人間の列が合流するなら人間の理由、そうでなく道具の列が合流するなら道具の理由", () => {
+    let evaluated = 0;
+    let toolRefusals = 0;
+    for (const action of layoutActions) {
+      const t = TARGET_GROUPS[action];
+      for (const c of [1, 2, 3, 4, 5]) {
+        for (let h = 1; h <= c; h += 1) {
+          for (let mask = 0; mask < 1 << c; mask += 1) {
+            const tools = new Set(
+              Array.from({ length: c }, (_, i) => i + 1).filter((x) => mask & (1 << (x - 1))),
+            );
+            const label = `${action} c=${c} h=${h} tools=[${[...tools].join(",")}]`;
+            const verdict = layoutVerdict(t, c, h, tools);
+            if (layoutWouldMergeHumanColumn(t, c, h)) {
+              expect(verdict, label).toEqual({ ok: false, reason: "human-column-would-merge" });
+            } else if (layoutWouldMergeToolColumn(t, c, tools)) {
+              expect(verdict, label).toEqual({ ok: false, reason: "tool-column-would-merge" });
+              toolRefusals += 1;
+            } else {
+              expect(verdict, label).toEqual({ ok: true });
+            }
+            evaluated += 1;
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe(5 * (1 * 2 + 2 * 4 + 3 * 8 + 4 * 16 + 5 * 32));
+    // 道具の枝が1度も通らないなら、この検査は何も見ていない。
+    expect(toolRefusals).toBeGreaterThan(0);
+  });
+
+  it("人間が列1・道具が列2で3列 → two-columns は道具の理由で断る。道具が列1なら通る", () => {
+    expect(layoutVerdict(2, 3, 1, new Set([2]))).toEqual({
+      ok: false,
+      reason: "tool-column-would-merge",
+    });
+    expect(layoutVerdict(2, 3, 2, new Set([1]))).toEqual({
+      ok: false,
+      reason: "human-column-would-merge",
+    });
+    expect(layoutVerdict(2, 3, 1, new Set([1]))).toEqual({ ok: true });
+    expect(layoutVerdict(0, 3, 1, new Set([1, 2, 3]))).toEqual({ ok: true }); // even-widths
+  });
+});
+
+/**
  * **プリセットが列を減らすか**。`layoutWouldMergeHumanColumn` の前半と、面が
  * 「合流が終わった」を観測する述語（`arrange-surface.ts` の `applyLayout`）が
  * **同じ1つの関数**である ―― 呼ぶ前の「減るか」と、呼んだ後の「減り終わったか」は
@@ -382,6 +491,65 @@ describe("moveTargetVerdict（D59）", () => {
     expect(CASES.length).toBe(16);
   });
 
+  it("避ける列が空なら、全組み合わせで以前の答えと同じ（設定オフは以前の答え。D90）", () => {
+    let evaluated = 0;
+    for (const groupCount of [1, 2, 3, 4]) {
+      for (const human of [...Array.from({ length: groupCount }, (_, i) => i + 1), undefined]) {
+        for (const toColumn of [0, 1, 2, 3, 4, 5, 6, 1.5]) {
+          for (const closeHumanTabs of [false, true]) {
+            const p = perms({ closeHumanTabs });
+            const label = `to=${toColumn} groups=${groupCount} human=${String(human)} cHT=${closeHumanTabs}`;
+            expect(
+              moveTargetVerdict(toColumn, groupCount, human, p, NO_AVOIDED_COLUMNS),
+              label,
+            ).toEqual(moveTargetVerdict(toColumn, groupCount, human, p));
+            evaluated += 1;
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe((2 + 3 + 4 + 5) * 8 * 2);
+  });
+
+  // [toColumn, groupCount, humanColumn, closeHumanTabs, 避ける列] → verdict（D90）
+  const AVOID_CASES: ReadonlyArray<
+    readonly [
+      number,
+      number,
+      number | undefined,
+      boolean,
+      readonly number[],
+      ReturnType<typeof moveTargetVerdict>,
+    ]
+  > = [
+    [2, 3, 1, false, [2], { ok: false, reason: "tool-column-target" }], // 道具の列へ流し込まない
+    [3, 3, 1, false, [2], { ok: true }], // 道具の列の外へは動かせる（道具の列から出すのもこれ）
+    [4, 3, 1, false, [2, 3], { ok: true }], // 右端の外の新しい列は道具の列でない
+    [1, 3, 1, false, [1], { ok: false, reason: "human-column-target" }], // 人間の列が先
+    [1, 3, 1, true, [1], { ok: false, reason: "tool-column-target" }], // closeHumanTabs でも道具は守る
+    [5, 3, 1, false, [2], { ok: false, reason: "invalid-request" }], // 範囲外は先に落ちる
+    [2, 3, undefined, false, [2], { ok: false, reason: "human-column-target" }],
+  ];
+  let avoidEvaluated = 0;
+  for (const [toColumn, groupCount, humanColumn, closeHumanTabs, tools, expected] of AVOID_CASES) {
+    it(`to=${toColumn} groups=${groupCount} human=${String(humanColumn)} cHT=${closeHumanTabs} tools=[${tools.join(",")}] → ${JSON.stringify(expected)}`, () => {
+      avoidEvaluated += 1;
+      expect(
+        moveTargetVerdict(
+          toColumn,
+          groupCount,
+          humanColumn,
+          perms({ closeHumanTabs }),
+          new Set(tools),
+        ),
+      ).toEqual(expected);
+    });
+  }
+  it("避ける列の表の全行を評価した", () => {
+    expect(avoidEvaluated).toBe(AVOID_CASES.length);
+    expect(AVOID_CASES.length).toBe(7);
+  });
+
   it("closeDirtyTabs は移動先の判定に関係しない（未保存の床は move に掛からない）", () => {
     expect(moveTargetVerdict(1, 3, 1, perms({ closeDirtyTabs: true }))).toEqual({
       ok: false,
@@ -433,6 +601,36 @@ describe("firstStageColumn（gather-own の集め先）", () => {
       }
     }
     expect(evaluated).toBe(80); // Σ over non-empty subsets of |subset| = 5 * 2^4
+  });
+
+  it("避ける列を受けても、show_code が single で開く列（stageColumnForSlot）と全組み合わせで等しい", () => {
+    // 可視列の部分集合 × 人間の列 × 避ける列（可視列の部分集合）。空集合の行が
+    // 上の検査と同じ答えになることも含む。
+    let evaluated = 0;
+    for (let mask = 1; mask < 1 << 5; mask += 1) {
+      const columns = [1, 2, 3, 4, 5].filter((c) => mask & (1 << (c - 1)));
+      for (const human of columns) {
+        for (let avoidMask = 0; avoidMask < 1 << columns.length; avoidMask += 1) {
+          const avoid = new Set(columns.filter((_, i) => avoidMask & (1 << i)));
+          const label = `columns=[${columns.join(",")}] human=${human} avoid=[${[...avoid].join(",")}]`;
+          const expected = stageColumnForSlot(columns, "single", 0, human, avoid);
+          const target = firstStageColumn(columns, human, avoid);
+          expect(target, label).toBe(expected);
+          expect(firstStageColumn([...columns].reverse(), human, avoid), label).toBe(expected);
+          expect(target, label).not.toBe(human);
+          expect(target !== undefined && avoid.has(target), label).toBe(false);
+          evaluated += 1;
+        }
+      }
+    }
+    expect(evaluated).toBe(810); // Σ_k C(5,k)·k·2^k = 5·2·3^4
+  });
+
+  it("避ける列を飛ばし、右に使える列が無ければ右端の外（避ける列の間に割り込まない）", () => {
+    expect(firstStageColumn([1, 2, 3], 1, new Set([2]))).toBe(3);
+    expect(firstStageColumn([1, 2, 3], 1, new Set([2, 3]))).toBe(4);
+    expect(firstStageColumn([1, 2, 3], 2, new Set([3]))).toBe(4);
+    expect(firstStageColumn([1, 2, 3], 1, new Set())).toBe(2);
   });
 
   it("人間の列そのものは決して返さない（全組み合わせ）", () => {

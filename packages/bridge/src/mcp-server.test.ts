@@ -20,6 +20,7 @@ const listWorkspacesResult = {
   features: { stage: true, html: true, layout: true },
   disabledTools: [],
   editorGroup: "dedicated",
+  avoidToolColumns: false,
   panels: { max: 2 },
   otherWindowsListed: false,
 };
@@ -92,6 +93,19 @@ describe("createShowMeServer", () => {
     expect(Object.keys(schema.properties.locations.items.properties)).not.toContain("pattern");
   });
 
+  it("show_code の広告面に realFile が boolean として説明つきで載る（D87）", async () => {
+    const client = await connect(noWindow);
+    const { tools } = await client.listTools();
+    const schema = tools.find((t) => t.name === "show_code")?.inputSchema as {
+      properties: Record<string, { type?: string; description?: string }>;
+      required?: string[];
+    };
+    expect(Object.keys(schema.properties).sort()).toEqual(["layout", "locations", "realFile"]);
+    expect(schema.properties.realFile?.type).toBe("boolean");
+    expect(schema.properties.realFile?.description).toContain("close-own");
+    expect(schema.required ?? []).not.toContain("realFile");
+  });
+
   /**
    * `annotateArgsSchema` は object の上の transform（D54）。SDK は `.shape` を持つ
    * ZodObject しか広告できないので、transform をそのまま登録すると
@@ -107,7 +121,7 @@ describe("createShowMeServer", () => {
       properties: Record<string, { maxItems?: number; enum?: string[] }>;
       additionalProperties: boolean;
     };
-    expect(Object.keys(schema.properties).sort()).toEqual(["items", "mode"]);
+    expect(Object.keys(schema.properties).sort()).toEqual(["items", "mode", "realFile"]);
     expect(schema.properties.items?.maxItems).toBe(20);
     expect(schema.properties.mode?.enum).toEqual(["replace", "add", "clear"]);
     expect(schema.additionalProperties).toBe(false);
@@ -311,6 +325,30 @@ describe("createShowMeServer", () => {
       arguments: { locations: [{ path: "src/a.ts", text: "hello" }], layout: "split" },
     });
     expect(seen).toEqual({ locations: [{ path: "src/a.ts", text: "hello" }], layout: "split" });
+  });
+
+  it("show_code の realFile はそのまま拡張へ渡る（D87）", async () => {
+    let seen: unknown;
+    const client = await connect(async (_tool, args) => {
+      seen = args;
+      return showCodeResult;
+    });
+    await client.callTool({
+      name: "show_code",
+      arguments: { locations: [{ path: "src/a.ts", text: "hello" }], realFile: true },
+    });
+    expect(seen).toEqual({ locations: [{ path: "src/a.ts", text: "hello" }], realFile: true });
+  });
+
+  it("annotate の realFile は広告面の形のまま拡張へ渡る（D87）", async () => {
+    let seen: unknown;
+    const client = await connect(async (_tool, args) => {
+      seen = args;
+      return { resolutions: [] };
+    });
+    const item = { location: { path: "src/a.ts", text: "hello" }, text: "note" };
+    await client.callTool({ name: "annotate", arguments: { items: [item], realFile: true } });
+    expect(seen).toEqual({ items: [item], realFile: true });
   });
 
   it("fileContents を含む結果はエージェントに渡らない（不変条件2）", async () => {

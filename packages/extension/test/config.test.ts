@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   type InspectResult,
+  definitionTargetOr,
   editorGroupOr,
   mergeRedactedPatterns,
   panelLimitOr,
@@ -215,6 +216,109 @@ describe("readConfig の既定（package.json の宣言と一致すること）"
   });
 
   /**
+   * `showme.stage.definitionTarget`（D88）。人間がエージェントのタブで Ctrl+クリック / F12 した
+   * とき、別のファイルの名前の行き先。`file`（既定。本物のファイル）/ `agentTab`（エージェントのタブ）。
+   * 選択肢ごとの説明は `enumDescriptions` で、英日の nls に置く（D58）。
+   */
+  it("showme.stage.definitionTarget は file / agentTab の enum / 既定 file / scope: machine / 説明は nls（D88）", () => {
+    const prop = manifest.contributes.configuration.properties["showme.stage.definitionTarget"] as
+      | {
+          type?: unknown;
+          enum?: unknown;
+          enumDescriptions?: unknown;
+          default?: unknown;
+          scope?: unknown;
+          description?: unknown;
+        }
+      | undefined;
+    expect(prop).toBeDefined();
+    expect(prop?.type).toBe("string");
+    expect(prop?.enum).toEqual(["file", "agentTab"]);
+    expect(prop?.default).toBe("file");
+    expect(prop?.scope).toBe("machine");
+    expect(prop?.description).toBe("%showme.config.stage.definitionTarget%");
+    expect(prop?.enumDescriptions).toEqual([
+      "%showme.config.stage.definitionTarget.file%",
+      "%showme.config.stage.definitionTarget.agentTab%",
+    ]);
+    const nls = (name: string) =>
+      JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), "utf8")) as Record<
+        string,
+        string
+      >;
+    for (const file of ["package.nls.json", "package.nls.ja.json"]) {
+      const table = nls(file);
+      for (const key of [
+        "showme.config.stage.definitionTarget",
+        "showme.config.stage.definitionTarget.file",
+        "showme.config.stage.definitionTarget.agentTab",
+      ]) {
+        expect(table[key], `${file} ${key}`).toBeTruthy();
+      }
+    }
+    expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).toContain(
+      "showme.stage.definitionTarget",
+    );
+  });
+
+  /**
+   * `showme.stage.agentTabs` / `showme.stage.editable`（D84・D86）。
+   *
+   * 舞台を映しの URI（`showme-ro:` / `showme-rw:`）で開くかどうかを決める2つの設定。
+   * どちらも安全に関わる（タブを開く・保存が本物のファイルに書く）ので
+   * `trusted()` 以外で読まない（不変条件9）。**`agentTabs` の既定は `true`**（映しが既定。
+   * `false` で従来の D53 の `file:` タブに戻る）、`editable` の既定は `false`（保存が本物の
+   * ファイルに書くので、人間が選んだときだけ）。
+   */
+  const stageTabsDefaults = {
+    "showme.stage.agentTabs": true,
+    "showme.stage.editable": false,
+  } as const;
+  for (const [key, def] of Object.entries(stageTabsDefaults)) {
+    it(`${key} は boolean / 既定 ${def} / scope: machine で宣言されている（D84・D86）`, () => {
+      const prop = manifest.contributes.configuration.properties[key];
+      expect(prop).toBeDefined();
+      expect(prop?.type).toBe("boolean");
+      expect(prop?.default).toBe(def);
+      expect(prop?.scope).toBe("machine");
+    });
+    it(`${key} は restrictedConfigurations に入っている`, () => {
+      expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).toContain(key);
+    });
+    // 既定をコード（`?? x`）と package.json の2箇所で持つので、ソースを走査して結ぶ
+    // （readConfig は vscode を要り単体で呼べない。既定を切り替えるとき片方だけ直す事故を防ぐ）。
+    it(`${key} の readConfig の既定（?? ${def}）が package.json と一致する`, () => {
+      const source = readFileSync(new URL("../src/config.ts", import.meta.url), "utf8");
+      const escaped = key.replace(/\./g, "\\.");
+      const m = source.match(new RegExp(`trusted<boolean>\\("${escaped}"\\) \\?\\? (true|false)`));
+      expect(m?.[1]).toBe(String(def));
+    });
+  }
+
+  /**
+   * `showme.stage.avoidToolColumns`（D90）。既定 `false`（設定を足しただけで舞台の列の選び方を
+   * 変えない）。どの列に開くか・断るかを決める量なので `trusted()` 以外で読まない（不変条件9）
+   * ―― 読ませている OSS の `.vscode/settings.json` が切り替えられない。
+   */
+  it("showme.stage.avoidToolColumns は boolean / 既定 false / scope: machine / restrictedConfigurations 入り（D90）", () => {
+    const key = "showme.stage.avoidToolColumns";
+    const prop = manifest.contributes.configuration.properties[key] as
+      | { type: string; default: unknown; scope: string; description?: string }
+      | undefined;
+    expect(prop).toBeDefined();
+    expect(prop?.type).toBe("boolean");
+    expect(prop?.default).toBe(false);
+    expect(prop?.scope).toBe("machine");
+    expect(prop?.description).toBe("%showme.config.stage.avoidToolColumns%");
+    expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).toContain(key);
+    const source = readFileSync(new URL("../src/config.ts", import.meta.url), "utf8");
+    const m = source.match(
+      /trusted<boolean>\("showme\.stage\.avoidToolColumns"\) \?\? (true|false)/,
+    );
+    expect(m?.[1]).toBe("false");
+  });
+
+  /**
    * `showme.html.maxPanels`（増分6.2 D80）。**整数1つ**（0〜999。`0` は無制限）、既定 2、machine。
    * `anyOf`（整数 | `"unlimited"`）は VS Code の設定画面が描けず「settings.json で編集」の
    * リンクになる。`type: "integer"` だけなら入力欄が出る。
@@ -294,6 +398,13 @@ describe("設定の値を型で守る（読む場所で型を揃える）", () =
     expect(stringArrayOr(undefined, ["x"])).toEqual(["x"]);
     // 肯定対照: 正しい配列はそのまま。
     expect(stringArrayOr(["a/**", "b/**"], [])).toEqual(["a/**", "b/**"]);
+  });
+  it("definitionTarget は file / agentTab 以外を file に倒す（D88。既定と同じ）", () => {
+    expect(definitionTargetOr("agentTab")).toBe("agentTab");
+    expect(definitionTargetOr("file")).toBe("file");
+    expect(definitionTargetOr("AgentTab")).toBe("file");
+    expect(definitionTargetOr(undefined)).toBe("file");
+    expect(definitionTargetOr(1)).toBe("file");
   });
   it("editorGroup は dedicated / active 以外を dedicated に倒す（既定は安全側）", () => {
     expect(editorGroupOr("Active")).toBe("dedicated");

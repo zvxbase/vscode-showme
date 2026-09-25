@@ -15,6 +15,7 @@ const listWorkspaces = {
   features: { stage: true, html: true, layout: true },
   disabledTools: [],
   editorGroup: "dedicated",
+  avoidToolColumns: false,
   panels: { max: 2 },
   otherWindowsListed: false,
 };
@@ -60,6 +61,9 @@ describe("parseToolResult", () => {
     // `panels` だけ欠けても落ちる（増分6.1 の拡張と増分6.2 のブリッジの組み合わせ。D80）。
     const { panels: _panels, ...noPanels } = listWorkspaces;
     expect(() => parseToolResult("list_workspaces", noPanels)).toThrow(ResultRejectedError);
+    // `avoidToolColumns` だけ欠けても落ちる（D90 より前の拡張と後のブリッジの組み合わせ）。
+    const { avoidToolColumns: _avoid, ...noAvoid } = listWorkspaces;
+    expect(() => parseToolResult("list_workspaces", noAvoid)).toThrow(ResultRejectedError);
     // 対照: 4欄が揃った同じ値は通る（上の検査と同じ入力）。
     expect(parseToolResult("list_workspaces", listWorkspaces)).toEqual(listWorkspaces);
   });

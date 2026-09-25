@@ -25,10 +25,12 @@ import {
   listWorkspaces,
   showCode,
   showOne,
+  stageUri,
   toggleCallCount,
   visibleEditorFor,
   visibleEditorSnapshot,
   waitFor,
+  withSettings,
   workspaceRoot,
 } from "./helpers.js";
 
@@ -104,7 +106,8 @@ suite("実 VS Code / 制限モード", () => {
     assert.strictEqual(currentRole(), "idle", "activate 直後の役割が idle でない");
 
     const before = visibleEditorSnapshot();
-    const uri = vscode.Uri.joinPath(workspaceRoot(), SAMPLE_REL);
+    // 舞台で開くなら出るはずの URI（既定は映し）。
+    const uri = await stageUri(SAMPLE_REL);
 
     await assert.rejects(
       () => showCode([{ path: SAMPLE_REL, text: DEEP_TEXT }]),
@@ -120,7 +123,7 @@ suite("実 VS Code / 制限モード", () => {
 
   test("制限モードでも text 指定の show_code が動き、ファイルが開く", async () => {
     await lendWindow();
-    const uri = vscode.Uri.joinPath(workspaceRoot(), SAMPLE_REL);
+    const uri = await stageUri(SAMPLE_REL);
     const resolution = await showOne({ path: SAMPLE_REL, text: DEEP_TEXT });
 
     assert.strictEqual(resolution.match, "one", "制限モードで text 解決ができなかった");
@@ -173,7 +176,7 @@ suite("実 VS Code / 制限モード", () => {
    */
   test("制限モードでも .json のシンボルは実際に解決され、その位置が開く", async () => {
     await lendWindow();
-    const uri = vscode.Uri.joinPath(workspaceRoot(), JSON_REL);
+    const uri = await stageUri(JSON_REL);
     const resolution = await showOne({ path: JSON_REL, symbol: JSON_SYMBOL });
 
     assert.strictEqual(
@@ -872,9 +875,16 @@ suite("実 VS Code / 制限モード / arrange_editors は人間のタブを閉�
     await waitFor("列が2つになる", () => vscode.window.tabGroups.all.length === 2);
   });
 
+  /**
+   * エージェントが舞台に開いたファイルの URI（いまの設定で決まる。D84: 既定は映し）。
+   * `columnOf` は `waitFor` の中で同期に呼ぶので、舞台を開くときに引いておく。
+   * 人間のファイル（sample.ts）は人間の `file:` のまま。
+   */
+  const staged = new Map<string, vscode.Uri>();
+
   /** その文書のテキストタブが載っている列（無ければ undefined）。 */
   function columnOf(rel: string): number | undefined {
-    const key = vscode.Uri.joinPath(workspaceRoot(), rel).toString();
+    const key = (staged.get(rel) ?? vscode.Uri.joinPath(workspaceRoot(), rel)).toString();
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
         if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === key) {
@@ -897,6 +907,8 @@ suite("実 VS Code / 制限モード / arrange_editors は人間のタブを閉�
     await vscode.window.showTextDocument(humanDoc, { viewColumn: 1, preview: false });
     const [oneRel, twoRel] = STAGE_RELS;
     assert.ok(oneRel && twoRel, "舞台用のフィクスチャが足りない");
+    staged.clear();
+    for (const rel of [oneRel, twoRel]) staged.set(rel, await stageUri(rel));
     const resolutions = await showCode(
       [
         { path: oneRel, text: STAGE_MARKER },
@@ -957,42 +969,59 @@ suite("実 VS Code / 制限モード / arrange_editors は人間のタブを閉�
   /**
    * **制限モードでも、未保存のタブを動かして中身が失われない**（D59。開いてから閉じる）。
    */
-  test("未保存の自分のタブは制限モードでも中身を保ったまま動く（D59）", async () => {
-    await humanInOneStageInTwoAndThree();
-    const [oneRel] = STAGE_RELS;
-    assert.ok(oneRel, "舞台用のフィクスチャが足りない");
-    const uri = vscode.Uri.joinPath(workspaceRoot(), oneRel);
-    const editor = visibleEditorFor(uri);
-    assert.ok(editor, "自分が開いたエディタが可視でない（前提）");
-    const marker = "// 未保存の変更 RESTRICTED_MOVE_MARKER\n";
-    try {
-      const applied = await editor.edit((b) => b.insert(new vscode.Position(0, 0), marker));
-      assert.ok(applied && editor.document.isDirty, "未保存にできていない（前提）");
-      const [, twoRel] = STAGE_RELS;
-      assert.ok(twoRel, "舞台用のフィクスチャが足りない");
-      const from = columnOf(oneRel);
-      assert.ok(from === 2 || from === 3, `one.ts の列が舞台でない（前提）: ${String(from)}`);
-      const to = from === 2 ? 3 : 2;
-      assert.strictEqual(columnOf(twoRel), to, "two.ts が移動先の列に居ない（前提）");
+  //
+  // 舞台のタブを人間が編集できるのは、旧来の file: の舞台（`agentTabs: false`）か、編集できる
+  // 映し（`editable: true` の `showme-rw:`）のとき（既定の `showme-ro:` は未保存にならない）。
+  // 両方の経路で回す（設定はグローバルに書く ―― 制限モードでもグローバル値は読まれる。不変条件9）。
+  for (const settings of [
+    { "stage.agentTabs": false },
+    { "stage.agentTabs": true, "stage.editable": true },
+  ]) {
+    test(`未保存の自分のタブは制限モードでも中身を保ったまま動く（D59 / ${JSON.stringify(settings)}）`, async () => {
+      await withSettings(settings, async () => {
+        await humanInOneStageInTwoAndThree();
+        const [oneRel] = STAGE_RELS;
+        assert.ok(oneRel, "舞台用のフィクスチャが足りない");
+        const uri = await stageUri(oneRel);
+        const editor = visibleEditorFor(uri);
+        assert.ok(editor, "自分が開いたエディタが可視でない（前提）");
+        const marker = "// 未保存の変更 RESTRICTED_MOVE_MARKER\n";
+        try {
+          const applied = await editor.edit((b) => b.insert(new vscode.Position(0, 0), marker));
+          assert.ok(applied && editor.document.isDirty, "未保存にできていない（前提）");
+          const [, twoRel] = STAGE_RELS;
+          assert.ok(twoRel, "舞台用のフィクスチャが足りない");
+          const from = columnOf(oneRel);
+          assert.ok(from === 2 || from === 3, `one.ts の列が舞台でない（前提）: ${String(from)}`);
+          const to = from === 2 ? 3 : 2;
+          assert.strictEqual(columnOf(twoRel), to, "two.ts が移動先の列に居ない（前提）");
 
-      const result = await arrangeEditors("move-tab", { path: oneRel, toColumn: to });
+          const result = await arrangeEditors("move-tab", { path: oneRel, toColumn: to });
 
-      assert.deepStrictEqual(result, { done: true, closed: 0, moved: 1 }, JSON.stringify(result));
-      // 元の列は1枚だけだったので空になり VS Code が閉じ、列が繰り上がる。だから
-      // 「列 `to` に居る」ではなく「two.ts と同じ列に居て、列が2つになった」で言う。
-      await waitFor(
-        "one.ts が two.ts の列に移り、空いた列が閉じる",
-        () => vscode.window.tabGroups.all.length === 2 && columnOf(oneRel) === columnOf(twoRel),
-      );
-      const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-      assert.ok(doc, "文書が閉じた（未保存が飛んだ）");
-      assert.strictEqual(doc.isDirty, true, "動かしたら未保存でなくなった");
-      assert.ok(doc.getText().includes(marker), "動かしたら編集が消えた");
-      assert.strictEqual(doc, editor.document, "文書の実体が変わった（閉じて開き直している）");
-    } finally {
-      // 未保存を残すと teardown の `closeAllEditors` が保存の確認で固まる。
-      await vscode.window.showTextDocument(uri, { preview: false });
-      await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
-    }
-  });
+          assert.deepStrictEqual(
+            result,
+            { done: true, closed: 0, moved: 1 },
+            JSON.stringify(result),
+          );
+          // 元の列は1枚だけだったので空になり VS Code が閉じ、列が繰り上がる。だから
+          // 「列 `to` に居る」ではなく「two.ts と同じ列に居て、列が2つになった」で言う。
+          await waitFor(
+            "one.ts が two.ts の列に移り、空いた列が閉じる",
+            () => vscode.window.tabGroups.all.length === 2 && columnOf(oneRel) === columnOf(twoRel),
+          );
+          const doc = vscode.workspace.textDocuments.find(
+            (d) => d.uri.toString() === uri.toString(),
+          );
+          assert.ok(doc, "文書が閉じた（未保存が飛んだ）");
+          assert.strictEqual(doc.isDirty, true, "動かしたら未保存でなくなった");
+          assert.ok(doc.getText().includes(marker), "動かしたら編集が消えた");
+          assert.strictEqual(doc, editor.document, "文書の実体が変わった（閉じて開き直している）");
+        } finally {
+          // 未保存を残すと teardown の `closeAllEditors` が保存の確認で固まる。
+          await vscode.window.showTextDocument(uri, { preview: false });
+          await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+        }
+      });
+    });
+  }
 });

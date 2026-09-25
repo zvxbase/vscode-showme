@@ -34,6 +34,7 @@ import {
   lendWindow,
   readOwnRegistration,
   setRole,
+  stageUri,
   visibleEditorFor,
   visibleEditorSnapshot,
   waitFor,
@@ -181,10 +182,6 @@ function readBothWindows(): RegistryRead {
     `登録が2件でない（${read.entries.length}件）。窓が1つしか無いなら、この節は『役割で選んだ』ことを何も確かめていない`,
   );
   return read;
-}
-
-function sampleUri(): vscode.Uri {
-  return vscode.Uri.file(path.join(workspaceRoot().fsPath, SAMPLE_REL));
 }
 
 function showSampleRequest(id: string): WireRequest {
@@ -510,6 +507,8 @@ suite("実 VS Code / 2窓（役割で窓を選ぶ）", () => {
     );
     assert.strictEqual(response.ok, true, "預けた窓で show_code が通らなかった");
 
-    await waitFor("測る側に sample.ts が開く", () => visibleEditorFor(sampleUri()) !== undefined);
+    // 舞台の URI はこの窓の設定で決まる（D84: 既定は映し）。
+    const staged = await stageUri(SAMPLE_REL);
+    await waitFor("測る側に sample.ts が開く", () => visibleEditorFor(staged) !== undefined);
   });
 });

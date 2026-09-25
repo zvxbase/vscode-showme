@@ -560,11 +560,88 @@ export async function setGlobal(key: string, value: unknown): Promise<void> {
 
 /** 設定 `showme.<key>` が**実際にその globalValue で読まれる状態**か。前提として毎回確かめる。 */
 export function assertGlobal(key: string, want: unknown): void {
-  assert.strictEqual(
+  // 配列の設定（`redactedPathPatterns`）も比べるので中身で比べる（プリミティブは strictEqual と同じ）。
+  assert.deepStrictEqual(
     vscode.workspace.getConfiguration().inspect(`showme.${key}`)?.globalValue,
     want,
     `showme.${key} の globalValue が ${String(want)} でない（前提が崩れている）`,
   );
+}
+
+/**
+ * 映しのスキーム名（D81 / D84）。src の定数を import せず文字列で書く（統合テストの
+ * rootDir は src を含まない）。綴りが変われば検査が落ちる ―― スキーム名は人間のタブや
+ * 復元に残る外向きの名前なので、黙って変わってよいものではない。
+ */
+export const STAGE_SCHEME_READONLY = "showme-ro";
+export const STAGE_SCHEME_EDITABLE = "showme-rw";
+export type StageScheme = typeof STAGE_SCHEME_READONLY | typeof STAGE_SCHEME_EDITABLE;
+
+/**
+ * `rel` を舞台で開いたときの URI（D84）。**規則はテスト側に写さない。**
+ *
+ * 統合テストは `src/` を import できない（rootDir の外）。規則（`stageUriFor` と、設定から
+ * スキームを決める `effectiveStageScheme`）をここに書き写すと、同じ量を2箇所で決めることに
+ * なる（不変条件14）。拡張のテスト専用コマンド `showme.test.stageUri` が `show_code` と
+ * 同じ関数・同じ設定の読み方で組んだ部品を返すので、それを `Uri.from` で組み直すだけにする
+ * （文字列を `Uri.parse` すると `%` / `#` を誤読しうる）。
+ *
+ * `scheme` を省くと**いまの設定**（`showme.stage.agentTabs` / `editable` / `stage.enabled`）で
+ * 決まる舞台のスキーム。明示すればそのスキーム（`showme-ro:` と `showme-rw:` を並べて
+ * 比べる検査、人間側の `file:` など）。設定を書き換える検査では、書き換えた**後**に呼ぶこと。
+ */
+export async function stageUri(rel: string, scheme?: "file" | StageScheme): Promise<vscode.Uri> {
+  const raw = await vscode.commands.executeCommand("showme.test.stageUri", { path: rel, scheme });
+  assert.ok(raw && typeof raw === "object", "stageUri が object を返さなかった");
+  const { scheme: s, authority, path } = raw as Record<string, unknown>;
+  assert.ok(
+    typeof s === "string" && typeof authority === "string" && typeof path === "string",
+    `stageUri の形が違う: ${JSON.stringify(raw)}`,
+  );
+  return vscode.Uri.from({ scheme: s, authority, path });
+}
+
+/** `rel` を舞台で開いたときの URI の文字列（`highlightedUris` / `annotatedUris` と比べる形）。 */
+export async function stageUriString(rel: string): Promise<string> {
+  return (await stageUri(rel)).toString();
+}
+
+/**
+ * 設定を書いて `body` を走らせ、`finally` で必ず戻す。戻したことも確かめる（後続の節の前提）。
+ *
+ * 書き込みも try の中に置く: 2つ目の書き込みが落ちても、1つ目は finally で戻る。
+ */
+export async function withSettings(
+  settings: Record<string, unknown>,
+  body: () => Promise<void>,
+): Promise<void> {
+  try {
+    for (const [key, value] of Object.entries(settings)) await setGlobal(key, value);
+    for (const [key, value] of Object.entries(settings)) assertGlobal(key, value);
+    await body();
+  } finally {
+    for (const key of Object.keys(settings)) await setGlobal(key, undefined);
+  }
+  for (const key of Object.keys(settings)) assertGlobal(key, undefined);
+}
+
+/**
+ * 節（suite）の間だけ旧来の D53 の経路（`showme.stage.agentTabs: false`）にする。
+ *
+ * 既定は映し（`true`。D84）である。`file:` のタブの「記録＋枚数」の所有、人間が
+ * 動かしたタブは人間のものになる、プリセットの合流の再記録、といった **D53 に固有の検査**は
+ * `false` の経路の検査として残す（その経路は設定で選べるので、壊れてはいけない）。
+ * 映しの側の同じ論点は stage-tabs.test.ts が見ている。
+ */
+export function pinLegacyFileTabs(): void {
+  suiteSetup(async () => {
+    await setGlobal("stage.agentTabs", false);
+    assertGlobal("stage.agentTabs", false);
+  });
+  suiteTeardown(async () => {
+    await setGlobal("stage.agentTabs", undefined);
+    assertGlobal("stage.agentTabs", undefined);
+  });
 }
 
 /** いま存在する編集グループの数（人間の列 ＋ 舞台の列）。 */
@@ -669,4 +746,54 @@ export async function annotationThread(id: number): Promise<vscode.CommentThread
   const raw = await vscode.commands.executeCommand("showme.test.annotationThread", { id });
   assert.ok(raw && typeof raw === "object", `id ${id} のスレッドが無い`);
   return raw as vscode.CommentThread;
+}
+
+/** `executeDefinitionProvider` / `executeReferenceProvider` の結果1件。 */
+export type LocationResult = vscode.Location | vscode.LocationLink;
+
+/**
+ * 結果1件を `スキーム:ファイル名@行:桁` に。定義の Link は選択範囲（名前の位置）の先頭で書く。
+ * 映しのタブの定義・参照（D88）の検査が、件数と重なりを文字列の一覧で比べるための形。
+ */
+export function describeLocation(t: LocationResult): string {
+  const isLink = "targetUri" in t;
+  const uri = isLink ? t.targetUri : t.uri;
+  const range = isLink ? (t.targetSelectionRange ?? t.targetRange) : t.range;
+  return `${uri.scheme}:${path.posix.basename(uri.path)}@${range.start.line}:${range.start.character}`;
+}
+
+/**
+ * 人間が F12（Ctrl+クリックと同じ「定義へ移動」）を押したとき、どこへ行くか。
+ *
+ * 1件なら飛ぶ（アクティブな編集器か選択が変わる）、2件以上なら既定（`editor.gotoLocation.multipleDefinitions`
+ * = `peek`）で覗き見が開き、編集器も選択も動かない。覗き見を読む API は無いので、「3秒動かなかった」を
+ * `stayed` と書く。終わったら覗き見と編集器を閉じる。
+ */
+export async function goToDefinitionFrom(
+  mirror: vscode.Uri,
+  pos: vscode.Position,
+): Promise<string> {
+  const editor = await vscode.window.showTextDocument(mirror, { preview: false });
+  editor.selection = new vscode.Selection(pos, pos);
+  await vscode.commands.executeCommand("editor.action.revealDefinition");
+  const moved = () => {
+    const a = vscode.window.activeTextEditor;
+    return (
+      a !== undefined &&
+      (a.document.uri.toString() !== mirror.toString() || !a.selection.active.isEqual(pos))
+    );
+  };
+  try {
+    await waitFor("F12 で動く", moved, 3_000);
+  } catch {
+    // 動かなかった（覗き見）。下で `stayed` と書く。
+  }
+  const a = vscode.window.activeTextEditor;
+  const where =
+    a !== undefined && moved()
+      ? `jump ${a.document.uri.scheme}:${path.posix.basename(a.document.uri.path)}@${a.selection.active.line}:${a.selection.active.character}`
+      : "stayed";
+  await vscode.commands.executeCommand("closeReferenceSearch");
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  return where;
 }

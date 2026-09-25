@@ -21,7 +21,7 @@ import { buildAgentConfigDocument } from "./agent-config-doc.js";
 import { annotationUiSurface } from "./annotation-ui-observation.js";
 import { Annotations, isCommentThreadLike } from "./annotations.js";
 import { ARRANGE_COMMANDS, createArrangeSurface } from "./arrange-surface.js";
-import { readConfig } from "./config.js";
+import { type ShowMeConfig, readConfig } from "./config.js";
 import { Highlights } from "./decorations.js";
 import {
   createAnnotationSurface,
@@ -52,6 +52,7 @@ import { createLanguageSurface } from "./language-surface.js";
 import { ShowMeLog } from "./log.js";
 import { createNoteSurface } from "./note-surface.js";
 import type { LastWrite } from "./note-target.js";
+import { openRealFile } from "./open-real-file.js";
 import { OpenedByAgent } from "./opened-by-agent.js";
 import { panelCallLimiter, sharedEditorStateLimiter, sharedFileLimiter } from "./rate-limit.js";
 import { readWorkspaceFile } from "./read-workspace-file.js";
@@ -61,7 +62,18 @@ import {
   ShowMeSocketServer,
   ToolError,
 } from "./server.js";
-import { Stage } from "./stage.js";
+import { registerAgentTabDecoration } from "./stage-decoration.js";
+import { registerStageLanguage } from "./stage-language.js";
+import { registerStageFileSystem } from "./stage-registration.js";
+import { stageUriFor } from "./stage-uri-vscode.js";
+import {
+  type StageOpenTarget,
+  type StageScheme,
+  isLegacyOwnershipUri,
+  isStageScheme,
+  stageOpenTarget,
+} from "./stage-uri.js";
+import { Stage, stageColumnSettingsOf } from "./stage.js";
 import { ShowMeStatusBar } from "./status-bar.js";
 import { buildTeardownDocument } from "./teardown-doc.js";
 import { checkToolGate } from "./tool-gate.js";
@@ -88,6 +100,8 @@ type AnnotateWireArgs = Extract<WireRequest, { tool: "annotate" }>["args"];
  * 片方だけ形が変わることが起きない。
  */
 function toShowCodeArgs(args: ShowCodeWireArgs): Parameters<typeof handleShowCode>[0] {
+  // `realFile`（D87）はハンドラに渡さない。開き方（スキームと記録するか）は deps を組む
+  // `showCodeDeps` が `stageOpenTarget` で1回だけ決める ―― ハンドラも決めると2箇所になる。
   return args.layout === undefined
     ? { locations: args.locations }
     : { locations: args.locations, layout: args.layout };
@@ -101,6 +115,8 @@ function toShowCodeArgs(args: ShowCodeWireArgs): Parameters<typeof handleShowCod
  */
 function toAnnotateArgs(args: AnnotateWireArgs): Parameters<typeof handleAnnotate>[0] {
   // `clear` は items を持たない（設計 D54）。線上の transform が判別可能な形にしてある。
+  // `realFile`（D87）はハンドラに渡さない。吹き出しを付けるスキームは `annotateDeps` が決める
+  // （`toShowCodeArgs` と同じ理由）。
   if (args.mode === "clear") return { mode: "clear" };
   // `color` も**未指定なら鍵ごと省く**（`exactOptionalPropertyTypes`）。
   const items = args.items.map((item) =>
@@ -180,6 +196,30 @@ async function showUntitledMarkdown(content: string): Promise<void> {
   await vscode.window.showTextDocument(doc, { preview: false });
 }
 
+/**
+ * 1回の要求の開き方（D84 / D85 / D87）: スキームと、開いた文書を記録するか。分岐そのものは
+ * `stageOpenTarget` 1つが持つ（中で `effectiveStageScheme` を呼び、`realFile` を重ねる）。
+ * `show_code` はスキームと記録の両方を、`annotate` はスキームだけを使う ―― どちらも同じ関数を
+ * 通すので、`realFile` の意味が2つの道具で割れない（不変条件14）。
+ *
+ * **設定は1回の呼び出しにつき1回だけ読む**（`showCodeDeps` / `annotateDeps` が
+ * `readConfig()` の写しを1つ取り、そこから開き方を作り、ハンドラにも同じ写しを
+ * `config: () => snapshot` で渡す）。スキームとハンドラの設定（`features.stage` の
+ * 印だけの判断など）を別々に読むと、呼び出しの途中で設定が変わったときに
+ * 「印だけなのに映しに塗る」「舞台は映し・塗りは file:」と割れる（不変条件14）。
+ *
+ * 映しのタブの定義・参照の代理（D88）も、`agentTab` の写す先をここで決める（`realFile: false`）。
+ * activate の中の登録より前から呼べるよう、activate の外に置く。
+ */
+function openTargetOf(config: ShowMeConfig, realFile: boolean): StageOpenTarget {
+  return stageOpenTarget({
+    stageFeature: config.features.stage,
+    agentTabs: config.stageTabs.agentTabs,
+    editable: config.stageTabs.editable,
+    realFile,
+  });
+}
+
 function disposeAll(disposables: readonly vscode.Disposable[]): void {
   // 確保と逆順に返す。
   for (const disposable of [...disposables].reverse()) tolerate(() => disposable.dispose());
@@ -228,11 +268,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     disposables.push(
       vscode.window.tabGroups.onDidChangeTabs((event) => {
         for (const tab of event.closed) {
-          if (tab.input instanceof vscode.TabInputText) opened.closed(tab.input.uri.toString());
+          if (!(tab.input instanceof vscode.TabInputText)) continue;
+          // **映しのタブは記録していないので、忘れる対象でもない**（D82。own はスキームで
+          // 決まる）。ここで呼ぶと、映しの鍵が記録の側の関心に入り込む（不変条件14）。
+          if (!isLegacyOwnershipUri(tab.input.uri)) continue;
+          opened.closed(tab.input.uri.toString());
         }
       }),
     );
-    const stage = new Stage(() => readConfig().editorGroup, opened);
+    const stage = new Stage(opened);
+    // 舞台の列の選び方の設定（`editorGroup` と D90 の `avoidToolColumns`）。メモとパネルは開く
+    // 直前に1回だけ読む。`show_code` は `showCodeDeps` の写しから作る（`openTargetOf` と同じ写し）。
+    const stageColumnSettings = () => stageColumnSettingsOf(readConfig());
+    // 映し（`showme-ro:` / `showme-rw:`。設計 D81）。**窓を預けていなくても登録する。**
+    // 舞台はここへ開く（D84）。秘匿の設定は毎回読む（人間が途中で変えたら次の読みから効く）。
+    //
+    // **起動の完了を前提にしない**（`activationEvents` の `onFileSystem:showme-ro/-rw`）。復元された
+    // 映しのタブに引かれて `onStartupFinished` より先に起動しうるので、登録はこの関数の最初の
+    // 同期の区間で済ませる（ここより前に await を置かない）。ここより前で読むのは設定と
+    // 役割の既定（idle）だけで、タブ・可視エディタ・ルートは呼び出しのたびに読み直す ―― 起動時の
+    // 写しは握らない。復元された映しは own がスキームで決まる（D82）ので、記録が空でも
+    // エージェントのものとして片づけられる。
+    disposables.push(...registerStageFileSystem(() => readConfig().redactedPathPatterns));
+    // エージェントのタブの印（D89）。映しの FS と同じく、窓を預けていなくても登録する
+    // （復元された映しのタブにも印を付ける）。付けるかどうかは所有と同じ述語（`isAgentStageUri`）。
+    const agentTabDecorations = registerAgentTabDecoration();
+    disposables.push(agentTabDecorations.disposable);
+    // エージェントのタブの定義・参照（D88）。同じく窓を預けていなくても登録する。同じ位置を
+    // `file:` に聞き、別のファイルの結果を `showme.stage.definitionTarget` に従って写す。
+    // ルート・秘匿・行き先は呼ばれるたびに読む（人間が途中で変えたら次の呼び出しから効く）。
+    // `agentTab` の写す先は、いまの設定で `show_code` が開くのと同じスキーム（`openTargetOf` 1つで
+    // 決める。聞いた映しのスキームを使うと、舞台のスキームを決める場所が2つになる ―― 不変条件14）。
+    // 設定は1回の問い合わせにつき1回だけ読む。
+    const stageLanguage = registerStageLanguage({
+      root: () => vscode.workspace.workspaceFolders?.[0]?.uri,
+      settings: () => {
+        const config = readConfig();
+        return {
+          redactedPatterns: config.redactedPathPatterns,
+          target: config.definitionTarget,
+          agentTabScheme: openTargetOf(config, false).scheme,
+        };
+      },
+    });
+    // 統合テストの口（`showme.test.stageLanguageRegistered`）が外して戻せるように、登録は
+    // 入れ物に持つ。捨てる場所は `disposables` の1つのまま。
+    let stageLanguageRegistration: vscode.Disposable | undefined = stageLanguage.register();
+    disposables.push(new vscode.Disposable(() => stageLanguageRegistration?.dispose()));
 
     // 図とメモ（2C）。**パネルの上限は人間の設定 `showme.html.maxPanels`**（不変条件10。既定 2。
     // 増分6.2 D80）。枠ごとに `ShowMePanel` を1つ持ち、**要るときに作る**（枚数は設定次第で、
@@ -245,13 +327,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const panelFor = (slot: PanelSlot): ShowMePanel => {
       let panel = panels.get(slot);
       if (panel === undefined) {
-        panel = new ShowMePanel(context.extensionUri, stage, slot);
+        panel = new ShowMePanel(context.extensionUri, stage, slot, stageColumnSettings);
         panels.set(slot, panel);
         disposables.push(panel);
       }
       return panel;
     };
-    const notes = createNoteSurface(stage);
+    const notes = createNoteSurface(stage, stageColumnSettings);
     // 直前にメモを書いたときの版。**呼び出しをまたいで持つのはここだけ**で、
     // 「人間が触ったか」の判断そのものは `note-target.ts` の純関数が持つ（不変条件14）。
     let lastNoteWrite: LastWrite | undefined;
@@ -364,7 +446,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      *
      * **開くのは人間の規則**（`revealForHuman`）であって `show_code` の `Stage.open` ではない。
      * 舞台の規則（列選択・own）はエージェントのため; 人間の命令は人間の列で、フォーカスも移す。
-     * 開いたタブは人間のもの（own に記録しない）。`selection` には触らない（不変条件3）。
+     * ここは何も記録しない。開いたタブの own は URI で決まる ―― 吹き出しが映しに付いていれば
+     * 開くのは映しで、スキームで own になる（D85。人間が見ている間は床1 が守り、目を離せば
+     * エージェントが片づけうる）。`file:` に付いていれば（旧来の経路・印だけ）own ではない。
+     * `selection` には触らない（不変条件3）。
      *
      * **`stage.enabled` は見ない**（§C5 / D77）。設定が縛るのはエージェントであって
      * 人間ではない ―― `showme.enabled` にも窓の役割にも縛られない（Clear と同じ）。
@@ -387,15 +472,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * list_workspaces（毎回読み直している）と show_code の見ているルートが
      * 食い違う。TabGroup と同じ理由で、位置で決まるものは再導出する。
      */
-    const showCodeDeps = (): ShowCodeDeps => {
+    const showCodeDeps = (realFile: boolean): ShowCodeDeps => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+      // 設定の写しは1つ（`openTargetOf` のコメント）。
+      const snapshot = readConfig();
+      // **開き方（スキームと記録するか）はここで1回だけ決める**（D84 / D87）。`realFile` は
+      // この要求の引数なので、設定の写しと同じ瞬間に同じ関数へ渡す。面（`reveal` /
+      // `setSpotlight`）と `Stage.open` は受け取った値を使うだけで、決め直さない（不変条件14）。
+      const target = openTargetOf(snapshot, realFile);
       return {
-        config: readConfig,
+        config: () => snapshot,
         // vscode に触る部分は薄い層に押し出してある（editor-surface.ts）。
         // ハンドラ自体が vscode を値 import していると、vitest から読み込めず
         // 単体テストが1件も書けない ―― 実際にそうなっていて、可視化と
         // レート制限を壊しても緑のままだった。
-        editor: createEditorSurface(root, stage, highlights),
+        editor: createEditorSurface(
+          root,
+          target,
+          stage,
+          highlights,
+          stageColumnSettingsOf(snapshot),
+        ),
         symbols: createSymbolSurface(root),
         log,
         statusBar,
@@ -403,17 +500,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       };
     };
 
-    const annotateDeps = (): AnnotateDeps => {
+    /**
+     * `show_code` の入口（線上とテスト専用コマンドの両方）。`realFile` を deps に渡すのはここ1つ ――
+     * 入口ごとに `showCodeDeps(...)` を書くと、片方だけ `realFile` を落としうる。
+     */
+    const runShowCode = (args: ShowCodeWireArgs): Promise<Record<string, unknown>> =>
+      handleShowCode(toShowCodeArgs(args), showCodeDeps(args.realFile === true));
+
+    const annotateDeps = (realFile: boolean): AnnotateDeps => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+      // 設定の写しは1つ（`openTargetOf` のコメント）。吹き出しは記録と無縁なのでスキームだけ使う。
+      const snapshot = readConfig();
       return {
-        config: readConfig,
-        annotations: createAnnotationSurface(root, annotations),
+        config: () => snapshot,
+        annotations: createAnnotationSurface(
+          root,
+          openTargetOf(snapshot, realFile).scheme,
+          annotations,
+        ),
         symbols: createSymbolSurface(root),
         log,
         statusBar,
         workspaceRoot: root?.fsPath,
       };
     };
+
+    /**
+     * `annotate` の入口（線上とテスト専用コマンドの両方）。`runShowCode` と同じく、`realFile` を
+     * deps に渡すのはここ1つ。`clear` は `realFile` を持たない（線上の transform が捨てる）。
+     */
+    const runAnnotate = (args: AnnotateWireArgs): Promise<Record<string, unknown>> =>
+      handleAnnotate(
+        toAnnotateArgs(args),
+        annotateDeps(args.mode !== "clear" && args.realFile === true),
+      );
 
     const handle = async (req: WireRequest): Promise<Record<string, unknown>> => {
       const config = readConfig();
@@ -428,9 +548,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         case "list_workspaces":
           return handleListWorkspaces(config);
         case "show_code":
-          return handleShowCode(toShowCodeArgs(req.args), showCodeDeps());
+          return runShowCode(req.args);
         case "annotate":
-          return handleAnnotate(toAnnotateArgs(req.args), annotateDeps());
+          return runAnnotate(req.args);
         case "get_editor_state":
           return handleGetEditorState({
             config: readConfig,
@@ -618,6 +738,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand("showme.annotation.previous", (thread: unknown) =>
         stepAnnotation(thread, -1),
       ),
+      // 映しのタブの「本物のファイルを開く」（D87）。人間の命令なので人間の規則で開き、
+      // 何も記録しない（開いた file: は own にならない）。役割にも `showme.enabled` にも
+      // 縛られない（§C5）。中身は `open-real-file.ts`。
+      vscode.commands.registerCommand("showme.openRealFile", (resource: unknown) =>
+        openRealFile(resource),
+      ),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (!event.affectsConfiguration("showme")) return;
         applyConfig();
@@ -649,13 +775,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (!gate.allowed) throw new ToolError("disabled", gate.message);
           // 線上と同じ検証を通す。ソケット経由は requestSchema で検証されるので、
           // ここだけ素通りにすると2つの入口の振る舞いが食い違う。
-          return handleShowCode(toShowCodeArgs(showCodeArgsSchema.parse(args)), showCodeDeps());
+          return runShowCode(showCodeArgsSchema.parse(args));
         }),
         vscode.commands.registerCommand("showme.test.annotate", async (args: unknown) => {
           const gate = checkToolGate(readConfig(), "annotate", roleState.current());
           if (!gate.allowed) throw new ToolError("disabled", gate.message);
           // 線上と同じ検証を通す（`showme.test.showCode` と同じ理由）。
-          return handleAnnotate(toAnnotateArgs(annotateArgsSchema.parse(args)), annotateDeps());
+          return runAnnotate(annotateArgsSchema.parse(args));
         }),
         // 制限モードでの縮退（capabilities）を実機で確かめるための入口。
         // ハンドラを直に呼ばず handle に通すので、ゲートを含めて線上と同じ道を通る。
@@ -793,6 +919,110 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           annotationUi: annotationUiSurface(annotations.observeUi()),
           statusBar: statusBar.currentView(),
         })),
+        /**
+         * `rel` を舞台で開くときの URI（統合テスト専用）。
+         *
+         * 統合テストは `src/` を import できない（rootDir の外）ので、舞台の URI の規則
+         * （`stageUriFor` と、設定からスキームを決める `effectiveStageScheme`）をテスト側に
+         * 写すと、規則が2箇所になる（不変条件14）。ここは `show_code` と**同じ関数・同じ
+         * 設定の読み方**で URI を組んで返すだけ。`scheme` を渡せばそのスキームで組む
+         * （`showme-rw:` と `showme-ro:` を並べて比べる検査のため）。
+         *
+         * 返すのは部品（scheme / authority / path）。テスト側は `Uri.from` で組み直す
+         * ―― 文字列で渡して `Uri.parse` すると `%` / `#` を誤読しうる（`stageMirrorUri`）。
+         * `rel` は正規化済みであること（`stageUriFor` と同じ前提。テストは正準の綴りだけ渡す）。
+         */
+        vscode.commands.registerCommand("showme.test.stageUri", (args: unknown) => {
+          const { path: rel, scheme } = (args ?? {}) as { path?: unknown; scheme?: unknown };
+          if (typeof rel !== "string") throw new Error("stageUri: path must be a string");
+          let chosen: "file" | StageScheme;
+          if (scheme === undefined) chosen = openTargetOf(readConfig(), false).scheme;
+          else if (scheme === "file" || (typeof scheme === "string" && isStageScheme(scheme))) {
+            chosen = scheme;
+          } else throw new Error("stageUri: unknown scheme");
+          const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+          if (root === undefined) throw new Error("stageUri: no workspace folder");
+          const uri = stageUriFor(root, rel, chosen);
+          return { scheme: uri.scheme, authority: uri.authority, path: uri.path };
+        }),
+        /**
+         * 登録したのと**同じ**印のプロバイダに URI を渡した結果（統合テスト専用）。
+         * VS Code にはタブの印を読む API が無い。引数は部品（`showme.test.stageUri` と同じ形）で、
+         * 返すのは色を id にした素の値（印が無ければ undefined）。
+         */
+        vscode.commands.registerCommand("showme.test.agentTabDecoration", (args: unknown) => {
+          const { scheme, authority, path } = (args ?? {}) as Record<string, unknown>;
+          if (
+            typeof scheme !== "string" ||
+            typeof authority !== "string" ||
+            typeof path !== "string"
+          ) {
+            throw new Error("agentTabDecoration: scheme / authority / path must be strings");
+          }
+          const d = agentTabDecorations.provider.provideFileDecoration(
+            vscode.Uri.from({ scheme, authority, path }),
+          );
+          if (d === undefined) return undefined;
+          return {
+            badge: d.badge,
+            tooltip: d.tooltip,
+            color: d.color instanceof vscode.ThemeColor ? d.color.id : undefined,
+            propagate: d.propagate,
+          };
+        }),
+        /**
+         * 登録したのと**同じ**定義・参照のプロバイダに、映しの URI と位置を渡した結果（統合テスト専用）。
+         * 開けない映しの URI（関門に落ちるもの）でもプロバイダ自身の答えを見るための口。
+         * 返すのは URI を部品にした素の値。
+         */
+        vscode.commands.registerCommand("showme.test.stageLanguage", async (args: unknown) => {
+          const { kind, scheme, authority, path, line, character } = (args ?? {}) as Record<
+            string,
+            unknown
+          >;
+          if (
+            (kind !== "definition" && kind !== "references") ||
+            typeof scheme !== "string" ||
+            typeof authority !== "string" ||
+            typeof path !== "string" ||
+            typeof line !== "number" ||
+            typeof character !== "number"
+          ) {
+            throw new Error("stageLanguage: kind / scheme / authority / path / line / character");
+          }
+          const document = { uri: vscode.Uri.from({ scheme, authority, path }) };
+          const position = new vscode.Position(line, character);
+          const results =
+            kind === "definition"
+              ? await stageLanguage.provider.provideDefinition(document, position)
+              : await stageLanguage.provider.provideReferences(document, position);
+          return results.map((r) => {
+            const uri = "targetUri" in r ? r.targetUri : r.uri;
+            const range = "targetUri" in r ? (r.targetSelectionRange ?? r.targetRange) : r.range;
+            return {
+              scheme: uri.scheme,
+              path: uri.path,
+              line: range.start.line,
+              character: range.start.character,
+            };
+          });
+        }),
+        /**
+         * 定義・参照のプロバイダを外す／戻す（統合テスト専用）。代理が無いときの VS Code の
+         * ふるまいを測った記録（`stage-language-measure.test.ts`）を、本物の代理と重ねずに走らせる。
+         */
+        vscode.commands.registerCommand("showme.test.stageLanguageRegistered", (args: unknown) => {
+          const registered = (args as { registered?: unknown } | undefined)?.registered;
+          if (typeof registered !== "boolean") {
+            throw new Error("stageLanguageRegistered: registered must be a boolean");
+          }
+          if (registered && stageLanguageRegistration === undefined) {
+            stageLanguageRegistration = stageLanguage.register();
+          } else if (!registered && stageLanguageRegistration !== undefined) {
+            stageLanguageRegistration.dispose();
+            stageLanguageRegistration = undefined;
+          }
+        }),
         /**
          * `id` の吹き出しのスレッドそのもの（統合テスト専用）。
          *

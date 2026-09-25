@@ -12,10 +12,13 @@ import type {
   ArrangeLayoutAction,
   ArrangeSurface,
   ArrangeTab,
+  FreshColumns,
   MoveOutcome,
 } from "./handlers/arrange-editors.js";
 import type { OpenedByAgent } from "./opened-by-agent.js";
+import { isLegacyOwnershipUri } from "./stage-uri.js";
 import { TabRegistry } from "./tab-registry.js";
+import { observeToolColumns } from "./tool-column-vscode.js";
 import type { ShowMePanel } from "./webview/panel.js";
 
 /**
@@ -92,9 +95,11 @@ export function createArrangeSurface(
   const registry = new TabRegistry<{ tab: vscode.Tab; own: boolean; column: number | undefined }>();
 
   /** 観測を1回分まとめる（`groupColumns` と `humanColumn` を同じ瞬間に）。 */
-  const fresh = (): { columns: number[]; humanColumn: number | undefined } => ({
+  const fresh = (): FreshColumns => ({
     columns: groupColumns(),
     humanColumn: humanColumn(),
+    toolColumns: toolColumns(),
+    groupCount: groupCount(),
   });
   const groupColumns = (): number[] => {
     // **観測を返すだけ。** 列の数はハンドラが `length` で取る（1回の観測から2つの表現）。
@@ -115,6 +120,11 @@ export function createArrangeSurface(
     // 合流を許す（fail-open）。読めた／読めないの述語は `get_editor_state` の
     // `groups` と同じ `observedViewColumn` 1つ（不変条件14）。断るかは policy が決める。
     observedViewColumn(vscode.window.tabGroups.activeTabGroup.viewColumn);
+  // 道具の列（D90）。`Stage.targetColumn` と**同じ観測の関数**（`observeToolColumns`）で読む ――
+  // `gather-own` の集め先と `show_code` の舞台が同じ列になるように（不変条件14）。
+  const toolColumns = (): ReadonlySet<number> => observeToolColumns();
+  // 存在する列の数。`Stage.targetColumn` の丸めと同じ `tabGroups.all.length`（D90）。
+  const groupCount = (): number => vscode.window.tabGroups.all.length;
 
   return {
     listTabs(): ArrangeTab[] {
@@ -263,6 +273,8 @@ export function createArrangeSurface(
 
     groupColumns,
     humanColumn,
+    toolColumns,
+    groupCount,
   };
 
   /**
@@ -314,7 +326,10 @@ export function createArrangeSurface(
       // `closed` 事象はタブのモデルの更新と同時に発火する。`tabGroups.close` の解決と
       // その更新の到着順は API が約束していないので、**元の札が一覧から消えたことを
       // 観測してから**記録する（先に記録すると、遅れて来た事象がそれを消す）。
-      if (own) {
+      // **映しは記録し直さない**（D82）。映しの own はスキームで決まり、移動しても残る ――
+      // 待つのも記録し直すためだけなので、両方飛ばす。`ownedTextTabsNow` も映しを写さないので、
+      // 映しの除外はこことそちらの両側で成り立つ（片側に頼らない）。
+      if (own && isLegacyOwnershipUri(uri)) {
         await until(() => !isPresent(tab), deadline);
         restoreOwnership([{ uri: uri.toString(), own }]);
       }
@@ -336,6 +351,14 @@ export function createArrangeSurface(
     for (const group of groups) {
       for (const tab of group.tabs) {
         if (!(tab.input instanceof vscode.TabInputText)) continue;
+        // **映しのタブは写さない**（D82）。映しの own はスキームで決まり、移動でも合流でも
+        // 残る ―― 記録し直す必要が無い。写すと `ownedUrisToRestore` が映しの URI を返し、
+        // `OpenedByAgent` に映しが入って own を決める場所が2つになる（不変条件14）。
+        // プリセットの合流（`applyLayout`）では、ここで「前」と「後」の両方から落とすことが
+        // 映しを記録しない理由になる。移動（`moveOne`）では、映しなら `restoreOwnership` を
+        // そもそも呼ばない ―― 除外はこの1箇所に頼らず、呼ぶ側でも成り立つ。`file:` の枚数は
+        // 映しと別の鍵なので、落としても変わらない。
+        if (!isLegacyOwnershipUri(tab.input.uri)) continue;
         out.push({ uri: tab.input.uri.toString(), own: isOwnTab(tab, opened, textTabCount) });
       }
     }

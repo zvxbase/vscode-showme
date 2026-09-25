@@ -24,6 +24,7 @@ const okResult = {
   features: { stage: true, html: true, layout: true },
   disabledTools: [],
   editorGroup: "dedicated",
+  avoidToolColumns: false,
   panels: { max: 2 },
   otherWindowsListed: false,
 };
