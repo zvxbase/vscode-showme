@@ -1,0 +1,4 @@
+# README の訳の印・生成範囲・宣言は LF で比べる（scripts/docs/readme-blocks.mjs）。
+# Windows の checkout（core.autocrlf）でも作業ツリーを LF のままにする。
+*.md text eol=lf
+*.json text eol=lf

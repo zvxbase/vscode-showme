@@ -24,6 +24,12 @@ import { ARRANGE_COMMANDS, createArrangeSurface } from "./arrange-surface.js";
 import { type ShowMeConfig, readConfig } from "./config.js";
 import { Highlights } from "./decorations.js";
 import {
+  SHOWME_DOC_SCHEME,
+  type ShowMeDocId,
+  showMeDocIdForUri,
+  showMeDocUriPath,
+} from "./doc-provider.js";
+import {
   createAnnotationSurface,
   createEditorStateSurface,
   createEditorSurface,
@@ -76,11 +82,17 @@ import {
 import { Stage, stageColumnSettingsOf } from "./stage.js";
 import { ShowMeStatusBar } from "./status-bar.js";
 import { buildTeardownDocument } from "./teardown-doc.js";
+import { recordFrontChanges, registerFrontObservers } from "./tool-call-recorder-vscode.js";
 import { checkToolGate } from "./tool-gate.js";
+import { sharedToolCallWindow, sharedToolShownSelection } from "./tool-shown-selection.js";
 import { VIEW_COMMANDS, createViewSurface } from "./view-surface.js";
 import { ShowMePanel } from "./webview/panel.js";
 import { WindowRoleState } from "./window-role-state.js";
-import { acceptWorkspacePath } from "./workspace-path-gate.js";
+import {
+  acceptObservablePath,
+  acceptWorkspacePath,
+  onRedactedLinkWalkIncomplete,
+} from "./workspace-path-gate.js";
 
 /** 線上のスキーマが決める show_code の引数の形。 */
 type ShowCodeWireArgs = Extract<WireRequest, { tool: "show_code" }>["args"];
@@ -185,18 +197,6 @@ function tolerate(fn: () => void): void {
 }
 
 /**
- * 文書を untitled で開いて見せる（D62）。**ディスクに書かない。**
- *
- * `openTextDocument({ content })` は untitled バッファを作るだけで、人間が保存
- * しない限りどこにも残らない（不変条件11 / 13）。`preview: false` は、次に人間が
- * 別のファイルを開いたときにこの文書が置き換えられて消えないため。
- */
-async function showUntitledMarkdown(content: string): Promise<void> {
-  const doc = await vscode.workspace.openTextDocument({ language: "markdown", content });
-  await vscode.window.showTextDocument(doc, { preview: false });
-}
-
-/**
  * 1回の要求の開き方（D84 / D85 / D87）: スキームと、開いた文書を記録するか。分岐そのものは
  * `stageOpenTarget` 1つが持つ（中で `effectiveStageScheme` を呼び、`realFile` を重ねる）。
  * `show_code` はスキームと記録の両方を、`annotate` はスキームだけを使う ―― どちらも同じ関数を
@@ -244,6 +244,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const channel = vscode.window.createOutputChannel("ShowMe");
     disposables.push(channel);
     const log = new ShowMeLog(channel);
+    // ワークスペースのルート。**呼ぶたびに読む**（多ルートで並びが変わっても、面ごとに食い違わない）。
+    const workspaceRootUri = (): vscode.Uri | undefined =>
+      vscode.workspace.workspaceFolders?.[0]?.uri;
+    // 秘匿ファイルの実体を集める走査が不完全に終わったら（上限・ルートが読めない）1行残す（D91）。その間そのルートでは
+    // リンク数2以上のファイルがすべて拒まれるので、黙って拒むと「なぜ開けないか」が見えない。
+    onRedactedLinkWalkIncomplete((rootPath) =>
+      log.info(
+        "redaction: the workspace walk was incomplete (entry limit or unreadable root); files with more than one hard link are refused until the next walk",
+        { root: rootPath },
+      ),
+    );
+    disposables.push(new vscode.Disposable(() => onRedactedLinkWalkIncomplete(undefined)));
 
     // この窓の役割。**既定は idle（預けていない）**（設計書 §2A.1）。
     // 設定を経由しないので、ワークスペースからは触れない（不変条件9）。
@@ -251,6 +263,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     disposables.push(roleState);
 
     const statusBar = new ShowMeStatusBar(readConfig().enabled, roleState.current());
+    // ワークスペースの外を開ける設定（D101）は起動の直後から画面に出す（設定の購読を待たない）。
+    statusBar.setOutsideWorkspace(readConfig().redaction.allowOutsideWorkspace === true);
     disposables.push(statusBar);
     const highlights = new Highlights();
     disposables.push(highlights);
@@ -289,11 +303,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 役割の既定（idle）だけで、タブ・可視エディタ・ルートは呼び出しのたびに読み直す ―― 起動時の
     // 写しは握らない。復元された映しは own がスキームで決まる（D82）ので、記録が空でも
     // エージェントのものとして片づけられる。
-    disposables.push(...registerStageFileSystem(() => readConfig().redactedPathPatterns));
+    disposables.push(
+      ...registerStageFileSystem(
+        () => readConfig().redaction,
+        () => readConfig().stageTabs.editable,
+      ),
+    );
     // エージェントのタブの印（D89）。映しの FS と同じく、窓を預けていなくても登録する
     // （復元された映しのタブにも印を付ける）。付けるかどうかは所有と同じ述語（`isAgentStageUri`）。
     const agentTabDecorations = registerAgentTabDecoration();
     disposables.push(agentTabDecorations.disposable);
+    // ツールが見せた選択（D95）: ツールの仕業の前面の変化と、最中に前に出た編集器の選択の変化を
+    // 記録する（`registerFrontObservers`）。呼び出しの前後の比較（`handle` の `recordFrontChanges`）
+    // だけに頼らないのは、閉じる・合流の後の前面と選択の復元が、呼び出しの後から事象で届くため（実測）。
+    // 登録はここ1回。
+    disposables.push(
+      ...registerFrontObservers(
+        workspaceRootUri,
+        () => readConfig().redaction,
+        sharedToolCallWindow,
+        sharedToolShownSelection,
+      ),
+    );
     // エージェントのタブの定義・参照（D88）。同じく窓を預けていなくても登録する。同じ位置を
     // `file:` に聞き、別のファイルの結果を `showme.stage.definitionTarget` に従って写す。
     // ルート・秘匿・行き先は呼ばれるたびに読む（人間が途中で変えたら次の呼び出しから効く）。
@@ -305,7 +336,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       settings: () => {
         const config = readConfig();
         return {
-          redactedPatterns: config.redactedPathPatterns,
+          redaction: config.redaction,
           target: config.definitionTarget,
           agentTabScheme: openTargetOf(config, false).scheme,
         };
@@ -348,7 +379,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       readFile: (rel) => {
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (root === undefined) return undefined;
-        return readWorkspaceFile(root, rel, readConfig().redactedPathPatterns);
+        return readWorkspaceFile(root, rel, readConfig().redaction);
       },
       allowCall: () => panelCallLimiter.allow(tool),
       log,
@@ -358,9 +389,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // ルートは毎回読み直す（showCodeDeps と同じ理由）。
       language: createLanguageSurface(
         vscode.workspace.workspaceFolders?.[0]?.uri,
-        () => readConfig().redactedPathPatterns,
+        () => readConfig().redaction,
       ),
-      extraRedactedPatterns: () => readConfig().redactedPathPatterns,
+      // 結果の秘匿判定は観測の側の口（`isRedactedEntity`）。関門と同じ判定を通る。
+      workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+      redaction: () => readConfig().redaction,
       // **鍵はツール名そのもの。** 別名を使うと `maxKeys` の導出（TOOL_NAMES の数）
       // と食い違う。2つのツールで budget を分ける必要も無いので、まとめて1つ。
       allowCall: () => panelCallLimiter.allow("find_definition"),
@@ -371,7 +404,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // ルートは毎回読み直す（showCodeDeps と同じ理由）。
       view: createViewSurface(
         vscode.workspace.workspaceFolders?.[0]?.uri,
-        () => readConfig().redactedPathPatterns,
+        () => readConfig().redaction,
       ),
       allowCall: () => panelCallLimiter.allow("show_view"),
       log,
@@ -381,14 +414,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // ためである（`vscode.Tab` に安定した id は無い。設計書 Y7）。
     const arrangeDeps = (): ArrangeEditorsDeps => ({
       // ルートは毎回読み直す（showCodeDeps と同じ理由）。
-      surface: createArrangeSurface(vscode.workspace.workspaceFolders?.[0]?.uri, opened, panelFor),
+      surface: createArrangeSurface(
+        vscode.workspace.workspaceFolders?.[0]?.uri,
+        opened,
+        panelFor,
+        readConfig().redaction,
+      ),
       config: readConfig,
-      // `move-tab` の `path` と `close-tabs` の `paths`の関門。**`acceptWorkspacePath` そのもの**（書き直さない）。
+      // `move-tab` の `path` と `close-tabs` の `paths`の関門（関門の口をそのまま。書き直さない）。
+      // 外のタブ（D102）は、設定がオンで関門を通るときだけ、`get_editor_state` と同じ名前で指せる
+      // （`acceptObservablePath`。観測の側の `observedPathName` と同じ関数）。
       acceptPath: (raw) =>
-        acceptWorkspacePath(
+        acceptObservablePath(
           vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
           raw,
-          readConfig().redactedPathPatterns,
+          readConfig().redaction,
         ),
       // `close-own` が片づいたら `show_code` の指差しも消える（増分6 D67）。画家は1つ。
       clearSpotlight: () => highlights.clearSpotlight(),
@@ -419,6 +459,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const applyConfig = (): void => {
       const config = readConfig();
       statusBar.setEnabled(config.enabled);
+      statusBar.setOutsideWorkspace(config.redaction.allowOutsideWorkspace === true);
       if (!config.enabled) {
         highlights.clearSpotlight();
         // 描いたものは装飾だけではない。停止中と表示しながらエージェントの
@@ -447,8 +488,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * **開くのは人間の規則**（`revealForHuman`）であって `show_code` の `Stage.open` ではない。
      * 舞台の規則（列選択・own）はエージェントのため; 人間の命令は人間の列で、フォーカスも移す。
      * ここは何も記録しない。開いたタブの own は URI で決まる ―― 吹き出しが映しに付いていれば
-     * 開くのは映しで、スキームで own になる（D85。人間が見ている間は床1 が守り、目を離せば
-     * エージェントが片づけうる）。`file:` に付いていれば（旧来の経路・印だけ）own ではない。
+     * 開くのは映しで、スキームで own になる（D85。エージェントが片づけうる ―― 人間が見ている間も
+     * 守るのは `protectViewingTab` がオンのときだけ。D92）。`file:` に付いていれば（旧来の経路・印だけ）own ではない。
      * `selection` には触らない（不変条件3）。
      *
      * **`stage.enabled` は見ない**（§C5 / D77）。設定が縛るのはエージェントであって
@@ -535,7 +576,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         annotateDeps(args.mode !== "clear" && args.realFile === true),
       );
 
-    const handle = async (req: WireRequest): Promise<Record<string, unknown>> => {
+    /**
+     * 線上とテスト専用コマンドの**唯一の入口**。前面を変えうるツールは `recordFrontChanges` で包み、
+     * 呼び出しの前後で人間の前面の編集器を観測して、変わっていたら前面に出た選択を「ツールが見せた
+     * 選択」として覚える（D95）。窓は必ず閉じ、記録の失敗はツールの結果を置き換えない。
+     *
+     * D93 / D94 でエージェントのタブが人間の列に開くと、そのタブが `activeTextEditor` になり、
+     * 人間が以前そこで作った選択（タブの使い回し・表示状態の復元）を持ったまま前面に出る。
+     * 1秒の待ち（`too-soon-after-tool`）が明けると、それが `selectedText` として返っていた
+     * （実測）。記録点をツールごとの手元に置かずここ1つにするのは、`arrange_editors` の移動・
+     * 片づけ（閉じれば下の編集器が前面に出る）でも同じことが起きるからで、記録するツールの
+     * 分類は `TOOL_MAY_CHANGE_FRONT_EDITOR`（`ToolName` の全語）1つ。手順（落ち着くまでの待ち・
+     * 実測）は `tool-call-recorder.ts` の `runRecordingFront`。
+     */
+    const handle = (req: WireRequest): Promise<Record<string, unknown>> =>
+      recordFrontChanges(req.tool, () => dispatch(req), {
+        root: workspaceRootUri,
+        redaction: () => readConfig().redaction,
+        toolWindow: sharedToolCallWindow,
+        shown: sharedToolShownSelection,
+        onRecordError: (error) =>
+          log.info("tool-shown selection recording failed", {
+            tool: req.tool,
+            error: String(error),
+          }),
+      });
+
+    const dispatch = async (req: WireRequest): Promise<Record<string, unknown>> => {
       const config = readConfig();
       // 役割は毎回いまの値を読む。握ると、預けるのをやめても既に立っている
       // ソケットが受け付け続ける。
@@ -554,11 +621,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         case "get_editor_state":
           return handleGetEditorState({
             config: readConfig,
+            // 秘匿の判定は実体まで見る（D91）。ルートは面と同じ値を毎回読む。
+            workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
             // ルートは毎回読み直す（showCodeDeps と同じ理由）。
             surface: createEditorStateSurface(
               vscode.workspace.workspaceFolders?.[0]?.uri,
               opened,
               annotations,
+              config.redaction,
             ),
             statusBar,
           });
@@ -644,6 +714,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const bridgePath = vscode.Uri.joinPath(context.extensionUri, "bridge", "index.js").fsPath;
 
     /**
+     * 設定の案内・撤去手順を、読み取り専用の仮想文書として開く（D98）。
+     *
+     * 前は `openTextDocument({ content })` で untitled のバッファを作っていた
+     * （題名が "Untitled-1" になり、閉じるときに保存を聞かれた）。かわりに
+     * `TextDocumentContentProvider` を `showme-doc` に登録する ―― 題名が
+     * path から付き、常にディスクに書かない読み取り専用の文書になる
+     * （不変条件11 のまま）。
+     *
+     * プロバイダが返すのは**この2つの固定の文書だけ**（`showMeDocIdForUri` が
+     * undefined を返す URI には空文字。ワークスペースのファイルを読む口にしない）。
+     * 中身は開くたびに作り直す ―― `showAgentConfig` / `showTeardown` が今まで
+     * 計算していたのと同じ入力（`bridgePath` / `runtimeDirs` / `uiLanguage()`）を
+     * そのまま使う（不変条件14: 同じ量を2箇所で決めない）。
+     */
+    const docContentChanged = new vscode.EventEmitter<vscode.Uri>();
+    const buildDocContent = (id: ShowMeDocId): string => {
+      switch (id) {
+        case "agent-configuration":
+          return buildAgentConfigDocument(bridgePath, uiLanguage(), os.homedir());
+        case "teardown":
+          return buildTeardownDocument(
+            { runtimeDirs, extensionId: context.extension.id },
+            uiLanguage(),
+          );
+      }
+    };
+    disposables.push(
+      docContentChanged,
+      vscode.workspace.registerTextDocumentContentProvider(SHOWME_DOC_SCHEME, {
+        onDidChange: docContentChanged.event,
+        provideTextDocumentContent: (uri) => {
+          const id = showMeDocIdForUri(uri);
+          return id === undefined ? "" : buildDocContent(id);
+        },
+      }),
+    );
+
+    /**
+     * `showme.showAgentConfig` / `showme.teardown` の中身（`vscode.commands.registerCommand`
+     * 側から呼ぶ）。同じ文書が既に開いていても中身が古いまま出ないよう、見せる前に
+     * `onDidChange` を発火してプロバイダに作り直させる（VS Code は開いている
+     * 仮想文書をその通知で再取得する）。
+     */
+    async function showReadOnlyDoc(id: ShowMeDocId): Promise<void> {
+      const uri = vscode.Uri.from({ scheme: SHOWME_DOC_SCHEME, path: showMeDocUriPath(id) });
+      docContentChanged.fire(uri);
+      await vscode.window.showTextDocument(uri, { preview: false });
+    }
+
+    /**
      * VS Code 内蔵のエージェント向けの MCP 提供者（設計書 §7.2 / Y12）。
      *
      * **宣言だけで実装が無かった**（package.json の `contributes.mcpServerDefinitionProviders`
@@ -690,18 +810,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         applyConfig();
       }),
       vscode.commands.registerCommand("showme.showLog", () => log.show()),
-      // どちらも **untitled 文書を開いて見せるだけ**（D62 / 不変条件11）。他ツールの
+      // どちらも **読み取り専用の仮想文書を開いて見せるだけ**（D98 / 不変条件11）。他ツールの
       // 設定ファイルにもワークスペースにもホームにも書かない。人間が写す。
-      // 中身は vscode に依存しない純関数が組む（単体で検査するため）。文書全体が
-      // 人間向けなので、言語は `uiLanguage()`（`vscode.env.language`）で選ぶ（D58）。
-      vscode.commands.registerCommand("showme.showAgentConfig", async () => {
-        await showUntitledMarkdown(buildAgentConfigDocument(bridgePath, uiLanguage()));
-      }),
-      vscode.commands.registerCommand("showme.teardown", async () => {
-        await showUntitledMarkdown(
-          buildTeardownDocument({ runtimeDirs, extensionId: context.extension.id }, uiLanguage()),
-        );
-      }),
+      // 中身は vscode に依存しない純関数（`agent-config-doc.ts` / `teardown-doc.ts`）が組み、
+      // `showReadOnlyDoc` がそれを `showme-doc:` の文書として見せる。文書全体が人間向けなので、
+      // 言語は `uiLanguage()`（`vscode.env.language`）で選ぶ（D58）。
+      vscode.commands.registerCommand("showme.showAgentConfig", () =>
+        showReadOnlyDoc("agent-configuration"),
+      ),
+      vscode.commands.registerCommand("showme.teardown", () => showReadOnlyDoc("teardown")),
       // 人間向けの消す命令（増分6 D68）。**人間の操作であって、エージェントへの
       // 入力路ではない**（§C5: 設定が縛るのはエージェントであって人間ではない）ので、
       // 窓の役割でも `showme.enabled` でも縛らない ―― 消すだけで、何も開かない。
@@ -771,17 +888,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // 統合テストは Test モードで走るので影響を受けない。
       disposables.push(
         vscode.commands.registerCommand("showme.test.showCode", async (args: unknown) => {
-          const gate = checkToolGate(readConfig(), "show_code", roleState.current());
-          if (!gate.allowed) throw new ToolError("disabled", gate.message);
           // 線上と同じ検証を通す。ソケット経由は requestSchema で検証されるので、
-          // ここだけ素通りにすると2つの入口の振る舞いが食い違う。
-          return runShowCode(showCodeArgsSchema.parse(args));
+          // ここだけ素通りにすると2つの入口の振る舞いが食い違う。**`handle` に通す** ――
+          // ゲートも、ツールが見せた選択の記録（D95）も線上と同じ道になる。
+          return handle({ id: "test", tool: "show_code", args: showCodeArgsSchema.parse(args) });
         }),
         vscode.commands.registerCommand("showme.test.annotate", async (args: unknown) => {
-          const gate = checkToolGate(readConfig(), "annotate", roleState.current());
-          if (!gate.allowed) throw new ToolError("disabled", gate.message);
-          // 線上と同じ検証を通す（`showme.test.showCode` と同じ理由）。
-          return runAnnotate(annotateArgsSchema.parse(args));
+          // 線上と同じ検証を通し、`handle` に通す（`showme.test.showCode` と同じ理由）。
+          return handle({ id: "test", tool: "annotate", args: annotateArgsSchema.parse(args) });
         }),
         // 制限モードでの縮退（capabilities）を実機で確かめるための入口。
         // ハンドラを直に呼ばず handle に通すので、ゲートを含めて線上と同じ道を通る。
@@ -866,6 +980,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          */
         vscode.commands.registerCommand("showme.test.viewCommands", () => ({
           commands: VIEW_COMMANDS,
+        })),
+        // 窓（D95）の状態を観測する口（統合テスト専用）。並行の読み出しが呼び出しの最中に起きたことを
+        // 検査が確かめるため（「返らなかった」を、窓の外で読んだだけの緑にしない）。
+        vscode.commands.registerCommand("showme.test.toolWindowState", () => ({
+          inFlight: sharedToolCallWindow.inFlightNow(),
+          inWindow: sharedToolCallWindow.inWindow(),
         })),
         vscode.commands.registerCommand("showme.test.resetRateLimits", async () => {
           // **器は3つある。全部戻す。** 片方だけ戻すのは戻していないのと同じである。

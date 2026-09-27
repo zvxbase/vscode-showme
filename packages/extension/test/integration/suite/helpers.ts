@@ -578,6 +578,12 @@ export const STAGE_SCHEME_EDITABLE = "showme-rw";
 export type StageScheme = typeof STAGE_SCHEME_READONLY | typeof STAGE_SCHEME_EDITABLE;
 
 /**
+ * 設定の案内・撤去手順の仮想文書のスキーム（D98）。同じ理由（rootDir の外）で
+ * `doc-provider.ts` の定数を import せず、綴りをここにも書く。
+ */
+export const SHOWME_DOC_SCHEME = "showme-doc";
+
+/**
  * `rel` を舞台で開いたときの URI（D84）。**規則はテスト側に写さない。**
  *
  * 統合テストは `src/` を import できない（rootDir の外）。規則（`stageUriFor` と、設定から
@@ -644,6 +650,48 @@ export function pinLegacyFileTabs(): void {
   });
 }
 
+/**
+ * 節（suite）の間だけ `showme.stage.editorGroup: "dedicated"` にする（D93 の前の既定）。
+ *
+ * 既定は `shared`（D93）で、右に列が無ければ人間の列にも開く。「人間は列1、舞台は列2・3」を
+ * 前提にした検査（人間の列を使わない・舞台の列を足す・人間の列への移動を断る）は、その前提を
+ * 設定で明示する ―― 既定が変わったことで、黙って別の配置を見る検査にならないように。
+ * 既定の配置は trusted.test.ts の D93 / D94 の節が見ている。
+ */
+export function pinDedicatedStage(): void {
+  suiteSetup(async () => {
+    await setGlobal("stage.editorGroup", "dedicated");
+    assertGlobal("stage.editorGroup", "dedicated");
+  });
+  suiteTeardown(async () => {
+    await setGlobal("stage.editorGroup", undefined);
+    assertGlobal("stage.editorGroup", undefined);
+  });
+}
+
+/** 1件の検査だけを `dedicated` の配置で走らせる（`pinDedicatedStage` の test 版）。 */
+export async function withDedicatedStage(body: () => Promise<void>): Promise<void> {
+  await withSettings({ "stage.editorGroup": "dedicated" }, body);
+}
+
+/**
+ * 前面を変えうるツールの窓（D95）が明けるまで待つ。**時間で眠らない** ―― 拡張の窓の状態
+ * （`showme.test.toolWindowState`）を問い、窓の外になったら進む。上限を超えたら落とす（窓が
+ * 閉じない不具合を、長い待ちの緑にしない）。自ツールの時計（`show_code` の入口の印）は窓の
+ * 始まりより前には無いので、窓が明ければそちらも明けている。
+ */
+export async function waitPastToolWindow(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const state = (await vscode.commands.executeCommand("showme.test.toolWindowState")) as {
+      inWindow: boolean;
+    };
+    if (!state.inWindow) return;
+    if (Date.now() >= deadline) assert.fail(`ツールの窓が ${timeoutMs}ms 以内に明けなかった`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 /** いま存在する編集グループの数（人間の列 ＋ 舞台の列）。 */
 export function tabGroupCount(): number {
   return vscode.window.tabGroups.all.length;
@@ -707,7 +755,7 @@ export interface VisualState {
     hasCommentingRangeProvider: boolean;
     hasReactionHandler: boolean;
   };
-  statusBar: { text: string; tooltip: string };
+  statusBar: { text: string; tooltip: string; warning: boolean };
 }
 
 export async function inspectVisuals(): Promise<VisualState> {

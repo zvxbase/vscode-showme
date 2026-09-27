@@ -1,6 +1,12 @@
 import * as fs from "node:fs";
 import { MAX_RESOLVE_BYTES } from "@zvx/vscode-showme-protocol";
-import { acceptWorkspacePath } from "./workspace-path-gate.js";
+import { readAcceptedOutsideFile } from "./stage-mirror.js";
+import {
+  type RedactionPolicy,
+  type WorkspacePathVerdict,
+  acceptWorkspacePath,
+  insideOnly,
+} from "./workspace-path-gate.js";
 
 /**
  * ワークスペース内のファイルだけを読む（設計書 §4.1 ⑤）。
@@ -24,10 +30,30 @@ import { acceptWorkspacePath } from "./workspace-path-gate.js";
 export function readWorkspaceFile(
   rootPath: string,
   rel: string,
-  redactedPatterns: readonly string[],
+  redaction: RedactionPolicy,
 ): string | undefined {
-  const verdict = acceptWorkspacePath(rootPath, rel, redactedPatterns);
+  // **ワークスペースの中だけ**（`show_html` の `path` の口）。設定 `showme.allowOutsideWorkspace` が
+  // オンでも外は読まない（外の HTML を描く口は作らない。D102 の対象外）。
+  return readVerdict(insideOnly(acceptWorkspacePath(rootPath, rel, redaction)));
+}
+
+/**
+ * エージェントが位置を指したファイルを読む（`show_code` / `annotate` の解決器の `readText`）。
+ * 人間が設定をオンにしていれば、関門を通る**外の**ファイルも読む（D102）。外は関門が見た実体
+ * （dev / ino）だけを開いて読む。**`show_html` などの他の口はこちらを使わない**（外を読ませない）。
+ */
+export function readAgentFile(
+  rootPath: string,
+  key: string,
+  redaction: RedactionPolicy,
+): string | undefined {
+  return readVerdict(acceptWorkspacePath(rootPath, key, redaction));
+}
+
+/** 関門の答えから中身を読む（2つの口が共有する。読み方を2つに書かない）。 */
+function readVerdict(verdict: WorkspacePathVerdict): string | undefined {
   if (!verdict.ok) return undefined;
+  if (verdict.kind === "outside") return readAcceptedOutsideFile(verdict);
 
   try {
     const stat = fs.statSync(verdict.realPath);

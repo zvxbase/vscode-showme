@@ -14,7 +14,7 @@ import {
   layoutVerdict,
   layoutWouldMergeHumanColumn,
 } from "../src/arrange-policy.js";
-import type { ShowMeConfig } from "../src/config.js";
+import type { EditorGroup, ShowMeConfig } from "../src/config.js";
 import {
   type ArrangeEditorsArgs,
   type ArrangeEditorsDeps,
@@ -85,6 +85,9 @@ const surface = (
     toolColumns: () => new Set<number>(),
     // 既定は可視の列の数（実際の VS Code では列は詰まっていて、両者は同じ）。
     groupCount: () => s.groupColumns().length,
+    // 既定は「人間の列に人間のタブがある」。偽物の既定の設定（`dedicated`）と合わせて、人間の列を
+    // 使えない以前の画面になる。D93 / D94 の検査が上書きする。
+    humanColumnHasHumanTabs: () => true,
     ...over,
   };
   return s;
@@ -96,6 +99,7 @@ const freshOf = (s: ArrangeSurface): FreshColumns => ({
   humanColumn: s.humanColumn(),
   toolColumns: s.toolColumns(),
   groupCount: s.groupCount(),
+  humanColumnHasHumanTabs: s.humanColumnHasHumanTabs(),
 });
 
 /** `moveTabs` に渡った札の並び（呼び出しごと）。 */
@@ -111,21 +115,27 @@ const tab = (over: Partial<ArrangeTab> & { id: string }): ArrangeTab => ({
   ...over,
 });
 
+/**
+ * 設定の偽物。`editorGroup` の既定は **`dedicated`**（製品の既定の `shared` ではない）―― 人間の列を
+ * 使わない以前の配置を前提にした検査が多く、その前提をここで明示しておく。D93 / D94 の検査は
+ * 値を渡して上書きする。
+ */
 const config = (
   layout: Partial<ArrangePermissions> = {},
   avoidToolColumns = false,
+  editorGroup: EditorGroup = "dedicated",
 ): (() => ShowMeConfig) => {
   const full: ShowMeConfig = {
     enabled: true,
-    editorGroup: "dedicated",
+    editorGroup,
     avoidToolColumns,
     html: { maxPanels: 2 },
     disabledTools: [],
-    redactedPathPatterns: [],
+    redaction: { patterns: [], blockLinksToRedacted: true },
     maxSelectionChars: 4000,
     injectTerminalEnv: true,
     listAllWorkspaces: false,
-    layout: { closeHumanTabs: false, closeDirtyTabs: false, ...layout },
+    layout: { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false, ...layout },
   };
   return () => full;
 };
@@ -200,9 +210,9 @@ describe("handleArrangeEditors: 候補の選び方", () => {
   });
 
   it("自分のパネルは、その列でアクティブでも、設定が全部 false でも閉じる", async () => {
-    // `isActive`（列ごと）は close-own の除外条件ではない。除外するのは
-    // `viewing`（窓に1枚）だけである。4B の「未保存でも閉じる」は D53' で消えた
-    // （下の「床1 ―― 人間が見ているタブは触らない」の節に対照がある）。
+    // `isActive`（列ごと）は close-own の除外条件ではない。除外しうるのは
+    // `viewing`（窓に1枚。protectViewingTab がオンのとき）だけである。4B の「未保存でも閉じる」は
+    // D53' で消えた（下の「床1 ―― protectViewingTab がオンなら、人間が見ているタブは触らない」の節に対照がある）。
     const closeTabs = vi.fn(async () => true);
     const result = await handleArrangeEditors(
       { action: "close-own" },
@@ -314,12 +324,13 @@ describe("handleArrangeEditors: close-own はスポットライトを消す（D6
   });
 
   it("断られた own タブが残っても、片づいた（done）なら消す ―― 指差しは中身ではなく指", async () => {
-    // 人間が見ている own タブは床1 で残る。それでも人間は「片づけて」と言ったのであり、
-    // 残した指差しに人間が戻る手段も消す手段も無い（§C1）。
+    // 人間が見ている own タブは床1（protectViewingTab がオン）で残る。それでも人間は
+    // 「片づけて」と言ったのであり、残した指差しに人間が戻る手段も消す手段も無い（§C1）。
     const clearSpotlight = vi.fn();
     const result = await handleArrangeEditors(
       { action: "close-own" },
       deps({
+        config: config({ protectViewingTab: true }),
         surface: surface({
           listTabs: () => [
             tab({ id: "p1", own: true, viewing: true }),
@@ -433,12 +444,75 @@ describe("handleArrangeEditors: 既定では人間のタブに届かない（D41
   });
 });
 
-describe("handleArrangeEditors: 床1 ―― 人間が見ているタブは触らない（C1）", () => {
+describe("handleArrangeEditors: protectViewingTab が既定のオフなら、viewing は断る理由にならない（D92）", () => {
+  it("自分の・見ているタブは close-own で閉じ、withheld に viewing-tab は出ない", async () => {
+    const closeTabs = vi.fn(async () => true);
+    const result = await handleArrangeEditors(
+      { action: "close-own" },
+      deps({
+        surface: surface({
+          listTabs: () => [tab({ id: "p-viewing", own: true, viewing: true })],
+          closeTabs,
+        }),
+      }),
+    );
+    expect(closeTabs).toHaveBeenCalledWith(["p-viewing"]);
+    expect(result).toEqual({ done: true, closed: 1 });
+  });
+
+  it("人間の・見ているタブを断った理由は human-tabs-not-allowed だけ", async () => {
+    // 断ったのは reach である。viewing-tab を並べると、エージェントは protectViewingTab が原因だと
+    // 読むが、それは既にオフで、頼める設定が無い（効くのは closeHumanTabs）。
+    const closeTabs = vi.fn(async () => true);
+    const result = await handleArrangeEditors(
+      { action: "close-other-tabs" },
+      deps({
+        surface: surface({
+          listTabs: () => [tab({ id: "v", viewing: true }), tab({ id: "o", own: true })],
+          closeTabs,
+        }),
+      }),
+    );
+    expect(closeTabs).toHaveBeenCalledWith(["o"]);
+    expect(result).toEqual({ done: true, closed: 1, withheld: ["human-tabs-not-allowed"] });
+  });
+
+  it("自分の・見ている・未保存のタブを断った理由は dirty-tabs-not-allowed だけ", async () => {
+    const result = await handleArrangeEditors(
+      { action: "close-own" },
+      deps({
+        surface: surface({
+          listTabs: () => [tab({ id: "d", own: true, isDirty: true, viewing: true })],
+        }),
+      }),
+    );
+    expect(result).toEqual({ done: true, closed: 0, withheld: ["dirty-tabs-not-allowed"] });
+  });
+
+  it("オンにすると、同じ自分の・見ているタブは残り、withheld は viewing-tab（床1 が断った理由）", async () => {
+    const closeTabs = vi.fn(async () => true);
+    const result = await handleArrangeEditors(
+      { action: "close-own" },
+      deps({
+        config: config({ protectViewingTab: true }),
+        surface: surface({
+          listTabs: () => [tab({ id: "p-viewing", own: true, viewing: true })],
+          closeTabs,
+        }),
+      }),
+    );
+    expect(closeTabs).not.toHaveBeenCalled();
+    expect(result).toEqual({ done: true, closed: 0, withheld: ["viewing-tab"] });
+  });
+});
+
+describe("handleArrangeEditors: 床1 ―― protectViewingTab がオンなら、人間が見ているタブは触らない（C1 / D92）", () => {
   it("自分のタブでも viewing なら close-own で残り、withheld は viewing-tab", async () => {
     const closeTabs = vi.fn(async () => true);
     const result = await handleArrangeEditors(
       { action: "close-own" },
       deps({
+        config: config({ protectViewingTab: true }),
         surface: surface({
           listTabs: () => [tab({ id: "p-viewing", own: true, viewing: true })],
           closeTabs,
@@ -454,6 +528,7 @@ describe("handleArrangeEditors: 床1 ―― 人間が見ているタブは触ら
     const result = await handleArrangeEditors(
       { action: "close-own" },
       deps({
+        config: config({ protectViewingTab: true }),
         surface: surface({
           listTabs: () => [tab({ id: "p-viewing", own: true, viewing: false })],
           closeTabs,
@@ -464,12 +539,12 @@ describe("handleArrangeEditors: 床1 ―― 人間が見ているタブは触ら
     expect(result).toEqual({ done: true, closed: 1 });
   });
 
-  it("closeHumanTabs と closeDirtyTabs を両方立てても viewing には触らない（床は設定で外れない）", async () => {
+  it("closeHumanTabs と closeDirtyTabs を両方立てても viewing には触らない（床1 は他の2つの設定で外れない）", async () => {
     const closeTabs = vi.fn(async () => true);
     const result = await handleArrangeEditors(
       { action: "close-other-tabs" },
       deps({
-        config: config({ closeHumanTabs: true, closeDirtyTabs: true }),
+        config: config({ closeHumanTabs: true, closeDirtyTabs: true, protectViewingTab: true }),
         surface: surface({
           // `isActive: false` なのに `viewing: true` はあり得ないが、候補の絞り込み
           // （`!isActive`）ではなく**述語**が落としていることを見るために分けてある。
@@ -483,11 +558,12 @@ describe("handleArrangeEditors: 床1 ―― 人間が見ているタブは触ら
   });
 
   it("viewing だけで断った自分のタブに、設定の理由を付けない", async () => {
-    // viewing は設定で外れないので、「human-tabs-not-allowed」を返すと
+    // viewing は closeHumanTabs では外れないので、「human-tabs-not-allowed」を返すと
     // エージェントは人間に設定を頼み、立ててもまた断られる。
     const result = await handleArrangeEditors(
       { action: "close-other-tabs" },
       deps({
+        config: config({ protectViewingTab: true }),
         surface: surface({ listTabs: () => [tab({ id: "v", own: true, viewing: true })] }),
       }),
     );
@@ -613,44 +689,47 @@ describe("handleArrangeEditors: 断ったことは言うが、枚数は言わな
   });
 
   it("断った1枚には必ず理由が付く（無言で断る組み合わせが無い）", () => {
-    // 設定4通り × タブ8通り（own × dirty × viewing）を総当たりする。**無言の拒否が1つでもあると、
+    // 設定8通り（closeHumanTabs × closeDirtyTabs × protectViewingTab）×
+    // タブ8通り（own × dirty × viewing）を総当たりする。**無言の拒否が1つでもあると、
     // エージェントは「片づいた」と読んで呼び続ける。**
     const promises: Array<Promise<void>> = [];
     let evaluated = 0;
     for (const closeHumanTabs of [false, true]) {
       for (const closeDirtyTabs of [false, true]) {
-        for (const own of [false, true]) {
-          for (const isDirty of [false, true]) {
-            for (const viewing of [false, true]) {
-              const label = `${closeHumanTabs}/${closeDirtyTabs}/own=${own}/dirty=${isDirty}/viewing=${viewing}`;
-              evaluated += 1;
-              promises.push(
-                handleArrangeEditors(
-                  { action: "close-other-tabs" },
-                  deps({
-                    config: config({ closeHumanTabs, closeDirtyTabs }),
-                    surface: surface({
-                      listTabs: () => [
-                        tab({ id: "active", isActive: true }),
-                        tab({ id: "x", own, isDirty, viewing }),
-                      ],
+        for (const protectViewingTab of [false, true]) {
+          for (const own of [false, true]) {
+            for (const isDirty of [false, true]) {
+              for (const viewing of [false, true]) {
+                const label = `${closeHumanTabs}/${closeDirtyTabs}/${protectViewingTab}/own=${own}/dirty=${isDirty}/viewing=${viewing}`;
+                evaluated += 1;
+                promises.push(
+                  handleArrangeEditors(
+                    { action: "close-other-tabs" },
+                    deps({
+                      config: config({ closeHumanTabs, closeDirtyTabs, protectViewingTab }),
+                      surface: surface({
+                        listTabs: () => [
+                          tab({ id: "active", isActive: true }),
+                          tab({ id: "x", own, isDirty, viewing }),
+                        ],
+                      }),
                     }),
+                  ).then((result) => {
+                    if (result.closed === 0) {
+                      // 1枚が候補で、閉じていない ＝ 断った。理由が要る。
+                      expect(result.withheld ?? [], label).not.toHaveLength(0);
+                    } else {
+                      expect(result.closed, label).toBe(1);
+                    }
                   }),
-                ).then((result) => {
-                  if (result.closed === 0) {
-                    // 1枚が候補で、閉じていない ＝ 断った。理由が要る。
-                    expect(result.withheld ?? [], label).not.toHaveLength(0);
-                  } else {
-                    expect(result.closed, label).toBe(1);
-                  }
-                }),
-              );
+                );
+              }
             }
           }
         }
       }
     }
-    expect(evaluated).toBe(32);
+    expect(evaluated).toBe(64);
     return Promise.all(promises).then(() => undefined);
   });
 
@@ -1148,11 +1227,14 @@ describe("handleArrangeEditors: move-tab（D59）", () => {
     expect(allowed).toEqual({ done: true, closed: 0, moved: 1 });
   });
 
-  it("人間が見ているタブは、設定を全部立てても動かない（床1 / withheld: viewing-tab）", async () => {
+  it("protectViewingTab がオンなら、人間が見ているタブは他の設定を全部立てても動かない（床1 / withheld: viewing-tab）", async () => {
     const s = spread();
     const result = await handleArrangeEditors(
       { action: "move-tab", path: "human.md", toColumn: 2 },
-      deps({ config: config({ closeHumanTabs: true, closeDirtyTabs: true }), surface: s }),
+      deps({
+        config: config({ closeHumanTabs: true, closeDirtyTabs: true, protectViewingTab: true }),
+        surface: s,
+      }),
     );
     expect(s.moveTabs).not.toHaveBeenCalled();
     expect(result).toEqual({ done: true, closed: 0, moved: 0, withheld: ["viewing-tab"] });
@@ -1377,7 +1459,7 @@ describe("handleArrangeEditors: move-panel（D59）", () => {
     expect(result).toEqual({ done: true, closed: 0, moved: 0 });
   });
 
-  it("人間が見ているパネルは動かない（床1）", async () => {
+  it("protectViewingTab がオンなら、人間が見ているパネルは動かない（床1）", async () => {
     const s = surface({
       listTabs: () => [
         tab({ id: "p", kind: "webview", slot: 1, own: true, column: 3, viewing: true }),
@@ -1386,7 +1468,7 @@ describe("handleArrangeEditors: move-panel（D59）", () => {
     });
     const result = await handleArrangeEditors(
       { action: "move-panel", toColumn: 2 },
-      deps({ config: config({ closeHumanTabs: true }), surface: s }),
+      deps({ config: config({ closeHumanTabs: true, protectViewingTab: true }), surface: s }),
     );
     expect(s.movePanel).not.toHaveBeenCalled();
     expect(result).toEqual({ done: true, closed: 0, moved: 0, withheld: ["viewing-tab"] });
@@ -1553,7 +1635,7 @@ describe("handleArrangeEditors: gather-own（D55-1）", () => {
     expect(result.withheld).toBeUndefined();
   });
 
-  it("人間が見ている own は残り、withheld: viewing-tab。他は集まる", async () => {
+  it("protectViewingTab がオンなら、人間が見ている own は残り、withheld: viewing-tab。他は集まる", async () => {
     const s = scattered({
       listTabs: () => [
         tab({ id: "a", path: "src/a.ts", column: 2, own: true }),
@@ -1563,7 +1645,10 @@ describe("handleArrangeEditors: gather-own（D55-1）", () => {
       // 人間が列3の own を覗いている（`activeTabGroup` は列3）。
       humanColumn: () => 3,
     });
-    const result = await handleArrangeEditors({ action: "gather-own" }, deps({ surface: s }));
+    const result = await handleArrangeEditors(
+      { action: "gather-own" },
+      deps({ config: config({ protectViewingTab: true }), surface: s }),
+    );
     // 人間が列3 → 右に列は無い → 集め先は列4（新しい列）。
     expect(movedIds(s)).toEqual([["a"]]);
     expect(s.movePanel).toHaveBeenCalledWith(1, 4);
@@ -1776,6 +1861,200 @@ describe("handleArrangeEditors: gather-own（D55-1）", () => {
  * 呼び出し全体がその理由で落ち、タブの一覧を引かない**（パスごとに答えを割ると
  * 秘匿ファイルの存在を1本ずつ確かめる口になる）。
  */
+/**
+ * **人間の列を使える配置（D93 / D94）。** `shared`（既定）は右に列が無ければ人間の列へ集める・動かす。
+ * `dedicated` でも、人間の列に人間のタブ（own でないタブ）が無ければ使う。判断は `human-column.ts` の
+ * `useHumanColumnFor` 1つで、`Stage.targetColumn`（開く）と同じ答えになる。人間の**タブ**を動かす
+ * 許可（reach = `closeHumanTabs`）は変わらない ―― 緩むのは行き先の列だけである。
+ */
+describe("handleArrangeEditors: 人間の列を使える配置（D93 / D94）", () => {
+  /**
+   * 人間が右端の列2 に居て、右に列が無い画面。own の `src/a.ts` は列1。`dedicated` で人間の列を
+   * 使えなければ集め先は新しい列3、使えるなら人間の列2（列を増やさない）。
+   */
+  const humanAtRightEdge = (hasHumanTabs: boolean, human: readonly ArrangeTab[]): ArrangeSurface =>
+    surface({
+      listTabs: () => [...human, tab({ id: "a", path: "src/a.ts", column: 1, own: true })],
+      groupColumns: () => columns(2),
+      humanColumn: () => 2,
+      humanColumnHasHumanTabs: () => hasHumanTabs,
+    });
+  /** gather-own が `decide` から受け取った集め先（面の偽物を差し替えて記録する）。 */
+  const gatherTarget = async (
+    s: ArrangeSurface,
+    editorGroup: EditorGroup,
+  ): Promise<number | string> => {
+    let target: number | string = "not-called";
+    (s.moveTabs as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ids: readonly string[], decide) => {
+        const d = decide(freshOf(s));
+        target = d.ok ? d.column : d.reason;
+        return { moved: d.ok ? 1 : 0, failed: 0 };
+      },
+    );
+    await handleArrangeEditors(
+      { action: "gather-own" },
+      deps({ config: config({}, false, editorGroup), surface: s }),
+    );
+    return target;
+  };
+  const HUMAN_TAB = tab({ id: "h", path: "human.md", column: 2, viewing: true });
+  const OWN_IN_HUMAN = tab({ id: "m", path: "src/mine.ts", column: 2, own: true, viewing: true });
+
+  it("shared（既定）: 右に列が無ければ、gather-own は人間の列へ集める（列を増やさない）", async () => {
+    expect(await gatherTarget(humanAtRightEdge(true, [HUMAN_TAB]), "shared")).toBe(2);
+  });
+
+  it("dedicated: 人間の列に人間のタブがあれば、gather-own は新しい列へ（以前どおり）", async () => {
+    expect(await gatherTarget(humanAtRightEdge(true, [HUMAN_TAB]), "dedicated")).toBe(3);
+  });
+
+  it("dedicated: 人間の列にエージェントのタブしか無ければ、gather-own は人間の列へ集める（D94）", async () => {
+    const s = humanAtRightEdge(false, [OWN_IN_HUMAN]);
+    expect(await gatherTarget(s, "dedicated")).toBe(2);
+    // 人間の列に既に居る own は動かさない（既に集め先）。列1 の1枚だけ。
+    expect(movedIds(s)).toEqual([["a"]]);
+  });
+
+  it("gather-own の答えは show_code が開く列と同じ（placeStageColumn に同じ useHumanColumn）", async () => {
+    for (const [editorGroup, hasHumanTabs, useHumanColumn] of [
+      ["shared", true, true],
+      ["dedicated", true, false],
+      ["dedicated", false, true],
+    ] as const) {
+      const got = await gatherTarget(humanAtRightEdge(hasHumanTabs, [HUMAN_TAB]), editorGroup);
+      expect(got, `${editorGroup} ${hasHumanTabs}`).toBe(
+        placeStageColumn([1, 2], "single", 0, 2, 2, undefined, useHumanColumn),
+      );
+    }
+  });
+
+  /** 人間が列1。own の `src/b.ts` が列2。人間のタブ `human.md` は列1。 */
+  const twoColumns = (hasHumanTabs: boolean): ArrangeSurface =>
+    surface({
+      listTabs: () => [
+        tab({ id: "h", path: "human.md", column: 1, isActive: true, viewing: true }),
+        tab({ id: "b", path: "src/b.ts", column: 2, own: true, isActive: true }),
+      ],
+      groupColumns: () => columns(2),
+      humanColumn: () => 1,
+      humanColumnHasHumanTabs: () => hasHumanTabs,
+    });
+
+  it("move-tab で自分のタブを人間の列へ: shared は通る", async () => {
+    const s = twoColumns(true);
+    const result = await handleArrangeEditors(
+      { action: "move-tab", path: "src/b.ts", toColumn: 1 },
+      deps({ config: config({}, false, "shared"), surface: s }),
+    );
+    expect(movedIds(s)).toEqual([["b"]]);
+    expect(result).toEqual({ done: true, closed: 0, moved: 1 });
+  });
+
+  it("move-tab で自分のタブを人間の列へ: dedicated で人間のタブがあれば human-column-target（以前どおり）", async () => {
+    const s = twoColumns(true);
+    const result = await handleArrangeEditors(
+      { action: "move-tab", path: "src/b.ts", toColumn: 1 },
+      deps({ config: config({}, false, "dedicated"), surface: s }),
+    );
+    expect(s.moveTabs).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      done: false,
+      closed: 0,
+      moved: 0,
+      withheld: ["human-column-target"],
+    });
+  });
+
+  it("move-tab で自分のタブを人間の列へ: dedicated でも人間の列が own だけなら通る（D94）", async () => {
+    const s = twoColumns(false);
+    const result = await handleArrangeEditors(
+      { action: "move-tab", path: "src/b.ts", toColumn: 1 },
+      deps({ config: config({}, false, "dedicated"), surface: s }),
+    );
+    expect(movedIds(s)).toEqual([["b"]]);
+    expect(result).toEqual({ done: true, closed: 0, moved: 1 });
+  });
+
+  it("move-panel で自分のパネルを人間の列へ: shared は通る。dedicated + 人間のタブは断る", async () => {
+    const panelSurface = (): ArrangeSurface =>
+      surface({
+        listTabs: () => [
+          tab({ id: "h", path: "human.md", column: 1, viewing: true }),
+          tab({ id: "p", kind: "webview", slot: 1, own: true, column: 2 }),
+        ],
+        groupColumns: () => columns(2),
+        humanColumn: () => 1,
+        humanColumnHasHumanTabs: () => true,
+      });
+    const shared = panelSurface();
+    const ok = await handleArrangeEditors(
+      { action: "move-panel", toColumn: 1 },
+      deps({ config: config({}, false, "shared"), surface: shared }),
+    );
+    expect(shared.movePanel).toHaveBeenCalledWith(1, 1);
+    expect(ok).toEqual({ done: true, closed: 0, moved: 1 });
+    const dedicated = panelSurface();
+    const refused = await handleArrangeEditors(
+      { action: "move-panel", toColumn: 1 },
+      deps({ config: config({}, false, "dedicated"), surface: dedicated }),
+    );
+    expect(dedicated.movePanel).not.toHaveBeenCalled();
+    expect(refused.withheld).toEqual(["human-column-target"]);
+  });
+
+  it("人間のタブを動かすのは shared でも closeHumanTabs が要る（reach は緩まない）", async () => {
+    // 人間のタブ `human.md` が列2 にあり、人間の列（列1）へ動かそうとする。
+    const s = (): ArrangeSurface =>
+      surface({
+        listTabs: () => [tab({ id: "x", path: "human.md", column: 2 })],
+        groupColumns: () => columns(2),
+        humanColumn: () => 1,
+        humanColumnHasHumanTabs: () => false,
+      });
+    const refusedSurface = s();
+    const refused = await handleArrangeEditors(
+      { action: "move-tab", path: "human.md", toColumn: 1 },
+      deps({ config: config({}, false, "shared"), surface: refusedSurface }),
+    );
+    expect(refusedSurface.moveTabs).not.toHaveBeenCalled();
+    expect(refused).toEqual({
+      done: true,
+      closed: 0,
+      moved: 0,
+      withheld: ["human-tabs-not-allowed"],
+    });
+    // 対照: closeHumanTabs を立てれば同じ画面で動く。
+    const allowedSurface = s();
+    const allowed = await handleArrangeEditors(
+      { action: "move-tab", path: "human.md", toColumn: 1 },
+      deps({ config: config({ closeHumanTabs: true }, false, "shared"), surface: allowedSurface }),
+    );
+    expect(movedIds(allowedSurface)).toEqual([["x"]]);
+    expect(allowed).toEqual({ done: true, closed: 0, moved: 1 });
+  });
+
+  it("人間の列が観測できなければ shared でも断る（推測で集めない・動かさない）", async () => {
+    const s = surface({
+      listTabs: () => [tab({ id: "b", path: "src/b.ts", column: 2, own: true })],
+      groupColumns: () => columns(2),
+      humanColumn: () => undefined,
+      humanColumnHasHumanTabs: () => false,
+    });
+    const gather = await handleArrangeEditors(
+      { action: "gather-own" },
+      deps({ config: config({}, false, "shared"), surface: s }),
+    );
+    expect(gather.withheld).toEqual(["human-column-target"]);
+    const move = await handleArrangeEditors(
+      { action: "move-tab", path: "src/b.ts", toColumn: 1 },
+      deps({ config: config({}, false, "shared"), surface: s }),
+    );
+    expect(move.withheld).toEqual(["human-column-target"]);
+    expect(s.moveTabs).not.toHaveBeenCalled();
+  });
+});
+
 describe("handleArrangeEditors: close-tabs", () => {
   /** 人間が列1で keep.md を見ていて、人間のタブと own が列1・2に散っている画面。 */
   const LISTED: readonly ArrangeTab[] = [
@@ -1814,7 +2093,7 @@ describe("handleArrangeEditors: close-tabs", () => {
     expect(result).toEqual({ done: true, closed: 2 });
   });
 
-  it("可否の真理値表: own / human × viewing / dirty / plain × closeHumanTabs / closeDirtyTabs（述語は mayClose 1つ）", async () => {
+  it("可否の真理値表: own / human × viewing / dirty / plain × closeHumanTabs / closeDirtyTabs / protectViewingTab（述語は mayClose 1つ）", async () => {
     // **期待値は表で書く**（`mayClose` を呼んで導出しない ―― 導出すると述語の変異に
     // この検査が追随して緑のまま通る）。
     type Row = {
@@ -1822,6 +2101,7 @@ describe("handleArrangeEditors: close-tabs", () => {
       state: "viewing" | "dirty" | "plain";
       closeHumanTabs: boolean;
       closeDirtyTabs: boolean;
+      protectViewingTab: boolean;
       closes: boolean;
       withheld: string[];
     };
@@ -1830,29 +2110,37 @@ describe("handleArrangeEditors: close-tabs", () => {
       for (const state of ["viewing", "dirty", "plain"] as const) {
         for (const closeHumanTabs of [false, true]) {
           for (const closeDirtyTabs of [false, true]) {
-            const reach = own || closeHumanTabs;
-            const withheld: string[] = [];
-            if (!reach) withheld.push("human-tabs-not-allowed");
-            if (state === "dirty" && !closeDirtyTabs) withheld.push("dirty-tabs-not-allowed");
-            if (state === "viewing") withheld.push("viewing-tab");
-            rows.push({
-              own,
-              state,
-              closeHumanTabs,
-              closeDirtyTabs,
-              closes: withheld.length === 0,
-              withheld,
-            });
+            for (const protectViewingTab of [false, true]) {
+              const reach = own || closeHumanTabs;
+              const withheld: string[] = [];
+              if (!reach) withheld.push("human-tabs-not-allowed");
+              if (state === "dirty" && !closeDirtyTabs) withheld.push("dirty-tabs-not-allowed");
+              if (state === "viewing" && protectViewingTab) withheld.push("viewing-tab");
+              rows.push({
+                own,
+                state,
+                closeHumanTabs,
+                closeDirtyTabs,
+                protectViewingTab,
+                closes: withheld.length === 0,
+                withheld,
+              });
+            }
           }
         }
       }
     }
-    expect(rows.length).toBe(24);
+    expect(rows.length).toBe(48);
     // 表の要点を**値で**固定する（ループが生成したものを鵜呑みにしない）。
-    const pick = (own: boolean, state: Row["state"], h: boolean, d: boolean): Row => {
+    // 最後の引数は protectViewingTab。省略は既定（オフ）。
+    const pick = (own: boolean, state: Row["state"], h: boolean, d: boolean, v = false): Row => {
       const row = rows.find(
         (r) =>
-          r.own === own && r.state === state && r.closeHumanTabs === h && r.closeDirtyTabs === d,
+          r.own === own &&
+          r.state === state &&
+          r.closeHumanTabs === h &&
+          r.closeDirtyTabs === d &&
+          r.protectViewingTab === v,
       );
       if (row === undefined) throw new Error("row missing");
       return row;
@@ -1863,9 +2151,19 @@ describe("handleArrangeEditors: close-tabs", () => {
       withheld: ["human-tabs-not-allowed"],
     });
     expect(pick(false, "plain", true, false).closes).toBe(true);
-    expect(pick(true, "viewing", true, true)).toMatchObject({
+    expect(pick(true, "viewing", true, true, true)).toMatchObject({
       closes: false,
       withheld: ["viewing-tab"],
+    });
+    // 既定（オフ）では viewing は判断にも理由にも効かない（D92）。
+    expect(pick(true, "viewing", false, false).closes).toBe(true);
+    expect(pick(false, "viewing", false, false)).toMatchObject({
+      closes: false,
+      withheld: ["human-tabs-not-allowed"],
+    });
+    expect(pick(false, "viewing", false, false, true)).toMatchObject({
+      closes: false,
+      withheld: ["human-tabs-not-allowed", "viewing-tab"],
     });
     expect(pick(true, "dirty", false, false)).toMatchObject({
       closes: false,
@@ -1904,6 +2202,7 @@ describe("handleArrangeEditors: close-tabs", () => {
           config: config({
             closeHumanTabs: row.closeHumanTabs,
             closeDirtyTabs: row.closeDirtyTabs,
+            protectViewingTab: row.protectViewingTab,
           }),
         }),
       );
@@ -1916,7 +2215,7 @@ describe("handleArrangeEditors: close-tabs", () => {
       }
       evaluated += 1;
     }
-    expect(evaluated).toBe(24);
+    expect(evaluated).toBe(48);
   });
 
   it("同じパスが2列に開いていれば両方閉じる（札は1回で渡す）", async () => {
@@ -2072,7 +2371,8 @@ describe("handleArrangeEditors: close-tabs", () => {
   it("結果は線上のスキーマを通る（notOpen 込み）。断った枚数も名前も返さない", async () => {
     const result = await handleArrangeEditors(
       { action: "close-tabs", paths: ["docs/h1.md", "docs/h2.md", "docs/keep.md", "src/none.ts"] },
-      deps({ surface: listed() }),
+      // 3つの理由が全部並ぶ形を線上のスキーマに通すため、見ているタブの保護をオンにする。
+      deps({ config: config({ protectViewingTab: true }), surface: listed() }),
     );
     expect(arrangeEditorsResultSchema.safeParse(result).success, JSON.stringify(result)).toBe(true);
     expect(Object.keys(result).sort()).toEqual(["closed", "done", "notOpen", "withheld"]);

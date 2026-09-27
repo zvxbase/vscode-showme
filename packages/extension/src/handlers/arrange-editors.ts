@@ -17,9 +17,10 @@ import {
   moveTargetVerdict,
 } from "../arrange-policy.js";
 import type { ShowMeConfig } from "../config.js";
+import { useHumanColumnFor } from "../human-column.js";
 import { placeStageColumn } from "../stage-column.js";
 import { ToolError } from "../tool-error.js";
-import type { WorkspacePathVerdict } from "../workspace-path-gate.js";
+import type { ObservablePathVerdict } from "../workspace-path-gate.js";
 
 /**
  * `arrange_editors`（設計 §2）。
@@ -56,6 +57,12 @@ export interface FreshColumns {
    * 面は設定に依らず観測して渡し、使うかどうかはハンドラが `showme.stage.avoidToolColumns` で決める。
    */
   toolColumns: ReadonlySet<number>;
+  /**
+   * 人間の列に own でないタブ（人間のタブ）があるか（D94）。`columns` / `humanColumn` と**同じ観測**で
+   * 取る（`editor-surface.ts` の `humanColumnHasHumanTabs`。own の判定は `isOwnTab`）。使うかどうかは
+   * ハンドラが `showme.stage.editorGroup` と合わせて `useHumanColumnFor` で決める。
+   */
+  humanColumnHasHumanTabs: boolean;
 }
 
 /**
@@ -158,6 +165,11 @@ export interface ArrangeSurface {
   /** いま存在する列の数（`tabGroups.all.length`。`Stage` の丸めと同じ量）。観測を返すだけ。 */
   groupCount(): number;
   /**
+   * 人間の列（`activeTabGroup`）に own でないタブがあるか（D94）。**観測を返すだけ。** 使うかどうかは
+   * 設定を見るハンドラが決める（`useHumanColumnFor`）。
+   */
+  humanColumnHasHumanTabs(): boolean;
+  /**
    * 人間が居る列（`activeTabGroup.viewColumn`）。**観測する。推測しない**（D55-2 の3）。
    * 列の位置（「最左が人間」）から推測すると、人間が舞台の列を覗いた瞬間に外れる
    * ―― 増分2B で人間の列を奪ったのと同じ量である。
@@ -195,7 +207,7 @@ export interface ArrangeEditorsDeps {
    * 落ちたものはその理由で `ToolError` になり、タブの一覧を引かない（秘匿ファイルを
    * 人間が開いているかの口にしない）。
    */
-  acceptPath: (raw: string) => WorkspacePathVerdict;
+  acceptPath: (raw: string) => ObservablePathVerdict;
   /**
    * `show_code` のスポットライトを消す（画家 `Highlights.clearSpotlight`）。`close-own` が
    * 片づいたときに呼ぶ ―― 消すのは画家で、ハンドラは呼ぶ時だけを決める（増分6 D67）。
@@ -327,12 +339,12 @@ async function handleClose(
   const tabs = deps.surface.listTabs();
 
   // 候補を絞る。**`close-own` は自分のもの**（webview もテキストタブも。D53）だけを
-  // 候補にする。候補に入っても、床（見ている／未保存）は `mayClose` が当てる ――
+  // 候補にする。候補に入っても、床（未保存／protectViewingTab がオンなら見ている）は `mayClose` が当てる ――
   // 自分のものだから無条件、ではない（D53'）。
   //
   // `close-other-tabs` の除外は**その列でアクティブかどうかだけ**で決める。所有で
   // 例外を作らない。人間が**見ている**1枚（`viewing`）はこれとは別に、
-  // 述語の床1 が全語で守る。
+  // `protectViewingTab` がオンなら述語の床1 が全語で守る（D92。既定はオフ）。
   //
   // `close-tabs` は指されたテキストタブだけ。webview / 端末には `path` が無いので
   // 構造的に入らない（own のパネルは `close-own` の仕事）。同じパスが2列にあれば両方。
@@ -370,10 +382,12 @@ async function handleClose(
   if (refused.some((candidate) => candidate.isDirty && !permissions.closeDirtyTabs)) {
     withheld.push("dirty-tabs-not-allowed");
   }
-  // 人間が見ているタブは**設定で外れない**（床1）。設定の理由と分けて言う ――
-  // 「human-tabs-not-allowed」に混ぜると、エージェントは人間に設定を頼み、
-  // 立ててもまた断られる。
-  if (refused.some((candidate) => candidate.viewing)) {
+  // 人間が見ているタブを守るのは `protectViewingTab` がオンのときだけ（床1。D92）。
+  // `closeHumanTabs` とは直交するので、設定の理由と分けて言う ――
+  // 「human-tabs-not-allowed」に混ぜると、エージェントは人間に closeHumanTabs を頼み、
+  // 立ててもまた断られる。オフのときは viewing で断ることが無いので、理由にも挙げない
+  // （挙げると、断った本当の項 ―― reach や床2 ―― と別の設定を人間に頼むことになる）。
+  if (refused.some((candidate) => candidate.viewing && permissions.protectViewingTab)) {
     withheld.push("viewing-tab");
   }
 
@@ -389,7 +403,7 @@ async function handleClose(
   // **片づけたのに指差しが残るのは片づけていない**（D67）。スポットライトの寿命は
   // 1回の `show_code` の分だけで、`close-own` はその終わりでもある。
   //
-  // 決めるのは `done` だけである。断られた own タブ（人間が見ている／未保存）が
+  // 決めるのは `done` だけである。断られた own タブ（未保存／protectViewingTab がオンなら見ている）が
   // 開いたまま残っても消す ―― 人間は「片づけて」と言ったのであり、指差しは中身では
   // なく指であって、残しても人間には戻る手段も消す手段も無い（§C1）。閉じるものが
   // 無くても同じ理由で消す。消さないのは面が失敗した（`done: false`）ときだけで、
@@ -429,10 +443,12 @@ async function handleClose(
  *
  * ## 述語は close と同じ `mayTouch`（op: "move"）
  *
- * 床1（人間が見ているものは触らない）は掛かり、床2（未保存）は掛からない ――
+ * 床1（`protectViewingTab` がオンなら、人間が見ているものは触らない）は掛かり、床2（未保存）は掛からない ――
  * 動かしても何も失われない。移動先の判定は `moveTargetVerdict` 1つ
  * （`move-tab` も `move-panel` も）。`gather-own` の集め先は `show_code` と同じ
- * `placeStageColumn` が構成するので、人間の列にはならない（`firstStageColumn` と同じ列）。
+ * `placeStageColumn` が構成する（`firstStageColumn` と同じ列）。人間の列になるのは、人間の列を
+ * 使えるとき（`useHumanColumnFor`。D93 / D94）だけで、`show_code` が開くのと同じ答えである。
+ * 人間の列へ own を動かすのも同じ条件で通る。人間の**タブ**を動かす許可（reach）は変わらない。
  *
  * ## タブは `path` で指す。題では指さない（D41）
  *
@@ -465,10 +481,11 @@ async function handleMove(
   // 既定の枠は protocol の `DEFAULT_PANEL_SLOT`（`show_html` の既定と同じ値。別に書かない）。
   const wantedSlot: PanelSlot = args.slot ?? DEFAULT_PANEL_SLOT;
 
-  // 設定は1回だけ読む（許可と「道具の列を避けるか」を同じ写しから）。
+  // 設定は1回だけ読む（許可と「道具の列を避けるか」と `editorGroup` を同じ写しから）。
   const config = deps.config();
   const permissions: ArrangePermissions = config.layout;
   const avoidToolColumns = config.avoidToolColumns;
+  const editorGroup = config.editorGroup;
 
   // **移動先の決め方は1つの純関数にして、面に渡す。** 面は1枚動かすごとに新しい観測
   // （`groupColumns` / `humanColumn`）でこれを呼ぶ（レビュー I3: 元の列が空になると
@@ -476,38 +493,53 @@ async function handleMove(
   // 居るとき収束しない）。人間が途中で移動先の列を覗いたら、そこで止まる（M1）。
   const decide: MoveTargetDecider =
     action === "gather-own"
-      ? ({ columns, humanColumn, toolColumns, groupCount }) => {
+      ? ({ columns, humanColumn, toolColumns, groupCount, humanColumnHasHumanTabs }) => {
           // 人間の列が観測できない → どこが舞台か言えない。推測で集めない。
           // `placeStageColumn` は人間の列を省くと最小の列と仮定するので、先に断る。
           if (humanColumn === undefined) return { ok: false, reason: "human-column-target" };
           // 道具の列を避けるのは設定がオンのときだけ（D90）。オフなら観測があっても渡さない ――
           // 以前の答えのまま。
           const avoid = avoidToolColumns ? toolColumns : undefined;
+          // 人間の列を使えるか（D93 / D94）。`Stage.targetColumn` と同じ関数・同じ量。
+          const useHumanColumn = useHumanColumnFor(editorGroup, humanColumnHasHumanTabs);
           // 集め先は `show_code` が開く列と**同じ関数・同じ量**で決める（`Stage.targetColumn` の
           // `placeStageColumn`。存在する列の数も `Stage` と同じ `tabGroups.all.length`）。丸めた
           // 後の列をそのまま使う ―― 丸める前の番号に動かすと、`show_code` と違う列に集めうる。
-          const placed = placeStageColumn(columns, "single", 0, humanColumn, groupCount, avoid);
+          const placed = placeStageColumn(
+            columns,
+            "single",
+            0,
+            humanColumn,
+            groupCount,
+            avoid,
+            useHumanColumn,
+          );
           // オンで Nine の外にしか置けなければ断る ―― 人間の列にも避ける列にも集めない。
           if (placed === "none") return { ok: false, reason: "no-stage-column" };
           // "beside" は列が1つも無いとき（人間の列が観測できた以上、起きないはず）。番号の
           // 無い行き先へは集めない。
           if (placed === "beside") return { ok: false, reason: "human-column-target" };
           // 設定がオフの以前の道は丸めた先を調べない。列が飛び番（実際の VS Code には無い形）だと
-          // 丸めが人間の列に落ちうるので、集める側では人間の列を断る（床。§C2）。
-          if (placed === humanColumn) return { ok: false, reason: "human-column-target" };
+          // 丸めが人間の列に落ちうるので、人間の列を使えないなら集める側で断る（床。§C2）。
+          // 使えるなら（D93 / D94）人間の列は選び方が候補にした列である。
+          if (placed === humanColumn && !useHumanColumn) {
+            return { ok: false, reason: "human-column-target" };
+          }
           return { ok: true, column: placed };
         }
-      : ({ columns, humanColumn, toolColumns }) => {
+      : ({ columns, humanColumn, toolColumns, humanColumnHasHumanTabs }) => {
           // `toColumn` は形の検査で必須にしてある。
           const toColumn = args.toColumn ?? Number.NaN;
           // 道具の列へは入れない（D90。設定がオンのときだけ。行き先だけを見るので、道具の列から
-          // 出すのは通る）。
+          // 出すのは通る）。人間の列へは、人間の列を使えるとき（D93 / D94。開くのと同じ
+          // `useHumanColumnFor`）か `closeHumanTabs` のときだけ ―― 開けるのに動かせない列を作らない。
           const verdict = moveTargetVerdict(
             toColumn,
             columns.length,
             humanColumn,
             permissions,
             avoidToolColumns ? toolColumns : undefined,
+            useHumanColumnFor(editorGroup, humanColumnHasHumanTabs),
           );
           return verdict.ok ? { ok: true, column: toColumn } : verdict;
         };
@@ -558,7 +590,10 @@ async function handleMove(
   if (refused.some((t) => !t.own && !permissions.closeHumanTabs)) {
     withheld.push("human-tabs-not-allowed");
   }
-  if (refused.some((t) => t.viewing)) withheld.push("viewing-tab");
+  // 床1 で断ったものだけを viewing-tab と言う（close 側と同じ。D92）。
+  if (refused.some((t) => t.viewing && permissions.protectViewingTab)) {
+    withheld.push("viewing-tab");
+  }
 
   // **既にその列に居るものは動かさない。** 同じ列へ「開いてから閉じる」と、開くのは
   // 同じタブで閉じるのもそのタブ ―― 自分のタブを消すことになる。動かした数にも入れない。
@@ -617,6 +652,7 @@ function freshColumns(surface: ArrangeSurface): FreshColumns {
     humanColumn: surface.humanColumn(),
     toolColumns: surface.toolColumns(),
     groupCount: surface.groupCount(),
+    humanColumnHasHumanTabs: surface.humanColumnHasHumanTabs(),
   };
 }
 

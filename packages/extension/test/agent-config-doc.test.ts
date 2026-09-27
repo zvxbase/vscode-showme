@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { TOOL_ANNOTATIONS, TOOL_NAMES } from "@zvx/vscode-showme-protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -5,10 +9,28 @@ import {
   allowListInDocument,
   bridgeLaunchArgs,
   buildAgentConfigDocument,
+  portableLaunchArgs,
   shellQuote,
 } from "../src/agent-config-doc.js";
 
 const BRIDGE = "/home/me/.vscode-server/extensions/zvxbase.vscode-showme-0.0.0/bridge/index.js";
+const HOME = "/home/me";
+
+/** 文書のコードブロックを、言語の札と中身の組で順に取り出す。 */
+function codeBlocks(doc: string): { lang: string; body: string }[] {
+  return [...doc.matchAll(/```(\w*)\n([\s\S]*?)\n```/g)].map((m) => ({
+    lang: m[1] ?? "",
+    body: m[2] ?? "",
+  }));
+}
+
+interface ServersJson {
+  mcpServers: { showme: { type?: string; command: string; args: string[]; tools?: string[] } };
+}
+const jsonBlocks = (doc: string): ServersJson[] =>
+  codeBlocks(doc)
+    .filter((b) => b.lang === "json" && b.body.startsWith("{"))
+    .map((b) => JSON.parse(b.body) as ServersJson);
 
 describe("agentConfigAllowList（B6 / §7.2）", () => {
   it("arrange_editors だけが無く、他は全部ある", () => {
@@ -90,10 +112,112 @@ describe.each(["en", "ja"] as const)("buildAgentConfigDocument（D62 / §7.2）[
     expect(outside).toContain('"mcp__showme__arrange_editors"');
   });
 
-  it("npx の断片は無い（S12）", () => {
+  it("npx の断片は無い（S12）。npx の語は、頼む文の「使わない」の1行にだけある", () => {
     expect(doc).not.toMatch(/npx\s+-y/);
-    expect(doc).not.toContain("npx");
     expect(doc).not.toContain("@zvx/vscode-showme-bridge");
+    // 断片（頼む文以外のコードブロック）に npx は無い
+    for (const b of codeBlocks(doc).filter((x) => x.lang !== "text")) {
+      expect(b.body).not.toContain("npx");
+    }
+    // npx の語が出る行は、禁止の1行だけ（本文にも断片にも他に無い）
+    const lines = doc.split("\n").filter((l) => l.includes("npx"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(lang === "en" ? /Do not use npx/ : /npx を使わない/);
+  });
+
+  it("この repo だけの設定: Claude Code の3つのスコープを同じ引数で出す", () => {
+    const args = bridgeLaunchArgs(BRIDGE).map(shellQuote).join(" ");
+    expect(doc).toContain(`claude mcp add --scope user showme -- node ${args}`);
+    expect(doc).toContain(`claude mcp add --scope project showme -- node ${args}`);
+    // 既定（local）がすでにこの repo だけ・自分だけであること
+    expect(doc).toMatch(/--scope local/);
+    expect(doc).toContain("~/.claude.json");
+    expect(doc).toContain("claude mcp reset-project-choices");
+  });
+
+  it("この repo だけの設定: Codex は .codex/config.toml（trusted のときだけ読まれる）", () => {
+    expect(doc).toContain(".codex/config.toml");
+    expect(doc).toContain('trust_level = "trusted"');
+    const tomls = codeBlocks(doc).filter((b) => b.lang === "toml");
+    expect(tomls.length).toBe(2);
+    expect(tomls[1]?.body).toBe(tomls[0]?.body); // 同じ断片
+  });
+
+  it('この repo だけの設定: Copilot CLI は tools: ["*"] 付きで、同じ引数', () => {
+    expect(doc).toContain(".github/mcp.json");
+    // Copilot CLI の断片（ユーザーの mcp-config.json と repo の分）は同じもので、どちらも tools 付き
+    const copilot = jsonBlocks(doc);
+    expect(copilot).toHaveLength(2);
+    for (const j of copilot) {
+      expect(j.mcpServers.showme).toEqual({
+        type: "stdio",
+        command: "node",
+        args: bridgeLaunchArgs(BRIDGE),
+        tools: ["*"],
+      });
+    }
+    // 1つの .mcp.json を Claude Code と Copilot CLI の両方で使えることを書く
+    expect(doc).toMatch(
+      lang === "en" ? /both Claude Code and Copilot CLI/ : /Claude Code と Copilot CLI の両方/,
+    );
+  });
+
+  it("注意書き: 機械ごとのパス・他人の repo の設定・VS Code の Copilot で2つ並ぶ", () => {
+    expect(doc).toMatch(lang === "en" ? /this machine/ : /この機械/);
+    expect(doc).toMatch(lang === "en" ? /someone else's repository/ : /他人の repo/);
+    expect(doc).toMatch(lang === "en" ? /twice/ : /2つ並ぶ/);
+  });
+
+  it("ホーム配下なら、共有できる形（ホームを実行時に求める）を1つだけ出す", () => {
+    const withHome = buildAgentConfigDocument(BRIDGE, lang, HOME);
+    const portable = jsonBlocks(withHome).filter((j) =>
+      j.mcpServers.showme.args.join().includes("homedir()"),
+    );
+    expect(portable).toHaveLength(1);
+    expect(portable[0]?.mcpServers.showme).toEqual({
+      type: "stdio",
+      command: "node",
+      args: portableLaunchArgs(BRIDGE, HOME),
+      tools: ["*"],
+    });
+    // この機械のホームの綴りは入らない
+    expect(portable[0]?.mcpServers.showme.args.join()).not.toContain(HOME);
+    // Claude Code・Copilot CLI の .mcp.json と、Codex の .codex/config.toml で使えると書く
+    expect(withHome).toMatch(lang === "en" ? /works for anyone/ : /誰の機械でも/);
+    // ホーム配下でなければ出さない。ホームを渡さなくても出さない
+    expect(buildAgentConfigDocument(BRIDGE, lang, "/root")).not.toContain("homedir()");
+    expect(buildAgentConfigDocument(BRIDGE, lang, "/home/m")).not.toContain("homedir()");
+    expect(doc).not.toContain("homedir()");
+    expect(withHome).not.toContain("${HOME}");
+  });
+
+  it("節の見出しはスコープの3つを言い、Codex は trusted のときだけ読むとだけ書く", () => {
+    expect(doc).toContain(
+      lang === "en"
+        ? "\n## Scopes: this repository, all repositories, or your team\n"
+        : "\n## スコープ（この repo だけ／すべての repo／チームで共有）\n",
+    );
+    expect(doc).not.toMatch(/without a message|何も言わずに/);
+  });
+
+  it("エージェントに頼む文: 責任の明記と、狭く縛る約束を1つの文に持つ", () => {
+    const prompts = codeBlocks(doc).filter((b) => b.lang === "text");
+    expect(prompts).toHaveLength(1);
+    const prompt = prompts[0]?.body ?? "";
+    expect(doc).toMatch(lang === "en" ? /You are responsible/ : /責任は使う人/);
+    expect(prompt).toMatch(lang === "en" ? /Do not use npx/ : /npx を使わない/);
+    expect(prompt).toContain("mcp__showme__arrange_editors");
+    expect(prompt).toMatch(lang === "en" ? /wildcard/ : /ワイルドカード/);
+    expect(prompt).toMatch(lang === "en" ? /diff/ : /差分/);
+    expect(prompt).toMatch(lang === "en" ? /which agent/ : /どのエージェント/);
+    expect(prompt).toMatch(lang === "en" ? /on your own/ : /勝手に/);
+    expect(prompt).toContain("/mcp");
+    expect(prompt).toMatch(lang === "en" ? /Do not commit or push/ : /コミットも push もしない/);
+    if (lang === "ja")
+      expect(prompt.split("\n")[0]).toMatch(/^私が渡す ShowMe の設定の文書を使って/);
+    expect(prompt).not.toContain("<");
+    // 頼む文は許可リストとして読まれない（許可リストは値として変わらない）
+    expect(allowListInDocument(doc)).toEqual(agentConfigAllowList());
   });
 
   it("削除側も同じ文書にある", () => {
@@ -110,6 +234,7 @@ describe.each(["en", "ja"] as const)("buildAgentConfigDocument（D62 / §7.2）[
       type: "stdio",
       command: "node",
       args: bridgeLaunchArgs(BRIDGE),
+      tools: ["*"],
     });
 
     const toml = /```toml\n([\s\S]*?)\n```/.exec(doc);
@@ -147,5 +272,69 @@ describe("buildAgentConfigDocument の言語（D58）", () => {
     expect(ja).toContain("エージェント設定");
     // 事実は同じ: 許可リストは値として一致する。
     expect(allowListInDocument(en)).toEqual(allowListInDocument(ja));
+  });
+});
+
+/**
+ * 共有できる形: `-e` の1行が、ホームを実行時に `os.homedir()` で求める。この機械のホームの綴りは
+ * 1文字も入らない（入るのはホームより下の相対の部分だけ）ので、ホームに何が入っていても壊れない。
+ */
+describe("portableLaunchArgs", () => {
+  const homes = [
+    "/home/me",
+    "/Users/Jane Doe",
+    `/home/o'brien "q"`,
+    "/home/日本語",
+    "C:\\Users\\me x",
+  ];
+  it.each(homes)("ホーム %s: 1行は JS として読め、ホームの綴りを含まない", (home) => {
+    const sep = home.includes("\\") ? "\\" : "/";
+    const bridge = [
+      home,
+      ".vscode",
+      "extensions",
+      "zvxbase.vscode-showme-1.2.3",
+      "bridge",
+      "index.js",
+    ].join(sep);
+    const args = portableLaunchArgs(bridge, home);
+    expect(args?.[0]).toBe("-e");
+    const script = args?.[1] ?? "";
+    expect(() => new Function(script)).not.toThrow();
+    expect(script).not.toContain(home);
+    expect(script).toContain('require("os").homedir(),".vscode","extensions"');
+    // ホームの部分のほかは、いつもの1行と同じ
+    const normal = bridgeLaunchArgs(bridge)[1] ?? "";
+    expect(script.replace(/dir=[^;]*?\),pre=/, "dir=X,pre=")).toBe(
+      normal.replace(/dir="[^"]*(?:\\.[^"]*)*",pre=/, "dir=X,pre="),
+    );
+  });
+
+  it("実際に node で動かすと、HOME の下のいちばん新しい版を起動する", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "show me home "));
+    const ext = path.join(home, ".vscode", "extensions");
+    for (const v of ["0.9.0", "0.10.0"]) {
+      const dir = path.join(ext, `zvxbase.vscode-showme-${v}`, "bridge");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "index.js"), `process.stdout.write("bridge ${v}");`);
+    }
+    // 別の人のホームで作った1行を、この一時ホームで動かす（ホームの綴りに依らない）
+    const args = portableLaunchArgs(
+      "/home/user/.vscode/extensions/zvxbase.vscode-showme-0.1.0/bridge/index.js",
+      "/home/user",
+    );
+    const r = spawnSync(process.execPath, args ?? [], {
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+      encoding: "utf8",
+    });
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe("bridge 0.10.0");
+  });
+
+  it("ホームの下でない・開発中の置き場（版番号が無い）なら出さない", () => {
+    expect(portableLaunchArgs(BRIDGE, "/root")).toBeUndefined();
+    expect(portableLaunchArgs(BRIDGE, "/home/m")).toBeUndefined();
+    expect(portableLaunchArgs(BRIDGE, undefined)).toBeUndefined();
+    expect(portableLaunchArgs("/home/me/src/showme/bridge/index.js", "/home/me")).toBeUndefined();
   });
 });

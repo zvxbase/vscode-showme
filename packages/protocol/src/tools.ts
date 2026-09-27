@@ -148,7 +148,9 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "Even when it is false, a symbol lookup is worth trying; if it fails, reason tells you whether it was " +
     "restricted-mode or no-provider. " +
     "Also returns the settings that constrain your own actions: permissions tells you whether arrange_editors " +
-    "may reach the human's tabs (closeHumanTabs) and unsaved tabs (closeDirtyTabs). " +
+    "may reach the human's tabs (closeHumanTabs), unsaved tabs (closeDirtyTabs), and whether the tab the human " +
+    "is viewing is off-limits even for your own tabs (protectViewingTab; default false, so by default your " +
+    "own tab can be closed or moved even while the human is viewing it). " +
     "features tells you which of the three switchable features the human has left on: " +
     "stage (opening files and tabs, scrolling, splitting; when off, show_code only marks lines without " +
     "opening or scrolling, and show_note is refused), " +
@@ -156,10 +158,18 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "layout (when off, arrange_editors and show_view are refused). " +
     "disabledTools is derived from features and lists the tools that are refused with disabled when called; " +
     "annotate, show_code and the reading tools are never in it. " +
-    "If editorGroup is active, show_code opens in the human's column (dedicated means a column of its own). " +
+    "editorGroup tells you how show_code / show_note / show_html and arrange_editors choose a column: " +
+    "shared (the default) reuses the human's column when no other column is already open to its right; " +
+    "dedicated never uses the column the human is in while it holds any of the human's tabs " +
+    "(a column that is empty, or holds only the agent's tabs, is still used); it still reuses " +
+    "existing columns to the right of the human's column first, the same as shared; " +
+    "active always opens in the human's column. " +
     "If avoidToolColumns is true, show_code / show_note / show_html do not open in columns showing a terminal or " +
     "another extension's panel, and are refused with no-stage-column when no other column can be used. " +
     'panels.max is how many show_html panels the human allows (a number, or "unlimited"). ' +
+    "outsideWorkspace is true only when the human turned on showme.allowOutsideWorkspace: then show_code, " +
+    "annotate and find_definition / find_references also accept an absolute path to a file outside the workspace " +
+    "(credential locations such as ~/.ssh stay refused with excluded-path). " +
     "Call this first to learn what you can do; being refused should be the last resort for finding out.",
   show_code:
     "Opens a file on the human's screen, scrolls to the given location and highlights it. " +
@@ -185,9 +195,13 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "Redacted paths (.env etc.) are listed as tabs too, but their visible lines, cursor and selection are not returned. " +
     "File names outside the workspace, terminal titles, and the titles of other tools' panels are not returned; " +
     "they are replaced by a fixed string naming only the kind ((outside workspace) / (terminal) / (other)). " +
+    "When list_workspaces.outsideWorkspace is true, a file outside the workspace that ShowMe would open is " +
+    "reported by its absolute path and treated like a workspace file; other files outside stay (outside workspace). " +
     "Selected text is returned only when it can be established that the human really selected it. " +
     "When it is not returned, selectionWithheld carries the reason, so you can tell " +
     '"there is no selection" from "it was not shared". ' +
+    "shown-by-tool means the selection came to the front with an editor that your own tool call brought forward " +
+    "(a reused tab or a restored selection): it is not returned until the human selects again, so waiting does not help. " +
     "annotations lists the agent's own bubbles in reading order: id, index, path, line, color, " +
     "and resolved (true when the human has marked it resolved). Bodies are not returned; " +
     "the key is omitted when there are no annotations. " +
@@ -268,23 +282,29 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "close-other-tabs / close-tabs / move-tab / move-panel / gather-own. " +
     "close-own closes the panels ShowMe itself opened and the files **it opened via show_code** " +
     "(the tabs with own: true in get_editor_state). " +
-    "close-tabs closes exactly the listed tabs (by path), subject to the same rules as close-own: " +
-    "the tab the human is viewing and unsaved tabs are never closed; the human's tabs need closeHumanTabs. " +
+    "close-tabs closes exactly the listed tabs (by path), subject to the same rules as close-own. " +
     "notOpen lists paths that had no open tab. Tabs without a path (terminals, panels) cannot be listed. " +
     'Use close-own for "tidy up" and close-tabs when the human names the tabs to close. ' +
-    "**The tab the human is viewing and unsaved tabs are never closed, under any setting** " +
-    "(withheld: [viewing-tab] / [dirty-tabs-not-allowed]; asking for a setting change does not alter viewing-tab). " +
+    "**The tab the human is viewing is withheld (withheld: [viewing-tab]) only when the human's setting " +
+    "showme.layout.protectViewingTab is true; by default your own tab can be closed or moved even while " +
+    "the human is viewing it.** The human's tabs still need closeHumanTabs, and unsaved tabs are never " +
+    "closed without closeDirtyTabs (withheld: [dirty-tabs-not-allowed]). " +
     "**Operations that reduce the number of columns are refused if the human's column would be caught up in it** " +
     "(done: false with withheld: [human-column-would-merge]. VS Code's presets only create frames; " +
     "surplus groups are merged into the last frame and cannot be restored). Merging column 3 into column 2 while the human is in column 1 is allowed. " +
     "even-widths never reduces columns, so it always passes. " +
-    "**Tabs and panels can be moved**: move-tab takes path and toColumn (the workspace-relative path of the tab to move, and " +
+    "**Tabs and panels can be moved**: move-tab takes path and toColumn (the workspace-relative path of the tab to move, or its absolute path " +
+    "for a file outside the workspace when list_workspaces.outsideWorkspace is true, and " +
     "the destination column, 1-based, up to the current column count + 1); move-panel takes toColumn and slot (the slot of the panel to move; default 1). " +
     "**Tabs are addressed by path. They cannot be addressed by title (label).** " +
     "By default only your own tabs (own: true) and panels move; moving the human's tabs requires closeHumanTabs. " +
-    "**Moving into the column the human is in is refused by default** (withheld: [human-column-target]; allowed with closeHumanTabs). " +
-    "gather-own collects your own tabs and panels into the first stage column (the lowest column to the right of the human's; if there is none, a new column to its right). " +
-    "The human's column is not touched. " +
+    "**Moving into the column the human is in is refused only when editorGroup is dedicated and that column " +
+    "shows the human's own tabs** (withheld: [human-column-target]; allowed with closeHumanTabs). " +
+    "gather-own collects your own tabs and panels into the lowest column to the right of the human's, " +
+    "if there is one; otherwise the human's column when editorGroup lets you use it, or a new column to its " +
+    "right (except with editorGroup: active, where show_code always opens in the human's column, but " +
+    "gather-own still prefers a column to the right of the human's when one is already open). " +
+    "The human's tabs are not moved. " +
     "With showme.stage.avoidToolColumns on, gather-own skips columns showing a terminal or another extension's panel, " +
     "the same way show_code does, and is refused (withheld: [no-stage-column]) when no column can be used; " +
     "presets that would merge such a column are refused (withheld: [tool-column-would-merge]) " +

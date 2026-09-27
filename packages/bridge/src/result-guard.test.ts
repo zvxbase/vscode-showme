@@ -11,13 +11,14 @@ const listWorkspaces = {
   boundWorkspace: { name: "alpha", path: "/w/alpha" },
   isTrusted: true,
   capabilities: { symbolResolution: true, terminalEnvInjection: false },
-  permissions: { closeHumanTabs: false, closeDirtyTabs: false },
+  permissions: { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false },
   features: { stage: true, html: true, layout: true },
   disabledTools: [],
   editorGroup: "dedicated",
   avoidToolColumns: false,
   panels: { max: 2 },
   otherWindowsListed: false,
+  outsideWorkspace: false,
 };
 
 const showCode = {

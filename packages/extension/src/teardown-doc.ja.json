@@ -1,7 +1,7 @@
 {
   "$comment": "ShowMe: 撤去手順を表示 が開く文書の日本語版（D58 / D62）。英語版は teardown-doc.ts の english()。{0} 実行時ディレクトリの箇条書き / {1} 環境変数名（SOCKET_ENV_VAR） / {2} 拡張の ID。両方の版が同じ事実を書くことは test/teardown-doc.test.ts が両方に同じ検査を当てて確かめる。",
   "lines": [
-    "# ShowMe — 撤去手順（見せるだけ。このファイルは保存しなくてよい）",
+    "# ShowMe — 撤去手順（読み取り専用。ここからコピーして使う）",
     "",
     "ShowMe は他のツールの設定ファイルを書き換えないし、設定以外を永続化しない。",
     "だから撤去は「拡張が自分で消すもの」と「人間が足したものを人間が消す」の2つに分かれる。",
@@ -28,9 +28,13 @@
     "claude mcp remove showme",
     "```",
     "",
+    "  `showme` が複数のスコープにあると、-s で選ぶよう求められる: `claude mcp remove showme -s local`・",
+    "  `claude mcp remove showme -s user`・`claude mcp remove showme -s project`。",
     "  `.claude/settings.json` の `permissions.allow` に足した `mcp__showme__*` の行も消す。",
-    "- Codex CLI: `~/.codex/config.toml` の `[mcp_servers.showme]` の節を消す",
+    "- Codex CLI: `~/.codex/config.toml` の `[mcp_servers.showme]` の節を消す。repo の `.codex/config.toml` に",
+    "  置いたなら、そこからも消す",
     "- Copilot CLI: `~/.copilot/mcp-config.json` の `\"showme\"` の項目を消す",
+    "- repo に置いた設定: `.mcp.json` か `.github/mcp.json` の `\"showme\"` の項目を消す",
     "",
     "### 2b. 拡張そのもの",
     "",

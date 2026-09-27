@@ -14,6 +14,12 @@ export interface CanonicalTarget {
   canonical: string;
   /** realpath を取った実体の絶対パス。読み出しはこちらに対して行う。 */
   realPath: string;
+  /**
+   * realpath を取ったルートの絶対パス。`canonical` はここからの相対である。
+   * 秘匿ファイルの実体を集める走査（`redacted-links.ts`）はこちらから歩く ――
+   * 綴りのルートがリンクでも、歩く木と判定した実体が同じ木になる。
+   */
+  rootRealPath: string;
 }
 
 /**
@@ -49,7 +55,7 @@ export function canonicalizeWorkspacePath(
     // 正準化した相対パスで正規化し直す。正規化そのものが通らない綴りも拒否する。
     const canonical = normalizeWorkspaceRelative(relFromRoot);
     if (canonical === undefined) return undefined;
-    return { canonical, realPath: targetReal };
+    return { canonical, realPath: targetReal, rootRealPath: rootReal };
   } catch {
     // 辿れない理由をここから外へ出さない。呼び出し側は「正準化できなかった」だけを見る。
     return undefined;

@@ -42,11 +42,15 @@ export interface StatusModel {
   connection: { pid: number | undefined } | undefined;
   /** この窓を預けているか（設計書 §2A.2）。既定は "idle"。 */
   role: WindowRole;
+  /** `showme.allowOutsideWorkspace`（D101）。省略は偽。 */
+  outsideWorkspace?: boolean;
 }
 
 export interface StatusView {
   text: string;
   tooltip: string;
+  /** 警告色の背景にするか（D101: ワークスペースの外を開ける設定がオンの、預けている窓）。 */
+  warning: boolean;
 }
 
 /**
@@ -82,6 +86,21 @@ export interface StatusView {
  * 人間向けの文字列は `t()` を通る（D58）。鍵は英語の原文で、codicon は鍵の外。
  */
 export function statusView(model: StatusModel): StatusView {
+  const base = baseStatusView(model);
+  // **ワークスペースの外を開ける設定がオンの間は、画面で分かるようにする**（D101）。停止中・
+  // 起動失敗はそちらが優先（エージェントは何もできない）。預けている窓（オン・接続中）は文字に
+  // 印を付けて警告色にし、預けていない窓は tooltip の1行だけ（色を付けると、オフの窓がいつも
+  // 警告に見える）。
+  const outside = model.outsideWorkspace === true && model.enabled && model.failure === undefined;
+  if (!outside) return { ...base, warning: false };
+  const line = t("Files outside the workspace can be opened (showme.allowOutsideWorkspace is on)");
+  const tooltip = `${base.tooltip}\n\n${line}`;
+  if (model.role !== "stage") return { text: base.text, tooltip, warning: false };
+  return { text: `${base.text} $(warning)`, tooltip, warning: true };
+}
+
+/** 設定 D101 を重ねる前の表示（停止中 > 起動失敗 > 役割 > 接続状態）。 */
+function baseStatusView(model: StatusModel): Omit<StatusView, "warning"> {
   if (!model.enabled) {
     return {
       text: `$(circle-slash) ${t("ShowMe: Stopped")}`,
@@ -146,6 +165,9 @@ export class ShowMeStatusBar {
   private readonly flashTimer = new SinglePendingTimer();
   private disposed = false;
 
+  /** `showme.allowOutsideWorkspace`（D101）。`extension.ts` が設定を読むたびに渡す。 */
+  private outsideWorkspace = false;
+
   constructor(
     private enabled: boolean,
     private role: WindowRole = "idle",
@@ -159,6 +181,12 @@ export class ShowMeStatusBar {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
+    this.render();
+  }
+
+  /** ワークスペースの外を開ける設定（D101）が変わった。画面の印と色に映す。 */
+  setOutsideWorkspace(on: boolean): void {
+    this.outsideWorkspace = on;
     this.render();
   }
 
@@ -341,7 +369,11 @@ export class ShowMeStatusBar {
    */
   currentView(): StatusView {
     const tooltip = this.item.tooltip;
-    return { text: this.item.text, tooltip: typeof tooltip === "string" ? tooltip : "" };
+    return {
+      text: this.item.text,
+      tooltip: typeof tooltip === "string" ? tooltip : "",
+      warning: this.item.backgroundColor !== undefined,
+    };
   }
 
   private render(): void {
@@ -352,9 +384,13 @@ export class ShowMeStatusBar {
       failure: this.failure,
       connection: this.connection,
       role: this.role,
+      outsideWorkspace: this.outsideWorkspace,
     });
     this.item.text = view.text;
     this.item.tooltip = view.tooltip;
+    this.item.backgroundColor = view.warning
+      ? new (getVSCode().ThemeColor)("statusBarItem.warningBackground")
+      : undefined;
   }
 
   dispose(): void {

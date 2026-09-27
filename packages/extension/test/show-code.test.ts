@@ -50,11 +50,11 @@ const config: ShowMeConfig = {
   features: { stage: true, html: true, layout: true },
   editorGroup: "dedicated",
   html: { maxPanels: 2 },
-  redactedPathPatterns: [...DEFAULT_REDACTED_PATTERNS],
+  redaction: { patterns: [...DEFAULT_REDACTED_PATTERNS], blockLinksToRedacted: true },
   maxSelectionChars: 4000,
   injectTerminalEnv: true,
   listAllWorkspaces: false,
-  layout: { closeHumanTabs: false, closeDirtyTabs: false },
+  layout: { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false },
 };
 
 /** `stage` を切った設定（増分6 D76）。他は既定のまま。 */

@@ -40,6 +40,7 @@ import {
   SAMPLE_REL,
   STAGE_MARKER,
   STAGE_RELS,
+  STAGE_TABS_RELS,
   SYMLINK_TO_ENV_REL,
   TOUR_LINES,
   TOUR_RELS,
@@ -52,6 +53,8 @@ import {
   ALLOWED_RESOLUTION_KEYS,
   EXTENSION_ID,
   type RawResolution,
+  type RawTab,
+  SHOWME_DOC_SCHEME,
   type VisualState,
   WINDOW_OFF_MESSAGE,
   activateExtension,
@@ -76,6 +79,7 @@ import {
   panelColumn,
   panelIsVisible,
   panelTab,
+  pinDedicatedStage,
   pinLegacyFileTabs,
   setGlobal,
   setRole,
@@ -91,6 +95,7 @@ import {
   visibleEditorSnapshot,
   waitFor,
   waitForSharedSelection,
+  withDedicatedStage,
   withSettings,
   workspaceRoot,
 } from "./helpers.js";
@@ -102,6 +107,25 @@ import {
  * `vscode.window` / `TextEditor` / ワークスペース信頼が**本物**のときに
  * 何が起きるかだけを見る。
  */
+/**
+ * 人間が列1で自分の `file:` を開き、フォーカスも列1に置く。「人間の列に人間のタブがある」前提を
+ * 作る（その列は dedicated では舞台に使わない。D94）。
+ */
+async function humanFileInColumnOne(): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument(
+    vscode.Uri.joinPath(workspaceRoot(), STAGE_TABS_RELS.human),
+  );
+  await vscode.window.showTextDocument(doc, {
+    viewColumn: vscode.ViewColumn.One,
+    preserveFocus: false,
+    preview: false,
+  });
+  await waitFor(
+    "人間が列1に居る",
+    () => vscode.window.tabGroups.activeTabGroup.viewColumn === vscode.ViewColumn.One,
+  );
+}
+
 suite("実 VS Code / 信頼モード", () => {
   suiteSetup(async () => {
     await activateExtension();
@@ -174,46 +198,54 @@ suite("実 VS Code / 信頼モード", () => {
   });
 
   test('layout: "split" は2つの列に開き、人間の列は使わない', async () => {
-    await lendWindow();
-    const [oneRel, twoRel] = STAGE_RELS;
-    assert.ok(oneRel && twoRel, "舞台用のフィクスチャが足りない");
+    // 人間の列を使わない配置（dedicated）の検査。既定（shared）の split は D93 の節が見る。
+    await withDedicatedStage(async () => {
+      await lendWindow();
+      const [oneRel, twoRel] = STAGE_RELS;
+      assert.ok(oneRel && twoRel, "舞台用のフィクスチャが足りない");
+      // 人間の列1に人間のファイルがある状態にする。列1が空かエージェントのタブだけなら、
+      // dedicated でも舞台はそこに開く（D94）ので、「人間の列は使わない」を言えない。
+      await humanFileInColumnOne();
 
-    const resolutions = await showCode(
-      [
-        { path: oneRel, text: STAGE_MARKER },
-        { path: twoRel, text: STAGE_MARKER },
-      ],
-      "split",
-    );
-    assert.strictEqual(resolutions.length, 2, "2箇所渡したのに結果が2件でない");
-    for (const r of resolutions)
-      assert.strictEqual(r.match, "one", `解決できない: ${String(r.reason)}`);
-
-    const uris = await Promise.all([oneRel, twoRel].map((rel) => stageUri(rel)));
-    await waitFor("2箇所とも可視エディタに現れる", () =>
-      uris.every((u) => visibleEditorFor(u) !== undefined),
-    );
-
-    // 件数で見る。1列に2つ重ねた実装は、片方が背面タブになるので1つしか可視にならない。
-    assert.strictEqual(
-      vscode.window.visibleTextEditors.length,
-      2,
-      `split なのに可視エディタが2つでない: ${visibleEditorSnapshot().join(", ")}`,
-    );
-
-    const columns = uris.map((u) => visibleEditorFor(u)?.viewColumn);
-    assert.notStrictEqual(
-      columns[0],
-      columns[1],
-      `split なのに同じ列に開いた（列 ${String(columns[0])}）`,
-    );
-    // 舞台は人間の列を含まない（不変条件10）。人間の列はいちばん手前＝1 である。
-    for (const column of columns) {
-      assert.ok(
-        typeof column === "number" && column > 1,
-        `舞台が人間の列に開いた（列 ${String(column)}）`,
+      const resolutions = await showCode(
+        [
+          { path: oneRel, text: STAGE_MARKER },
+          { path: twoRel, text: STAGE_MARKER },
+        ],
+        "split",
       );
-    }
+      assert.strictEqual(resolutions.length, 2, "2箇所渡したのに結果が2件でない");
+      for (const r of resolutions)
+        assert.strictEqual(r.match, "one", `解決できない: ${String(r.reason)}`);
+
+      const uris = await Promise.all([oneRel, twoRel].map((rel) => stageUri(rel)));
+      await waitFor("2箇所とも可視エディタに現れる", () =>
+        uris.every((u) => visibleEditorFor(u) !== undefined),
+      );
+
+      // 件数で見る。1列に2つ重ねた実装は、片方が背面タブになるので1つしか可視にならない。
+      // 数えるのは人間の列1の外（人間のファイルは列1で可視のまま）。
+      assert.strictEqual(
+        vscode.window.visibleTextEditors.filter((e) => e.viewColumn !== vscode.ViewColumn.One)
+          .length,
+        2,
+        `split なのに舞台の可視エディタが2つでない: ${visibleEditorSnapshot().join(", ")}`,
+      );
+
+      const columns = uris.map((u) => visibleEditorFor(u)?.viewColumn);
+      assert.notStrictEqual(
+        columns[0],
+        columns[1],
+        `split なのに同じ列に開いた（列 ${String(columns[0])}）`,
+      );
+      // 舞台は人間の列を含まない（不変条件10）。人間の列はいちばん手前＝1 である。
+      for (const column of columns) {
+        assert.ok(
+          typeof column === "number" && column > 1,
+          `舞台が人間の列に開いた（列 ${String(column)}）`,
+        );
+      }
+    });
   });
 
   /**
@@ -233,28 +265,33 @@ suite("実 VS Code / 信頼モード", () => {
    * `test/stage-column.test.ts` の3件（外すと落ちる。実測）である。
    */
   test('layout: "split" を繰り返しても列は 人間1 + 舞台2 を超えない', async () => {
-    await lendWindow();
+    // 「人間1 + 舞台2」は dedicated の上限。既定（shared）では人間の列も舞台になり2列で収まる（D93 の節）。
+    await withDedicatedStage(async () => {
+      await lendWindow();
 
-    // 人間の列だけの状態から始める。既に舞台が開いていると「増えなかった」が
-    // 「もう上限に張り付いていた」と区別できない。
-    await vscode.commands.executeCommand("workbench.action.closeAllGroups");
-    await waitFor("編集グループが人間の1つに戻る", () => tabGroupCount() === 1);
+      // 人間の列だけの状態から始める。既に舞台が開いていると「増えなかった」が
+      // 「もう上限に張り付いていた」と区別できない。
+      await vscode.commands.executeCommand("workbench.action.closeAllGroups");
+      await waitFor("編集グループが人間の1つに戻る", () => tabGroupCount() === 1);
+      // 人間の列1に人間のファイルを置く（空の列1は dedicated でも舞台に使われる。D94）。
+      await humanFileInColumnOne();
 
-    const locations = STAGE_RELS.map((rel) => ({ path: rel, text: STAGE_MARKER }));
-    let worst = tabGroupCount();
-    for (let i = 0; i < 8; i += 1) {
-      const resolutions = await showCode(locations, "split");
-      for (const r of resolutions) {
-        assert.strictEqual(r.match, "one", `${i + 1} 回目に解決できない: ${String(r.reason)}`);
+      const locations = STAGE_RELS.map((rel) => ({ path: rel, text: STAGE_MARKER }));
+      let worst = tabGroupCount();
+      for (let i = 0; i < 8; i += 1) {
+        const resolutions = await showCode(locations, "split");
+        for (const r of resolutions) {
+          assert.strictEqual(r.match, "one", `${i + 1} 回目に解決できない: ${String(r.reason)}`);
+        }
+        worst = Math.max(worst, tabGroupCount());
+        assert.ok(
+          tabGroupCount() <= 3,
+          `${i + 1} 回目で編集グループが ${tabGroupCount()} になった（人間1 + 舞台2 = 3 が上限）`,
+        );
       }
-      worst = Math.max(worst, tabGroupCount());
-      assert.ok(
-        tabGroupCount() <= 3,
-        `${i + 1} 回目で編集グループが ${tabGroupCount()} になった（人間1 + 舞台2 = 3 が上限）`,
-      );
-    }
-    // 上限に達していない回だけを見て通したのではないことを、記録として残す。
-    assert.strictEqual(worst, 3, `舞台が2列に開いていない（最大の編集グループ数 ${worst}）`);
+      // 上限に達していない回だけを見て通したのではないことを、記録として残す。
+      assert.strictEqual(worst, 3, `舞台が2列に開いていない（最大の編集グループ数 ${worst}）`);
+    });
   });
 
   test("text 指定でファイルが実際に開き、該当位置が可視になる", async () => {
@@ -2025,6 +2062,12 @@ suite("実 VS Code / 信頼モード / 双方向（これ何？）", () => {
   suiteSetup(async () => {
     await activateExtension();
   });
+  // `get_editor_state` の予算を検査ごとに戻す。前面を変えうるツール（`annotate` も）の後に窓
+  // （D95）が掛かるようになり、`waitForSharedSelection` の問い合わせ回数が増えて、節の後半が
+  // 予算切れ（`rate-limited`）に当たった（実測）。予算そのものの検査は別の節が持つ。
+  setup(async () => {
+    await vscode.commands.executeCommand("showme.test.resetRateLimits");
+  });
 
   /**
    * 人間がファイルを開く。**自分の列に、フォーカスごと**（エージェントの経路は通らない）。
@@ -2198,95 +2241,145 @@ suite("実 VS Code / 信頼モード / 双方向（これ何？）", () => {
    */
   // 舞台の URI（旧来の file: と映し）の両方で回す。おとりは舞台と同じ URI で開くので、
   // どちらの経路でも「復元された人間の選択」が舞台に現れる形を作れる。
-  for (const agentTabs of [false, true]) {
-    test(`人間が2列目に居ても、show_code はその列を奪わず、そこから選択テキストも返らない（agentTabs: ${agentTabs}）`, async () => {
-      await withSettings({ "stage.agentTabs": agentTabs }, async () => {
-        await lendWindow();
+  //
+  // **配置の設定の両方でも回す**（D93 / D95）。dedicated は人間の列（人間のタブがある）を
+  // 奪わない ―― 以前の検査のまま。shared（既定）は右に列が無ければ人間の列に開く（D93）ので
+  // 列は奪うが、そこに前面に出た選択は「ツールが見せた選択」で、返らない（D95）。どちらでも
+  // **選択テキストは返らない**。人間が覗く列には人間のファイルも置いておく（人間のタブが無い列は
+  // dedicated でも使われる ―― D94。その場面は stage-shared.test.ts の D95 の節が見ている）。
+  for (const editorGroup of ["dedicated", "shared"] as const) {
+    for (const agentTabs of [false, true]) {
+      test(`人間が2列目に居ても、そこから選択テキストは返らない（${editorGroup} / agentTabs: ${agentTabs}）`, async () => {
+        await withSettings(
+          { "stage.agentTabs": agentTabs, "stage.editorGroup": editorGroup },
+          async () => {
+            await lendWindow();
 
-        // 人間の列だけの状態から始める。既に舞台が開いていると、「人間の列に
-        // 開かなかった」が「たまたま別の列が空いていた」と区別できない。
-        await vscode.commands.executeCommand("workbench.action.closeAllGroups");
-        await waitFor("編集グループが人間の1つに戻る", () => tabGroupCount() === 1);
+            // 人間の列だけの状態から始める。既に舞台が開いていると、「人間の列に
+            // 開かなかった」が「たまたま別の列が空いていた」と区別できない。
+            await vscode.commands.executeCommand("workbench.action.closeAllGroups");
+            await waitFor("編集グループが人間の1つに戻る", () => tabGroupCount() === 1);
 
-        // 人間が**おとり**を自分の列で開いて選ぶ。VS Code はエディタを開き直す
-        // ときに表示状態（＝この選択）を復元するので、このファイルが後で舞台に
-        // 開かれると、そこに人間が作った選択が現れる。
-        //
-        // おとりは**舞台が開くのと同じ URI**で開く（既定は映し）。復元は URI ごとなので、
-        // 人間の file: で選んでも映しの舞台には現れず、この検査が見たい漏れの経路が作れない。
-        // 人間が映しのタブで選ぶのは普通の状態である（› で開く・舞台のタブを自分の列へ動かす）。
-        const baitUri = await stageUri(COLUMN_BAIT_REL);
-        const bait = await humanOpens(COLUMN_BAIT_REL, baitUri);
-        humanSelects(bait, COLUMN_BAIT_MARKER);
+            // 人間が**おとり**を自分の列で開いて選ぶ。VS Code はエディタを開き直す
+            // ときに表示状態（＝この選択）を復元するので、このファイルが後で舞台に
+            // 開かれると、そこに人間が作った選択が現れる。
+            //
+            // おとりは**舞台が開くのと同じ URI**で開く（既定は映し）。復元は URI ごとなので、
+            // 人間の file: で選んでも映しの舞台には現れず、この検査が見たい漏れの経路が作れない。
+            // 人間が映しのタブで選ぶのは普通の状態である（› で開く・舞台のタブを自分の列へ動かす）。
+            const baitUri = await stageUri(COLUMN_BAIT_REL);
+            const bait = await humanOpens(COLUMN_BAIT_REL, baitUri);
+            humanSelects(bait, COLUMN_BAIT_MARKER);
 
-        // エージェントが舞台の列を作る。
-        await showCode([{ path: COLUMN_STAGE_REL, text: COLUMN_STAGE_MARKER }]);
-        const stagedUri = await stageUri(COLUMN_STAGE_REL);
-        await waitFor("舞台にエージェントのファイルが開く", () => {
-          const shown = visibleEditorFor(stagedUri);
-          return shown !== undefined && shown.viewColumn !== vscode.ViewColumn.One;
-        });
-        const staged = visibleEditorFor(stagedUri);
-        assert.ok(staged?.viewColumn !== undefined, "舞台のエディタに列が無い");
+            // 人間が列2にも自分のファイルを置いている（どちらの設定でも舞台は列2＝右の既存の列）。
+            const humanSide = await vscode.workspace.openTextDocument(
+              vscode.Uri.joinPath(workspaceRoot(), STAGE_TABS_RELS.human),
+            );
+            await vscode.window.showTextDocument(humanSide, {
+              viewColumn: vscode.ViewColumn.Two,
+              preserveFocus: true,
+              preview: false,
+            });
+            await waitFor("列が2つ", () => tabGroupCount() === 2);
+            await humanOpens(COLUMN_BAIT_REL, baitUri);
 
-        // **人間が舞台を覗きに行く。** クリック1回で成立する、ごく普通の状態である。
-        await vscode.window.showTextDocument(staged.document, {
-          viewColumn: staged.viewColumn,
-          preserveFocus: false,
-        });
-        const humanColumn = staged.viewColumn;
-        await waitFor(
-          "人間のタブグループが舞台の列になる",
-          () => vscode.window.tabGroups.activeTabGroup.viewColumn === humanColumn,
-        );
-        assert.notStrictEqual(
-          humanColumn,
-          vscode.ViewColumn.One,
-          "人間の列が1のまま。この検査の前提（人間が2列目に居る）が作れていない",
-        );
+            // エージェントが舞台の列に開く。
+            await showCode([{ path: COLUMN_STAGE_REL, text: COLUMN_STAGE_MARKER }]);
+            const stagedUri = await stageUri(COLUMN_STAGE_REL);
+            await waitFor("舞台にエージェントのファイルが開く", () => {
+              const shown = visibleEditorFor(stagedUri);
+              return shown !== undefined && shown.viewColumn !== vscode.ViewColumn.One;
+            });
+            const staged = visibleEditorFor(stagedUri);
+            assert.ok(staged?.viewColumn !== undefined, "舞台のエディタに列が無い");
 
-        // エージェントが、人間が選択を作ってあるファイルを見せに来る。
-        await showCode([{ path: COLUMN_BAIT_REL, text: COLUMN_BAIT_MARKER }]);
-        await waitFor(
-          "おとりが人間の列の外にも開く",
-          () =>
-            vscode.window.visibleTextEditors.some(
+            // **人間が舞台を覗きに行く。** クリック1回で成立する、ごく普通の状態である。
+            await vscode.window.showTextDocument(staged.document, {
+              viewColumn: staged.viewColumn,
+              preserveFocus: false,
+            });
+            const humanColumn = staged.viewColumn;
+            await waitFor(
+              "人間のタブグループが舞台の列になる",
+              () => vscode.window.tabGroups.activeTabGroup.viewColumn === humanColumn,
+            );
+            assert.notStrictEqual(
+              humanColumn,
+              vscode.ViewColumn.One,
+              "人間の列が1のまま。この検査の前提（人間が2列目に居る）が作れていない",
+            );
+
+            // エージェントが、人間が選択を作ってあるファイルを見せに来る。
+            await showCode([{ path: COLUMN_BAIT_REL, text: COLUMN_BAIT_MARKER }]);
+            await waitFor("おとりが人間の列の外にも開く", () =>
+              vscode.window.visibleTextEditors.some(
+                (e) =>
+                  e.document.uri.toString() === baitUri.toString() &&
+                  e.viewColumn !== vscode.ViewColumn.One,
+              ),
+            );
+            // 遅れて開く実装を見逃さないよう、待ってから測る。
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
+            const baitInHumanColumn = vscode.window.visibleTextEditors.some(
               (e) =>
-                e.document.uri.toString() === baitUri.toString() && e.viewColumn !== humanColumn,
-            ) || vscode.window.tabGroups.all.length > 2,
-        );
-        // 遅れて開く実装を見逃さないよう、待ってから測る。
-        await new Promise((resolve) => setTimeout(resolve, 500));
+                e.viewColumn === humanColumn && e.document.uri.toString() === baitUri.toString(),
+            );
+            if (editorGroup === "dedicated") {
+              // 不変条件10（dedicated）: **人間のタブがある人間の列には開いていない。**
+              const inHumanColumn = vscode.window.visibleTextEditors.filter(
+                (e) => e.viewColumn === humanColumn,
+              );
+              for (const editor of inHumanColumn) {
+                assert.strictEqual(
+                  editor.document.uri.toString(),
+                  stagedUri.toString(),
+                  `人間の列（${String(humanColumn)}）のタブがエージェントに置き換えられた: ${editor.document.uri.toString()}`,
+                );
+              }
+            } else {
+              // shared: 右に列が無いので人間の列に開く（D93）。この検査が守るのは選択のほう（D95）。
+              assert.ok(baitInHumanColumn, "shared なのにおとりが人間の列に開いていない（前提）");
+            }
 
-        // ここが不変条件10 の本体。**人間の列には開いていない。**
-        const inHumanColumn = vscode.window.visibleTextEditors.filter(
-          (e) => e.viewColumn === humanColumn,
-        );
-        for (const editor of inHumanColumn) {
-          assert.strictEqual(
-            editor.document.uri.toString(),
-            stagedUri.toString(),
-            `人間の列（${String(humanColumn)}）のタブがエージェントに置き換えられた: ${editor.document.uri.toString()}`,
-          );
-        }
+            // 自ツール呼び出しの待ちを明ける。ここを待たずに終えると、
+            // 「時間で断られた」だけを見て「漏れていない」と読んでしまう。
+            await new Promise((resolve) => setTimeout(resolve, 1_500));
 
-        // 自ツール呼び出しの待ちを明ける。ここを待たずに終えると、
-        // 「時間で断られた」だけを見て「漏れていない」と読んでしまう。
-        await new Promise((resolve) => setTimeout(resolve, 1_500));
-
-        const state = await getEditorState();
-        assert.strictEqual(
-          state.selectedText,
-          undefined,
-          `舞台が人間の列を奪い、そこに復元された選択が返った: ${String(state.selectedText)}`,
-        );
-        assert.notStrictEqual(
-          state.activePath,
-          COLUMN_BAIT_REL,
-          "エージェントが開いたファイルが、人間の使っているエディタの座に就いている",
+            const state = await getEditorState();
+            assert.strictEqual(
+              state.selectedText,
+              undefined,
+              `人間の列に前面に出た（復元された）選択が返った: ${String(state.selectedText)}`,
+            );
+            if (baitInHumanColumn) {
+              // おとりが人間の前面に居る ―― 止めたのは待ちでも焦点でもない。選択を持って出てきた
+              // （使い回し・復元）なら D95 の shown-by-tool、空で出てきたなら empty。
+              assert.strictEqual(state.activePath, COLUMN_BAIT_REL);
+              const sel = state.selection as
+                | {
+                    startLine: number;
+                    startCharacter: number;
+                    endLine: number;
+                    endCharacter: number;
+                  }
+                | undefined;
+              const empty =
+                sel !== undefined &&
+                sel.startLine === sel.endLine &&
+                sel.startCharacter === sel.endCharacter;
+              assert.strictEqual(state.selectionWithheld, empty ? "empty" : "shown-by-tool");
+            } else {
+              assert.notStrictEqual(
+                state.activePath,
+                COLUMN_BAIT_REL,
+                "エージェントが開いたファイルが、人間の使っているエディタの座に就いている",
+              );
+            }
+          },
         );
       });
-    });
+    }
   }
 
   /**
@@ -2765,52 +2858,55 @@ suite("arrange_editors の対応表と経路", () => {
   });
 
   test("線上と同じ経路で呼べ、自分のパネルが実際に閉じる", async () => {
-    // `arrange_editors` は `TOOL_NAMES` にあり、ブリッジは既に広告していた。
-    // 一方 `requestSchema` の枝が無い間は、**呼んだ瞬間に要求解析で落ちていた**。
-    // ここが通ることが「広告どおりに呼べる」の証拠である。
-    //
-    // **閉じる対象を自分で用意してから呼ぶ。** 何も無い画面で呼ぶと
-    // `{done: true, closed: 0}` が返り、`isOwnTab` が常に false でも
-    // `closeTabs` が何もしなくても緑になる（空振りの緑）。
-    //
-    // **画面を空にしてから。** 前の節が `show_code` で開いたタブは own のまま残っている
-    // （D53）ので、そのまま呼ぶと `closed` が前の節の残り物の数だけ増える。
-    await closeEverythingForArrange();
-    // **人間は別のタブを見ている。** 前の節は同じ列でタブを切り替えてパネルに戻って
-    // おり、そのままだとパネルが `activeTabGroup.activeTab`（＝人間が見ている）に
-    // なって床1 で残る（C1。実測でそうなった）。「自分のパネルが閉じる」を言うには、
-    // 人間が見ていない状態を先に作る。
-    const humanDoc = await vscode.workspace.openTextDocument(
-      vscode.Uri.joinPath(workspaceRoot(), SAMPLE_REL),
-    );
-    await vscode.window.showTextDocument(humanDoc, { viewColumn: 1, preview: false });
-    await vscode.commands.executeCommand("showme.test.showHtml", {
-      html: "<p>片づけの検査</p>",
-      title: "片づけの検査",
-    });
-    await waitFor("パネルが開く", () => panelTab() !== undefined);
-    assert.notStrictEqual(
-      vscode.window.tabGroups.activeTabGroup.activeTab,
-      panelTab(),
-      "人間がパネルを見ている（床1 で残るので、この検査は「閉じる」を言えない）",
-    );
-
-    const result = await arrangeEditors("close-own");
-    assert.strictEqual(result.done, true, `done が true でない: ${JSON.stringify(result)}`);
-    assert.strictEqual(result.closed, 1, `閉じた枚数が1でない: ${JSON.stringify(result)}`);
-    await waitFor("パネルのタブが消える", () => panelTab() === undefined);
-    // 人間のタブは残る（`close-own` は own しか候補にしない）。
-    assert.ok(visibleEditorFor(humanDoc.uri) !== undefined, "人間が見ていたタブが巻き込まれた");
-    // 断るものは無い ―― 見ていない・保存済みの自分のものは、設定と無関係に閉じられる。
-    assert.strictEqual(result.withheld, undefined, "自分のパネルで withheld が返った");
-    // **返る鍵そのものを見る。** 断った枚数のような数が生えれば、人間のタブを
-    // 数える口になる（`arrangeEditorsResultSchema` が許す鍵だけ）。
-    for (const key of Object.keys(result)) {
-      assert.ok(
-        key === "done" || key === "closed" || key === "withheld",
-        `結果に未知の鍵がある: ${key}`,
+    // パネルを人間の列の外（列2）に出す前提。既定（shared）では1列の画面で人間の列に開き、人間が見るタブになる。
+    await withDedicatedStage(async () => {
+      // `arrange_editors` は `TOOL_NAMES` にあり、ブリッジは既に広告していた。
+      // 一方 `requestSchema` の枝が無い間は、**呼んだ瞬間に要求解析で落ちていた**。
+      // ここが通ることが「広告どおりに呼べる」の証拠である。
+      //
+      // **閉じる対象を自分で用意してから呼ぶ。** 何も無い画面で呼ぶと
+      // `{done: true, closed: 0}` が返り、`isOwnTab` が常に false でも
+      // `closeTabs` が何もしなくても緑になる（空振りの緑）。
+      //
+      // **画面を空にしてから。** 前の節が `show_code` で開いたタブは own のまま残っている
+      // （D53）ので、そのまま呼ぶと `closed` が前の節の残り物の数だけ増える。
+      await closeEverythingForArrange();
+      // **人間は別のタブを見ている。** 前の節は同じ列でタブを切り替えてパネルに戻って
+      // おり、そのままだとパネルが `activeTabGroup.activeTab`（＝人間が見ている）に
+      // なり、protectViewingTab がオンなら床1 で残る（C1。旧来の常時の床で実測でそうなった）。
+      // 設定に依らず「自分のパネルが閉じる」を言うには、人間が見ていない状態を先に作る。
+      const humanDoc = await vscode.workspace.openTextDocument(
+        vscode.Uri.joinPath(workspaceRoot(), SAMPLE_REL),
       );
-    }
+      await vscode.window.showTextDocument(humanDoc, { viewColumn: 1, preview: false });
+      await vscode.commands.executeCommand("showme.test.showHtml", {
+        html: "<p>片づけの検査</p>",
+        title: "片づけの検査",
+      });
+      await waitFor("パネルが開く", () => panelTab() !== undefined);
+      assert.notStrictEqual(
+        vscode.window.tabGroups.activeTabGroup.activeTab,
+        panelTab(),
+        "人間がパネルを見ている（protectViewingTab がオンなら床1 で残るので、この検査は「閉じる」を言えない）",
+      );
+
+      const result = await arrangeEditors("close-own");
+      assert.strictEqual(result.done, true, `done が true でない: ${JSON.stringify(result)}`);
+      assert.strictEqual(result.closed, 1, `閉じた枚数が1でない: ${JSON.stringify(result)}`);
+      await waitFor("パネルのタブが消える", () => panelTab() === undefined);
+      // 人間のタブは残る（`close-own` は own しか候補にしない）。
+      assert.ok(visibleEditorFor(humanDoc.uri) !== undefined, "人間が見ていたタブが巻き込まれた");
+      // 断るものは無い ―― 見ていない・保存済みの自分のものは、設定と無関係に閉じられる。
+      assert.strictEqual(result.withheld, undefined, "自分のパネルで withheld が返った");
+      // **返る鍵そのものを見る。** 断った枚数のような数が生えれば、人間のタブを
+      // 数える口になる（`arrangeEditorsResultSchema` が許す鍵だけ）。
+      for (const key of Object.keys(result)) {
+        assert.ok(
+          key === "done" || key === "closed" || key === "withheld",
+          `結果に未知の鍵がある: ${key}`,
+        );
+      }
+    });
   });
 
   test("配置の語も線上と同じ経路で通る（閉じない側の枝）", async () => {
@@ -2924,7 +3020,7 @@ async function openHumanTab(rel: string): Promise<vscode.TextEditor> {
   return await vscode.window.showTextDocument(doc, { viewColumn: 1, preview: false });
 }
 
-type LayoutSettingKey = "closeHumanTabs" | "closeDirtyTabs";
+type LayoutSettingKey = "closeHumanTabs" | "closeDirtyTabs" | "protectViewingTab";
 
 /**
  * 設定を**グローバル（信頼できる範囲）に**書く。
@@ -2965,6 +3061,8 @@ function assertLayoutSetting(key: LayoutSettingKey, want: boolean | undefined): 
  * 否定（断る）には対照（人間を列1に戻せば同じ操作が通る）を付ける。
  */
 suite("実 VS Code / 信頼モード / プリセットは人間の列を巻き込まない（D55-2）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -3291,6 +3389,8 @@ async function closeEverythingForArrange(): Promise<void> {
 }
 
 suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉じない", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -3747,7 +3847,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
       // エージェントに**申告する**経路が1つ増えたことになる。
       assert.deepStrictEqual(
         (await listWorkspaces()).permissions,
-        { closeHumanTabs: false, closeDirtyTabs: false },
+        { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false },
         "ワークスペースの設定ファイルの値が list_workspaces の permissions に載った",
       );
 
@@ -3808,7 +3908,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
       "前提が崩れている",
     );
     // 人間が見ているのは keep.md のまま（`preserveFocus: true`）。ここが舞台側に
-    // 移っていると、下の「消える」は床1 で断られて別の理由で赤くなる。
+    // 移っていると、protectViewingTab がオンなら下の「消える」は床1 で断られて別の理由で赤くなる。
     const viewing = vscode.window.tabGroups.activeTabGroup.activeTab;
     assert.strictEqual(
       viewing?.label,
@@ -3958,7 +4058,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
    * 4B の式は `own ||` で、自分のものは未保存でも閉じた。テキストタブが own になる
    * 今、エージェントが開いたファイルを人間が編集した瞬間に守られる必要がある。
    *
-   * 人間が見ているのは別のタブにしてある ―― 見ていれば床1 で残るので、
+   * 人間が見ているのは別のタブにしてある ―― 見ていれば protectViewingTab がオンなら床1 で残るので、
    * 「未保存だから残った」を言えなくなる（違う理由で緑）。
    */
   //
@@ -3995,11 +4095,11 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
             true,
             "Tab.isDirty が false（判断が見ている量が違う）",
           );
-          // 人間が見ているのは keep.md。ここが dirty.txt なら床1 が先に効く。
+          // 人間が見ているのは keep.md。ここが dirty.txt なら、protectViewingTab がオンのとき床1 が先に効く。
           assert.strictEqual(
             vscode.window.tabGroups.activeTabGroup.activeTab?.label,
             "keep.md",
-            "人間が見ているタブが keep.md でない（床1 と床2 が区別できない）",
+            "人間が見ているタブが keep.md でない（protectViewingTab がオンなら床1 と床2 が区別できない）",
           );
           // 前提: 記録上は自分のもの。own でなければ「候補に入らなかった」でも残る（違う理由で緑）。
           const ownBefore = layoutTabs(await getEditorState()).find(
@@ -4033,14 +4133,10 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
   }
 
   /**
-   * **床1: 人間が見ているタブは、どの設定でも触らない**（増分5 §C1）。
-   *
-   * **この増分でいちばん重い主張。** 人間が自分の側から（`preserveFocus: false`）
-   * 舞台のタブをアクティブにしたら、それは own のままだが、`close-own` でも
-   * `closeHumanTabs: true` ＋ `closeDirtyTabs: true` でも閉じない。
-   * 床は設定で外れない ―― 設定を全部立てた呼び出しを**同じ場面で**当てる。
+   * 人間が自分の側から（`preserveFocus: false`）舞台のタブ（own の plain.md）を見に行った場面を作る。
+   * 返すのは、そのタブかどうかを見る述語。前提（own であること・1枚であること）はここで確かめる。
    */
-  test("人間が見ている自分のタブは、closeHumanTabs: true でも close-own で残る（床1 / C1）", async () => {
+  async function humanViewsOwnStageTab(): Promise<(tab: vscode.Tab | undefined) => boolean> {
     await closeEverythingForArrange();
     await openHumanTab(ARRANGE_KEEP_REL);
     await showCode([{ path: ARRANGE_PLAIN_REL, lines: { start: 1, end: 1 } }]);
@@ -4081,62 +4177,137 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
       true,
       "plain.md が own でない（候補に入らないので、この検査は何も言わない）",
     );
+    return isPlain;
+  }
 
-    // 1回目: 既定。
+  /**
+   * **見ているタブの床は既定で外れている**（D92）。
+   *
+   * 人間が舞台のタブ（自分が開いたもの）を見ていても、既定では `close-own` がそれを閉じる。
+   * 理由に `viewing-tab` を挙げない ―― 断っていないのだから。人間のタブと未保存は
+   * 別の項（reach / 床2）が守り続ける（下の2つ目の検査が人間の側を見る）。
+   */
+  test("既定では、人間が見ている自分のタブも close-own で閉じる（D92）", async () => {
+    const isPlain = await humanViewsOwnStageTab();
     assertLayoutSetting("closeHumanTabs", undefined);
     assertLayoutSetting("closeDirtyTabs", undefined);
-    const byDefault = await arrangeEditors("close-own");
-    assert.ok(arrangeTabs().some(isPlain), "既定で、人間が見ている自分のタブが閉じた");
-    assert.deepStrictEqual(
-      byDefault,
-      { done: true, closed: 0, withheld: ["viewing-tab"] },
-      `既定の結果が違う: ${JSON.stringify(byDefault)}`,
+    assertLayoutSetting("protectViewingTab", undefined);
+    // 前提: 人間は本当にそのタブを見ている（見ていなければ、閉じたのは床と無関係）。
+    assert.ok(
+      isPlain(vscode.window.tabGroups.activeTabGroup.activeTab),
+      "人間が plain.md を見ていない（前提が崩れている）",
     );
-
-    // 2回目: **設定を全部立てても**残る。床は設定で外れない。
-    await setLayoutSetting("closeHumanTabs", true);
-    await setLayoutSetting("closeDirtyTabs", true);
-    try {
-      assertLayoutSetting("closeHumanTabs", true);
-      assertLayoutSetting("closeDirtyTabs", true);
-      assert.ok(
-        isPlain(vscode.window.tabGroups.activeTabGroup.activeTab),
-        "見ているタブが変わった（前提が崩れている）",
-      );
-      const withAll = await arrangeEditors("close-own");
-      assert.ok(
-        arrangeTabs().some(isPlain),
-        "closeHumanTabs: true で、人間が見ている自分のタブが閉じた（床が設定で外れている）",
-      );
-      assert.deepStrictEqual(
-        withAll,
-        { done: true, closed: 0, withheld: ["viewing-tab"] },
-        `設定を立てたときの結果が違う: ${JSON.stringify(withAll)}`,
-      );
-      // close-other-tabs でも同じ ―― 語彙を変えても床は同じ述語が当てる。
-      const other = await arrangeEditors("close-other-tabs");
-      assert.ok(arrangeTabs().some(isPlain), "close-other-tabs で、人間が見ているタブが閉じた");
-      assert.strictEqual(other.done, true, JSON.stringify(other));
-    } finally {
-      await setLayoutSetting("closeHumanTabs", undefined);
-      await setLayoutSetting("closeDirtyTabs", undefined);
-    }
-
-    // **対照: 人間が keep.md に戻れば、同じタブは既定で閉じる。** これが無いと、
-    // 上の「残った」は `close-own` が丸ごと死んでいても真になる。
-    await openHumanTab(ARRANGE_KEEP_REL);
-    await waitFor(
-      "人間が keep.md に戻る",
-      () => vscode.window.tabGroups.activeTabGroup.activeTab?.label === "keep.md",
-    );
-    const afterLeaving = await arrangeEditors("close-own");
-    await waitFor("見るのをやめた自分のタブが消える", () => !arrangeTabs().some(isPlain));
+    const result = await arrangeEditors("close-own");
+    await waitFor("人間が見ていた自分のタブが消える", () => !arrangeTabs().some(isPlain));
     assert.deepStrictEqual(
-      afterLeaving,
+      result,
       { done: true, closed: 1 },
-      `対照の結果が違う: ${JSON.stringify(afterLeaving)}`,
+      `既定の結果が違う（viewing-tab が出ていないか）: ${JSON.stringify(result)}`,
     );
     assert.deepStrictEqual(arrangeTabLabels(), ["keep.md"], "人間の keep.md が巻き込まれた");
+  });
+
+  test("既定でも、人間が見ている人間の file: タブは close-tabs で閉じない（human-tabs-not-allowed）", async () => {
+    await closeEverythingForArrange();
+    assertLayoutSetting("closeHumanTabs", undefined);
+    assertLayoutSetting("protectViewingTab", undefined);
+    await openHumanTab(ARRANGE_KEEP_REL);
+    await waitFor(
+      "人間が keep.md を見ている",
+      () => vscode.window.tabGroups.activeTabGroup.activeTab?.label === "keep.md",
+    );
+    const keep = vscode.window.tabGroups.activeTabGroup.activeTab;
+    assert.ok(
+      keep?.input instanceof vscode.TabInputText && keep.input.uri.scheme === "file",
+      "keep.md が file: のタブでない（前提が崩れている）",
+    );
+    const result = await arrangeEditors("close-tabs", { paths: [ARRANGE_KEEP_REL] });
+    assert.deepStrictEqual(
+      arrangeTabLabels(),
+      ["keep.md"],
+      "既定で、人間が見ている人間のタブが閉じた",
+    );
+    assert.deepStrictEqual(
+      result,
+      { done: true, closed: 0, withheld: ["human-tabs-not-allowed"] },
+      `結果が違う: ${JSON.stringify(result)}`,
+    );
+  });
+
+  /**
+   * **床1: `protectViewingTab: true` なら、人間が見ているタブは他のどの設定でも触らない**
+   * （増分5 §C1 / D92）。
+   *
+   * 人間が自分の側から（`preserveFocus: false`）舞台のタブをアクティブにしたら、それは
+   * own のままだが、`close-own` でも `closeHumanTabs: true` ＋ `closeDirtyTabs: true` でも閉じない。
+   * 床1 を外すのは `protectViewingTab` だけで、他の2つの設定では外れない ―― 設定を全部立てた
+   * 呼び出しを**同じ場面で**当てる。
+   */
+  test("protectViewingTab: true なら、人間が見ている自分のタブは closeHumanTabs: true でも close-own で残る（床1 / C1）", async () => {
+    const isPlain = await humanViewsOwnStageTab();
+
+    await withSettings({ "layout.protectViewingTab": true }, async () => {
+      // 1回目: 他の設定は既定。
+      assertLayoutSetting("protectViewingTab", true);
+      assertLayoutSetting("closeHumanTabs", undefined);
+      assertLayoutSetting("closeDirtyTabs", undefined);
+      const byDefault = await arrangeEditors("close-own");
+      assert.ok(
+        arrangeTabs().some(isPlain),
+        "protectViewingTab: true で、人間が見ている自分のタブが閉じた",
+      );
+      assert.deepStrictEqual(
+        byDefault,
+        { done: true, closed: 0, withheld: ["viewing-tab"] },
+        `他の設定が既定のときの結果が違う: ${JSON.stringify(byDefault)}`,
+      );
+
+      // 2回目: **他の設定を全部立てても**残る。床1 は closeHumanTabs / closeDirtyTabs で外れない。
+      await setLayoutSetting("closeHumanTabs", true);
+      await setLayoutSetting("closeDirtyTabs", true);
+      try {
+        assertLayoutSetting("closeHumanTabs", true);
+        assertLayoutSetting("closeDirtyTabs", true);
+        assert.ok(
+          isPlain(vscode.window.tabGroups.activeTabGroup.activeTab),
+          "見ているタブが変わった（前提が崩れている）",
+        );
+        const withAll = await arrangeEditors("close-own");
+        assert.ok(
+          arrangeTabs().some(isPlain),
+          "closeHumanTabs: true で、人間が見ている自分のタブが閉じた（床1 が他の設定で外れている）",
+        );
+        assert.deepStrictEqual(
+          withAll,
+          { done: true, closed: 0, withheld: ["viewing-tab"] },
+          `設定を立てたときの結果が違う: ${JSON.stringify(withAll)}`,
+        );
+        // close-other-tabs でも同じ ―― 語彙を変えても床は同じ述語が当てる。
+        const other = await arrangeEditors("close-other-tabs");
+        assert.ok(arrangeTabs().some(isPlain), "close-other-tabs で、人間が見ているタブが閉じた");
+        assert.strictEqual(other.done, true, JSON.stringify(other));
+      } finally {
+        await setLayoutSetting("closeHumanTabs", undefined);
+        await setLayoutSetting("closeDirtyTabs", undefined);
+      }
+
+      // **対照: 人間が keep.md に戻れば、同じタブは（保護をオンにしたままでも）閉じる。**
+      // これが無いと、上の「残った」は `close-own` が丸ごと死んでいても真になる。
+      // 保護をオンのまま当てるので、閉じた原因は「見るのをやめた」ことだけである。
+      await openHumanTab(ARRANGE_KEEP_REL);
+      await waitFor(
+        "人間が keep.md に戻る",
+        () => vscode.window.tabGroups.activeTabGroup.activeTab?.label === "keep.md",
+      );
+      const afterLeaving = await arrangeEditors("close-own");
+      await waitFor("見るのをやめた自分のタブが消える", () => !arrangeTabs().some(isPlain));
+      assert.deepStrictEqual(
+        afterLeaving,
+        { done: true, closed: 1 },
+        `対照の結果が違う: ${JSON.stringify(afterLeaving)}`,
+      );
+      assert.deepStrictEqual(arrangeTabLabels(), ["keep.md"], "人間の keep.md が巻き込まれた");
+    });
   });
 
   /**
@@ -4144,7 +4315,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
    * ファイルを自分で開いた、は**人間のもの**である。忘れないと、人間が自分で
    * 開き直したタブが `close-own` で消える。
    *
-   * 人間が見ているのは別のタブにしてある（床1 で残っても区別がつかないため）。
+   * 人間が見ているのは別のタブにしてある（protectViewingTab がオンなら床1 で残り、区別がつかないため）。
    * 残った証拠は `withheld` が**無い**こと ―― 候補に入って断られたのではなく、
    * そもそも候補に入っていない（own でない）。
    */
@@ -4216,7 +4387,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
    * ちょうど1枚**のときだけ own（2枚以上なら人間が関わっている。閉じない側に倒す）。
    * `isOwnTab` は vscode を値 import しているので、ここでしか言えない。
    *
-   * 人間が見ているのは別のファイル（`keep.md`）にしてある ―― 見ていれば床1 で残るので、
+   * 人間が見ているのは別のファイル（`keep.md`）にしてある ―― 見ていれば protectViewingTab がオンなら床1 で残るので、
    * 「記録しなかったから残った」を言えなくなる。
    * 対照を同じ呼び出しに入れてある ―― 人間が開いていなかった `plain.md` は**閉じる**。
    * これが無いと、`close-own` が丸ごと死んでいても「2枚とも残った」は真になる。
@@ -4262,7 +4433,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
       assert.strictEqual(
         vscode.window.tabGroups.activeTabGroup.activeTab?.label,
         "keep.md",
-        "人間が見ているタブが変わった（床1 と区別できない）",
+        "人間が見ているタブが変わった（protectViewingTab がオンなら床1 と区別できない）",
       );
 
       // `get_editor_state`: sample.ts はどちらの1枚にも own が立たず、plain.md には立つ。
@@ -4479,7 +4650,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
         "移動で sample.ts が増えた／消えた（前提が崩れている）",
       );
 
-      // 人間は keep.md に戻る（見ていれば床1 で残るので、区別がつかなくなる）。
+      // 人間は keep.md に戻る（見ていれば、protectViewingTab がオンなら床1 で残るので、区別がつかなくなる）。
       await openHumanTab(ARRANGE_KEEP_REL);
       await waitFor(
         "人間が keep.md を見ている",
@@ -4686,6 +4857,173 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
  * **既定なら既定の値**であることを実機で見る。設定は必ず `finally` で戻す ――
  * 残すと、この後に走る「既定のまま」の検査が前提から崩れる。
  */
+/**
+ * **人間の列に開く既定（shared。D93）でも、人間のタブは own にならず、閉じない。**
+ *
+ * 上の節は dedicated（人間は列1、舞台はその右）を前提にしている。shared では舞台が人間の列に開き、
+ * 従来の窓（`agentTabs: false`）では `showTextDocument` が**人間の列の同じファイルのタブを使い回す**。
+ * それを記録すると窓に1枚だけなので own になり、`close-own` が人間のタブを閉じた（レビューで発見。
+ * 記録しない判断は `Stage.open` の `recordsOpenedTab` 1つ。D95 の強化）。所有と床の主張は配置に
+ * 依らないので、人間の列で起きる形をここで確かめる。
+ */
+suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉じない（shared）", () => {
+  suiteSetup(async () => {
+    await activateExtension();
+    await lendWindow();
+    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIR));
+    await writeArrangeFile(ARRANGE_PLAIN_REL, "# plain\n\n保存済みの人間のファイル\n");
+    await writeArrangeFile(ARRANGE_KEEP_REL, "# keep\n\n人間が今見ているファイル\n");
+  });
+  suiteTeardown(async () => {
+    await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIR), {
+      recursive: true,
+      useTrash: false,
+    });
+  });
+  setup(async () => {
+    await vscode.commands.executeCommand("showme.test.resetRateLimits");
+    assertGlobal("stage.editorGroup", undefined);
+    assertLayoutSetting("closeHumanTabs", undefined);
+    assertLayoutSetting("closeDirtyTabs", undefined);
+    await closeEverythingForArrange();
+  });
+  teardown(async () => {
+    await lendWindow();
+    await annotateClear();
+    await closeEverythingForArrange();
+  });
+
+  const sampleUri = (): vscode.Uri => vscode.Uri.joinPath(workspaceRoot(), SAMPLE_REL);
+  const sampleTabs = (): vscode.Tab[] =>
+    arrangeTabs().filter(
+      (tab) =>
+        tab.input instanceof vscode.TabInputText &&
+        tab.input.uri.toString() === sampleUri().toString(),
+    );
+
+  for (const humanSampleInFront of [false, true]) {
+    const where = humanSampleInFront ? "前面" : "裏";
+    test(`人間の列の${where}にある人間のタブを show_code が使い回しても own にならず、close-own で残る（agentTabs: false）`, async () => {
+      await withSettings({ "stage.agentTabs": false }, async () => {
+        // 人間が sample.ts を列1に開く。裏の場合は keep.md に移る（sample.ts は同じ列の裏）。
+        await vscode.window.showTextDocument(sampleUri(), {
+          viewColumn: 1,
+          preserveFocus: false,
+          preview: false,
+        });
+        if (!humanSampleInFront) await openHumanTab(ARRANGE_KEEP_REL);
+        assert.strictEqual(sampleTabs().length, 1, "人間の sample.ts が1枚でない（前提）");
+
+        await showCode([
+          { path: SAMPLE_REL, lines: { start: 1, end: 1 } },
+          { path: ARRANGE_PLAIN_REL, lines: { start: 1, end: 1 } },
+        ]);
+        await waitFor("plain.md が開く", () => arrangeTabLabels().includes("plain.md"));
+        // 使い回した（2枚目はできない）。人間の列に開いた（shared）。
+        assert.strictEqual(sampleTabs().length, 1, "sample.ts が2枚になった（使い回していない）");
+        assert.strictEqual(tabGroupCount(), 1, "列が増えた（shared の前提）");
+
+        const state = layoutTabs(await getEditorState());
+        assert.strictEqual(
+          state.find((t) => t.path === SAMPLE_REL)?.own,
+          undefined,
+          `人間の sample.ts が own になった: ${JSON.stringify(state)}`,
+        );
+        assert.strictEqual(
+          state.find((t) => t.path === ARRANGE_PLAIN_REL)?.own,
+          true,
+          "対照: 人間が開いていなかった plain.md が own でない（記録が丸ごと死んでいる）",
+        );
+
+        const result = await arrangeEditors("close-own");
+        await waitFor("plain.md が消える", () => !arrangeTabLabels().includes("plain.md"));
+        assert.strictEqual(sampleTabs().length, 1, "close-own が人間の sample.ts を閉じた");
+        assert.deepStrictEqual(result, { done: true, closed: 1 }, JSON.stringify(result));
+
+        // move-tab でも人間のタブとして扱う（既定では動かない）。
+        const moved = await arrangeEditors("move-tab", { path: SAMPLE_REL, toColumn: 2 });
+        assert.deepStrictEqual(
+          moved,
+          { done: true, closed: 0, moved: 0, withheld: ["human-tabs-not-allowed"] },
+          JSON.stringify(moved),
+        );
+      });
+    });
+  }
+
+  test("エージェントが先に人間の列に開いたファイルを、人間が別の列にも開くと、どちらの1枚も own にならない（agentTabs: false）", async () => {
+    await withSettings({ "stage.agentTabs": false }, async () => {
+      await openHumanTab(ARRANGE_KEEP_REL);
+      await showCode([{ path: SAMPLE_REL, lines: { start: 1, end: 1 } }]);
+      await waitFor("sample.ts が開く", () => sampleTabs().length === 1);
+      assert.strictEqual(
+        layoutTabs(await getEditorState()).find((t) => t.path === SAMPLE_REL)?.own,
+        true,
+        "開いた直後の sample.ts が own でない（前提）",
+      );
+      // 人間が同じ sample.ts を列2に開く。
+      await vscode.window.showTextDocument(sampleUri(), {
+        viewColumn: 2,
+        preserveFocus: false,
+        preview: false,
+      });
+      await waitFor("sample.ts が2枚になる", () => sampleTabs().length === 2);
+      for (const t of layoutTabs(await getEditorState()).filter((t) => t.path === SAMPLE_REL)) {
+        assert.strictEqual(
+          t.own,
+          undefined,
+          `2枚ある sample.ts に own が立った: ${JSON.stringify(t)}`,
+        );
+      }
+      const result = await arrangeEditors("close-own");
+      assert.strictEqual(sampleTabs().length, 2, "sample.ts のタブが閉じた");
+      assert.deepStrictEqual(result, { done: true, closed: 0 }, JSON.stringify(result));
+    });
+  });
+
+  test("close-tabs: 人間の列に並んだ自分のタブは閉じ、人間のタブは閉じない（human-tabs-not-allowed）", async () => {
+    await openHumanTab(ARRANGE_KEEP_REL);
+    await showCode([{ path: ARRANGE_PLAIN_REL, lines: { start: 1, end: 1 } }]);
+    await waitFor("plain.md が開く", () => arrangeTabLabels().includes("plain.md"));
+    assert.strictEqual(tabGroupCount(), 1, "列が増えた（shared の前提）");
+    const result = await arrangeEditors("close-tabs", {
+      paths: [ARRANGE_KEEP_REL, ARRANGE_PLAIN_REL],
+    });
+    await waitFor("plain.md が消える", () => !arrangeTabLabels().includes("plain.md"));
+    assert.ok(arrangeTabLabels().includes("keep.md"), "人間の keep.md が閉じた");
+    assert.deepStrictEqual(
+      result,
+      { done: true, closed: 1, withheld: ["human-tabs-not-allowed"] },
+      JSON.stringify(result),
+    );
+  });
+
+  test("close-own: 人間の列に並んだ自分の2枚（映し）は消え、同じファイルの人間の file: タブは残る", async () => {
+    // 人間が sample.ts を file: で開いている。エージェントは同じファイルを映しで開く（別の URI）。
+    await vscode.window.showTextDocument(sampleUri(), {
+      viewColumn: 1,
+      preserveFocus: false,
+      preview: false,
+    });
+    await showCode([
+      { path: SAMPLE_REL, lines: { start: 1, end: 1 } },
+      { path: ARRANGE_PLAIN_REL, lines: { start: 1, end: 1 } },
+    ]);
+    const mirror = await stageUri(SAMPLE_REL);
+    await waitFor("映しが開く", () =>
+      arrangeTabs().some(
+        (t) =>
+          t.input instanceof vscode.TabInputText && t.input.uri.toString() === mirror.toString(),
+      ),
+    );
+    assert.strictEqual(tabGroupCount(), 1, "列が増えた（shared の前提）");
+    const result = await arrangeEditors("close-own");
+    assert.deepStrictEqual(result, { done: true, closed: 2 }, JSON.stringify(result));
+    await waitFor("自分の2枚が消える", () => arrangeTabs().length === 1);
+    assert.strictEqual(sampleTabs().length, 1, "人間の sample.ts（file:）が閉じた");
+  });
+});
+
 suite("実 VS Code / 信頼モード / list_workspaces は自分にできることを返す", () => {
   suiteSetup(async () => {
     await activateExtension();
@@ -4704,10 +5042,11 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
       String(e).includes(`showme.${feature}.enabled`);
   }
 
-  test("既定では permissions は両方 false、features は全部 true、disabledTools は空、editorGroup は dedicated（D56 / D74）", async () => {
+  test("既定では permissions は3つとも false、features は全部 true、disabledTools は空、editorGroup は shared（D56 / D74 / D92 / D93）", async () => {
     // **既定のままであることを主張する。** 立っていたら「既定の」値を見ていない。
     assertLayoutSetting("closeHumanTabs", undefined);
     assertLayoutSetting("closeDirtyTabs", undefined);
+    assertLayoutSetting("protectViewingTab", undefined);
     for (const key of [
       "stage.enabled",
       "html.enabled",
@@ -4730,10 +5069,14 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
     );
 
     const r = await listWorkspaces();
-    assert.deepStrictEqual(r.permissions, { closeHumanTabs: false, closeDirtyTabs: false });
+    assert.deepStrictEqual(r.permissions, {
+      closeHumanTabs: false,
+      closeDirtyTabs: false,
+      protectViewingTab: false,
+    });
     assert.deepStrictEqual(r.features, { stage: true, html: true, layout: true });
     assert.deepStrictEqual(r.disabledTools, []);
-    assert.strictEqual(r.editorGroup, "dedicated");
+    assert.strictEqual(r.editorGroup, "shared");
     // パネルの上限の既定は 2（増分6.2 D80。宣言の既定と `readConfig` の既定が同じ1つの値）。
     assert.deepStrictEqual(r.panels, { max: 2 });
     assert.strictEqual(
@@ -4770,6 +5113,23 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
       await setLayoutSetting("closeDirtyTabs", undefined);
     }
     assertLayoutSetting("closeDirtyTabs", undefined);
+  });
+
+  test("protectViewingTab を global で立てると permissions に写る（D92）", async () => {
+    await setLayoutSetting("protectViewingTab", true);
+    try {
+      assertLayoutSetting("protectViewingTab", true);
+      const r = await listWorkspaces();
+      assert.deepStrictEqual(
+        r.permissions,
+        { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: true },
+        `写っていない、または巻き添え: ${JSON.stringify(r)}`,
+      );
+    } finally {
+      await setLayoutSetting("protectViewingTab", undefined);
+    }
+    assertLayoutSetting("protectViewingTab", undefined);
+    assert.strictEqual((await listWorkspaces()).permissions.protectViewingTab, false);
   });
 
   /**
@@ -5082,7 +5442,8 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
     } finally {
       await setGlobal("stage.editorGroup", undefined);
     }
-    assert.strictEqual((await listWorkspaces()).editorGroup, "dedicated");
+    // 戻せば既定の shared（D93）。
+    assert.strictEqual((await listWorkspaces()).editorGroup, "shared");
   });
 });
 
@@ -5327,23 +5688,28 @@ suite("実 VS Code / 信頼モード / get_editor_state がレイアウトを返
 });
 
 /**
- * 文書を見せるだけのコマンドと、MCP 提供者（D62 / B6）。
+ * 文書を見せるだけのコマンドと、MCP 提供者（D98 / B6）。
  *
- * どちらのコマンドも **untitled 文書**を開く。`isUntitled` を見るのは、それが
- * 「他ツールの設定ファイルを書き換えない」（不変条件11）の実機での証拠だから
- * である ―― ファイルに書いていれば `isUntitled` は偽になる。
+ * 前は **untitled 文書**を開いていた（題名が "Untitled-1" になり、閉じるときに
+ * 保存を聞かれた）。いまはどちらのコマンドも `showme-doc:` の仮想文書
+ * （`TextDocumentContentProvider`）を開く。題名が付き、`isDirty` は常に false、
+ * ディスクへの書き込み口（`vscode.workspace.fs.writeFile`）が無いことで
+ * 「他ツールの設定ファイルを書き換えない」（不変条件11）を実機で確かめる。
  *
  * `showTextDocument` はフォーカスを奪うので、各テストの末尾で
- * `revertAndCloseActiveEditor` で閉じる（untitled は未保存なので、`closeAllEditors`
- * だと保存の確認で固まる）。
+ * `workbench.action.closeActiveEditor` で閉じる（ディスクに無い文書なので
+ * 保存の確認は出ない ―― 出るなら不変条件11 が壊れている）。
  */
-suite("実 VS Code / 信頼モード / エージェント設定と撤去手順（D62）", () => {
+suite("実 VS Code / 信頼モード / エージェント設定と撤去手順（D98）", () => {
   suiteSetup(async () => {
     await activateExtension();
   });
 
-  /** コマンドが開いた untitled 文書を読んで、後始末までする。 */
-  async function openUntitledBy(command: string): Promise<{ languageId: string; text: string }> {
+  /** コマンドが開いた showme-doc 文書を読んで、後始末までする。 */
+  async function openShowMeDocBy(
+    command: string,
+    expectedPath: string,
+  ): Promise<{ languageId: string; text: string; uri: vscode.Uri }> {
     const before = vscode.window.activeTextEditor?.document;
     await vscode.commands.executeCommand(command);
     await waitFor(`${command} が新しい文書を開く`, () => {
@@ -5353,16 +5719,22 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     const doc = vscode.window.activeTextEditor?.document;
     assert.ok(doc, "文書が開いていない");
     try {
-      assert.ok(doc.isUntitled, `untitled でない（ファイルに書いた？）: ${doc.uri.toString()}`);
-      assert.strictEqual(doc.uri.scheme, "untitled");
-      return { languageId: doc.languageId, text: doc.getText() };
+      assert.strictEqual(doc.uri.scheme, SHOWME_DOC_SCHEME);
+      assert.strictEqual(doc.uri.authority, "", "authority が空でない");
+      assert.strictEqual(doc.uri.path, expectedPath);
+      assert.strictEqual(doc.isDirty, false, "開いた直後から dirty になっている");
+      assert.strictEqual(doc.isUntitled, false, "untitled のまま（題名が付いていない）");
+      return { languageId: doc.languageId, text: doc.getText(), uri: doc.uri };
     } finally {
-      await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     }
   }
 
-  test("showAgentConfig が untitled の markdown を開き、実際のブリッジのパスが入っている", async () => {
-    const { languageId, text } = await openUntitledBy("showme.showAgentConfig");
+  test("showAgentConfig が showme-doc の markdown を開き、実際のブリッジのパスが入っている", async () => {
+    const { languageId, text } = await openShowMeDocBy(
+      "showme.showAgentConfig",
+      "/agent-configuration.md",
+    );
     assert.strictEqual(languageId, "markdown");
 
     // ブリッジのパスが**実在する**（宣言と実体の一致）。Copilot の JSON 断片から
@@ -5391,10 +5763,30 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     // 自分で足す方法は本文にある。
     assert.ok(text.includes('"mcp__showme__arrange_editors"'), "足し方が書いていない");
     assert.ok(!/npx\s+-y/.test(text), "npx の断片がある（S12）");
+
+    // この repo だけの設定と、エージェントに頼む文の節がある（この回の表示言語は en）。
+    for (const heading of [
+      "## Scopes: this repository, all repositories, or your team",
+      "### Before you approve",
+      "## Ask your agent to set it up (optional)",
+    ]) {
+      assert.ok(text.includes(`\n${heading}\n`), `節が無い: ${heading}`);
+    }
+    assert.ok(text.includes("claude mcp add --scope project showme -- node "));
+    // 他の人の機械でも動く形は、版番号入りの置き場が実際のホームの下にあるときだけ出る
+    // （この回は開発中の置き場なので、断片は直接のパスで、共有の形は出ない）。
+    const underHome = bridgePath.startsWith(`${os.homedir().replace(/\/+$/, "")}/`);
+    const versioned = parsed.mcpServers.showme.args[0] === "-e";
+    assert.strictEqual(
+      text.includes("homedir()"),
+      underHome && versioned,
+      `underHome=${underHome}`,
+    );
+    assert.ok(!text.includes("${HOME}"), "${HOME} の形が残っている");
   });
 
-  test("teardown が untitled の markdown を開き、実際の実行時ディレクトリが入っている", async () => {
-    const { languageId, text } = await openUntitledBy("showme.teardown");
+  test("teardown が showme-doc の markdown を開き、実際の実行時ディレクトリが入っている", async () => {
+    const { languageId, text } = await openShowMeDocBy("showme.teardown", "/teardown.md");
     assert.strictEqual(languageId, "markdown");
     // 拡張がソケットと登録ファイルを置く場所は、テスト側で同じ関数から独立に出す
     // （`readOwnRegistration` と同じ形）。**両候補とも**載っていること。
@@ -5418,8 +5810,66 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     assert.ok(bridgePath.endsWith(`${path.sep}bridge${path.sep}index.js`), bridgePath);
     assert.ok(fs.existsSync(bridgePath), `ブリッジが無い: ${bridgePath}`);
     // 文書に書いたパスと**同じ値**（同じ式から作っている。不変条件14）。
-    const { text } = await openUntitledBy("showme.showAgentConfig");
+    const { text } = await openShowMeDocBy("showme.showAgentConfig", "/agent-configuration.md");
     assert.ok(text.includes(bridgePath), "文書のパスと提供者のパスが違う");
+  });
+
+  test("showme-doc は読み取り専用: ディスクに書く口が無く、開き直すと中身が作り直される", async () => {
+    const { uri } = await openShowMeDocBy("showme.showAgentConfig", "/agent-configuration.md");
+    // ディスクに残らない（不変条件11 / 13）ことの直接の証拠: この scheme には
+    // FileSystemProvider が無いので、書き込みは常に失敗する。
+    await assert.rejects(
+      async () => vscode.workspace.fs.writeFile(uri, new Uint8Array()),
+      "showme-doc への書き込みが失敗しなかった（読み取り専用でない）",
+    );
+
+    // 開き直しても同じ URI（固定の2文書だけ、という D98 の性質を実機でも見る）。
+    const { uri: uriAgain } = await openShowMeDocBy(
+      "showme.showAgentConfig",
+      "/agent-configuration.md",
+    );
+    assert.strictEqual(uriAgain.toString(), uri.toString());
+  });
+
+  test("get_editor_state は showme-doc のタブの名前を返さない（ワークスペースの外の扱い）", async () => {
+    const countOutside = (tabs: RawTab[]): number =>
+      tabs.filter((t) => t.path === undefined && t.label === "(outside workspace)").length;
+
+    const stateBefore = await getEditorState();
+    const before = countOutside(layoutTabs(stateBefore));
+    const beforeDoc = vscode.window.activeTextEditor?.document;
+
+    await vscode.commands.executeCommand("showme.teardown");
+    await waitFor("showme.teardown が新しい文書を開く", () => {
+      const d = vscode.window.activeTextEditor?.document;
+      return d !== undefined && d !== beforeDoc;
+    });
+    try {
+      const state = await getEditorState();
+      const openPaths = state.openPaths;
+      assert.ok(Array.isArray(openPaths), "openPaths が配列で返らなかった");
+      for (const p of openPaths as unknown[]) {
+        assert.ok(
+          typeof p !== "string" || !p.endsWith("teardown.md"),
+          `showme-doc のパスが openPaths に載っている: ${String(p)}`,
+        );
+      }
+      // 開いているタブの見出しも実名を出さない ―― `(outside workspace)` の件数が1増える。
+      const tabs = layoutTabs(state);
+      assert.strictEqual(
+        countOutside(tabs),
+        before + 1,
+        "showme-doc のタブが「ワークスペースの外」として観測されていない",
+      );
+      const docTab = tabs.find((t) => t.path === undefined && t.label === "(outside workspace)");
+      assert.ok(docTab);
+      assert.ok(
+        docTab.own !== true,
+        "showme-doc のタブが own になっている（エージェントのものではない）",
+      );
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    }
   });
 });
 
@@ -5448,6 +5898,8 @@ const MOVE_HUMAN_REL = `${MOVE_DIR}/human.md`;
 const MOVE_DIRTY_REL = `${MOVE_DIR}/dirty.txt`;
 
 suite("実 VS Code / 信頼モード / タブとパネルを動かす（D59 / D55-1）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -5632,7 +6084,7 @@ suite("実 VS Code / 信頼モード / タブとパネルを動かす（D59 / D5
 
   test("既定では人間のタブは動かない（human-tabs-not-allowed）。closeHumanTabs なら動く", async () => {
     await humanInOneAndOwnInTwo();
-    // 人間がもう1枚開き、keep.md に戻る（human.md は見ていない → 床1 ではなく reach で断られる）。
+    // 人間がもう1枚開き、keep.md に戻る（human.md は見ていない → protectViewingTab に依らず、断るのは reach だけ）。
     await openHumanTab(MOVE_HUMAN_REL);
     await openHumanTab(MOVE_KEEP_REL);
     await waitFor(
@@ -5666,7 +6118,7 @@ suite("実 VS Code / 信頼モード / タブとパネルを動かす（D59 / D5
     }
   });
 
-  test("人間が見ているタブは、自分のものでも動かない（床1 / viewing-tab）", async () => {
+  test("protectViewingTab: true なら、人間が見ているタブは自分のものでも動かない（床1 / viewing-tab）", async () => {
     await humanInOneAndOwnInTwo();
     // 人間として a.md を見る（列2で、フォーカスごと）。
     await vscode.window.showTextDocument(uriOf(MOVE_A_REL), {
@@ -5683,15 +6135,17 @@ suite("実 VS Code / 信頼モード / タブとパネルを動かす（D59 / D5
     });
     assert.strictEqual(tabCountOf(MOVE_A_REL), 1, "a.md が2枚ある（前提）");
 
-    const result = await arrangeEditors("move-tab", { path: MOVE_A_REL, toColumn: 3 });
-    assert.deepStrictEqual(
-      result,
-      { done: true, closed: 0, moved: 0, withheld: ["viewing-tab"] },
-      JSON.stringify(result),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.strictEqual(columnOf(MOVE_A_REL), 2, "人間が見ているタブが動いた");
-    assert.strictEqual(tabGroupCount(), 2, "列が増えた（動かしている）");
+    await withSettings({ "layout.protectViewingTab": true }, async () => {
+      const result = await arrangeEditors("move-tab", { path: MOVE_A_REL, toColumn: 3 });
+      assert.deepStrictEqual(
+        result,
+        { done: true, closed: 0, moved: 0, withheld: ["viewing-tab"] },
+        JSON.stringify(result),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.strictEqual(columnOf(MOVE_A_REL), 2, "人間が見ているタブが動いた");
+      assert.strictEqual(tabGroupCount(), 2, "列が増えた（動かしている）");
+    });
   });
 
   test("人間の列（列1）への移動は既定で断る（human-column-target）。closeHumanTabs なら通る", async () => {
@@ -5757,7 +6211,7 @@ suite("実 VS Code / 信頼モード / タブとパネルを動かす（D59 / D5
     assert.notStrictEqual(
       vscode.window.tabGroups.activeTabGroup.activeTab,
       panelTab(),
-      "人間がパネルを見ている（床1 で断られる）",
+      "人間がパネルを見ている（protectViewingTab がオンなら床1 で断られる）",
     );
 
     const result = await arrangeEditors("move-panel", { toColumn: 3 });

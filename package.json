@@ -9,7 +9,10 @@
     "test:watch": "vitest",
     "typecheck": "tsc --build",
     "lint": "biome check .",
-    "lint:fix": "biome check --write ."
+    "lint:fix": "biome check --write .",
+    "docs:check": "node scripts/docs/readme-blocks.mjs --check",
+    "docs:write": "node scripts/docs/readme-blocks.mjs --write",
+    "docs:stamp": "node scripts/docs/readme-blocks.mjs --stamp"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

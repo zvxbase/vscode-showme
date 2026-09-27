@@ -6,8 +6,17 @@ import { MAX_RESOLVE_BYTES } from "@zvx/vscode-showme-protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StageMirror, openJudgedFile } from "../src/stage-mirror.js";
 import { STAGE_SCHEME_EDITABLE, STAGE_SCHEME_READONLY } from "../src/stage-uri.js";
+import type { RedactionPolicy } from "../src/workspace-path-gate.js";
 
 const RO = STAGE_SCHEME_READONLY;
+/** 秘匿の方針。既定はハードリンクも見る（設定の既定と同じ）。 */
+const policy = (
+  patterns: readonly string[] = [],
+  blockLinksToRedacted = true,
+): RedactionPolicy => ({
+  patterns,
+  blockLinksToRedacted,
+});
 const RW = STAGE_SCHEME_EDITABLE;
 
 /**
@@ -59,7 +68,7 @@ describe("StageMirror", () => {
     fs.symlinkSync(path.join(root, ".env"), path.join(root, "docs", "notes.md"));
     mirror = new StageMirror(
       () => root,
-      () => [],
+      () => policy(),
     );
   });
 
@@ -153,7 +162,7 @@ describe("StageMirror", () => {
       let patterns: string[] = [];
       const m = new StageMirror(
         () => root,
-        () => patterns,
+        () => policy(patterns),
       );
       expect(m.read(RO, "src.ts").ok).toBe(true);
       patterns = ["src.ts"];
@@ -215,7 +224,7 @@ describe("StageMirror", () => {
     it("追加の秘匿パターンは stat と write にも効く", () => {
       const m = new StageMirror(
         () => root,
-        () => ["src.ts"],
+        () => policy(["src.ts"]),
       );
       expect(m.stat(RO, "src.ts")).toEqual({ ok: false });
       expect(m.write(RW, "src.ts", bytesOf("x"))).toEqual({ ok: false, reason: "not-found" });
@@ -321,14 +330,29 @@ describe("StageMirror", () => {
       expect(fs.readFileSync(path.join(root, "src.ts"), "utf8")).toBe("const a = 1;\n");
     });
 
-    it("秘匿の実体へのハードリンクは読めるものと同じ not-writable（関門の後の理由）", () => {
-      // 関門は名前で判断する。秘匿でない名前のハードリンクは関門を通り read で読める
-      // （中身は既に明かされている）ので、not-writable が新しく語ることは無い。
+    it("秘匿の実体へのハードリンクは秘匿と同じ形で落ち、読めも書けもしない（D91）", () => {
+      // 名前は秘匿でなくても実体は `.env`。関門が実体で見て落とすので、`.env` と同じ答えになる。
       fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
-      expect(mirror.read(RW, "docs/env-alias.txt").ok).toBe(true);
-      expect(mirror.write(RW, "docs/env-alias.txt", bytesOf("x"))).toEqual(NOT_WRITABLE);
-      expect(fs.readFileSync(path.join(root, ".env"), "utf8")).toBe("SECRET=1\n");
+      expect(mirror.read(RO, "docs/env-alias.txt")).toEqual({ ok: false });
+      expect(mirror.read(RW, "docs/env-alias.txt")).toEqual({ ok: false });
+      expect(mirror.stat(RO, "docs/env-alias.txt")).toEqual({ ok: false });
+      expect(mirror.write(RW, "docs/env-alias.txt", bytesOf("x"))).toEqual(NOT_FOUND);
       expect(mirror.write(RW, ".env", bytesOf("x"))).toEqual(NOT_FOUND);
+      expect(fs.readFileSync(path.join(root, ".env"), "utf8")).toBe("SECRET=1\n");
+    });
+
+    it("設定を切ると、秘匿の実体へのハードリンクは名前だけで判定され読める（書くのは not-writable）", () => {
+      // 設定を切ったときの今までの振る舞い。関門は名前で判断し、秘匿でない名前のリンクは
+      // read で読める（中身は既に明かされている）ので、not-writable が新しく語ることは無い。
+      fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+      const m = new StageMirror(
+        () => root,
+        () => policy([], false),
+      );
+      expect(m.read(RW, "docs/env-alias.txt").ok).toBe(true);
+      expect(m.write(RW, "docs/env-alias.txt", bytesOf("x"))).toEqual(NOT_WRITABLE);
+      expect(fs.readFileSync(path.join(root, ".env"), "utf8")).toBe("SECRET=1\n");
+      expect(m.write(RW, ".env", bytesOf("x"))).toEqual(NOT_FOUND);
     });
 
     it("不在のファイルは not-found で、作らない", () => {
@@ -442,7 +466,7 @@ describe("StageMirror", () => {
     it("read / stat / write はすべて失敗", () => {
       const m = new StageMirror(
         () => undefined,
-        () => [],
+        () => policy(),
       );
       expect(m.read(RO, "src.ts")).toEqual({ ok: false });
       expect(m.read(RO, "src.ts", "unsaved")).toEqual({ ok: false });
@@ -455,11 +479,76 @@ describe("StageMirror", () => {
       const current: { root: string | undefined } = { root: undefined };
       const m = new StageMirror(
         () => current.root,
-        () => [],
+        () => policy(),
       );
       expect(m.read(RO, "src.ts")).toEqual({ ok: false });
       current.root = root;
       expect(m.read(RO, "src.ts").ok).toBe(true);
     });
+  });
+});
+
+/**
+ * ワークスペースの外の映し（D102）。鍵は正規化した絶対パス。読むたびに関門を通すので、設定を
+ * 後からオフにすれば読めなくなる。書けるのは showme-rw で、`editable` がオンのときだけ。
+ */
+describe("StageMirror（外の映し。D102）", () => {
+  let base: string;
+  let root: string;
+  let outside: string;
+  let allow: boolean;
+  let editable: boolean;
+  let m: StageMirror;
+  const bytesOf = (s: string) => new TextEncoder().encode(s);
+
+  beforeEach(() => {
+    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-mirror-out-")));
+    root = path.join(base, "workspace");
+    outside = path.join(base, "outside");
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "a.txt"), "outside\n");
+    allow = true;
+    editable = true;
+    m = new StageMirror(
+      () => root,
+      () => ({ patterns: [], blockLinksToRedacted: true, allowOutsideWorkspace: allow }),
+      () => editable,
+    );
+  });
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it("設定がオンなら外のファイルを読める。オフに戻すと同じ鍵でもう読めない", () => {
+    const key = path.join(outside, "a.txt");
+    const first = m.read(RO, key);
+    expect(first.ok && new TextDecoder().decode(first.bytes)).toBe("outside\n");
+    expect(m.stat(RO, key).ok).toBe(true);
+    allow = false;
+    expect(m.read(RO, key)).toEqual({ ok: false });
+    expect(m.stat(RO, key)).toEqual({ ok: false });
+  });
+
+  it("秘匿の名前・無いファイルは読めない（同じ形）", () => {
+    fs.writeFileSync(path.join(outside, ".env"), "S=1\n");
+    expect(m.read(RO, path.join(outside, ".env"))).toEqual({ ok: false });
+    expect(m.read(RO, path.join(outside, "missing.txt"))).toEqual({ ok: false });
+  });
+
+  it("showme-rw は editable がオンのときだけ書ける。オフなら読み取り専用と答え、書かない", () => {
+    const key = path.join(outside, "a.txt");
+    expect(m.write(RW, key, bytesOf("changed\n"))).toEqual({ ok: true });
+    expect(fs.readFileSync(key, "utf8")).toBe("changed\n");
+    editable = false;
+    const st = m.stat(RW, key);
+    expect(st.ok && st.readonly).toBe(true);
+    expect(m.write(RW, key, bytesOf("again\n"))).toEqual({ ok: false, reason: "not-writable" });
+    expect(fs.readFileSync(key, "utf8")).toBe("changed\n");
+  });
+
+  it("外のハードリンクは関門が断る（読めない）", () => {
+    fs.linkSync(path.join(outside, "a.txt"), path.join(outside, "b.txt"));
+    expect(m.read(RO, path.join(outside, "b.txt"))).toEqual({ ok: false });
   });
 });

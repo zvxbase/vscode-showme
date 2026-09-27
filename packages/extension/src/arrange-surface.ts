@@ -7,7 +7,13 @@ import {
   ownedUrisToRestore,
 } from "./arrange-policy.js";
 import { observedViewColumn } from "./editor-observation.js";
-import { countTextTabs, isOwnTab, observedRelPath, ownPanelSlot } from "./editor-surface.js";
+import {
+  countTextTabs,
+  isOwnTab,
+  humanColumnHasHumanTabs as observeHumanTabs,
+  observedRelPath,
+  ownPanelSlot,
+} from "./editor-surface.js";
 import type {
   ArrangeLayoutAction,
   ArrangeSurface,
@@ -20,6 +26,7 @@ import { isLegacyOwnershipUri } from "./stage-uri.js";
 import { TabRegistry } from "./tab-registry.js";
 import { observeToolColumns } from "./tool-column-vscode.js";
 import type { ShowMePanel } from "./webview/panel.js";
+import type { RedactionPolicy } from "./workspace-path-gate.js";
 
 /**
  * エディタの配置に触る面。**`vscode` の値に触るのはここだけ**
@@ -29,7 +36,7 @@ import type { ShowMePanel } from "./webview/panel.js";
  *
  * このファイルは `vscode` を**値として** import しているので、vitest からは
  * 読み込めない ―― つまり**ここに書いた判断は単体で1件も確かめられない**。
- * 観測する（`listTabs` / `groupColumns` / `humanColumn`）・言われたとおりに閉じる
+ * 観測する（`listTabs` / `groupColumns` / `humanColumn` / `humanColumnHasHumanTabs`）・言われたとおりに閉じる
  * （`closeTabs`）・動かす（`moveTab` / `movePanel`）・語をコマンドに対応づける
  * （`applyLayout`）だけを持つ。
  *
@@ -84,6 +91,8 @@ export function createArrangeSurface(
   root: vscode.Uri | undefined,
   opened: OpenedByAgent,
   panelFor: (slot: PanelSlot) => ShowMePanel,
+  // 外のタブ（D102）を名指すかの方針（`get_editor_state` と同じ `readConfig().redaction` の写し）。
+  policy: RedactionPolicy,
 ): ArrangeSurface {
   // **札とタブの対応は `listTabs()` のたびに作り直す。** 覚えておくと、人間が
   // タブを閉じたあとに古い札で別のタブを閉じることになる（`vscode.Tab` に
@@ -94,12 +103,13 @@ export function createArrangeSurface(
   // だったもの」だけに当てる（人間のタブを `closeHumanTabs` で動かしても own にはならない）。
   const registry = new TabRegistry<{ tab: vscode.Tab; own: boolean; column: number | undefined }>();
 
-  /** 観測を1回分まとめる（`groupColumns` と `humanColumn` を同じ瞬間に）。 */
+  /** 観測を1回分まとめる（`groupColumns` と `humanColumn` と人間の列のタブを同じ瞬間に）。 */
   const fresh = (): FreshColumns => ({
     columns: groupColumns(),
     humanColumn: humanColumn(),
     toolColumns: toolColumns(),
     groupCount: groupCount(),
+    humanColumnHasHumanTabs: humanColumnHasHumanTabs(),
   });
   const groupColumns = (): number[] => {
     // **観測を返すだけ。** 列の数はハンドラが `length` で取る（1回の観測から2つの表現）。
@@ -125,6 +135,15 @@ export function createArrangeSurface(
   const toolColumns = (): ReadonlySet<number> => observeToolColumns();
   // 存在する列の数。`Stage.targetColumn` の丸めと同じ `tabGroups.all.length`（D90）。
   const groupCount = (): number => vscode.window.tabGroups.all.length;
+  // 人間の列に own でないタブがあるか（D94）。`Stage.targetColumn` と**同じ関数**
+  // （`editor-surface.ts` の `humanColumnHasHumanTabs`。own の判定は `isOwnTab`）で、枚数の表は
+  // 同じ `tabGroups.all` から作る。使うかどうかはハンドラが決める。
+  const humanColumnHasHumanTabs = (): boolean =>
+    observeHumanTabs(
+      vscode.window.tabGroups.activeTabGroup,
+      opened,
+      countTextTabs(vscode.window.tabGroups.all),
+    );
 
   return {
     listTabs(): ArrangeTab[] {
@@ -170,7 +189,7 @@ export function createArrangeSurface(
         // 別の関数で作ると指せないタブができる（不変条件14）。
         // `label` は**載せない**（D41。題はエージェントが決められる）。
         if (tab.input instanceof vscode.TabInputText) {
-          const relPath = observedRelPath(root, tab.input.uri);
+          const relPath = observedRelPath(root, tab.input.uri, policy);
           if (relPath !== undefined) entry.path = relPath;
         }
         // 枠は `get_editor_state` の面と**同じ関数**（`ownPanelSlot`）で付ける。`move-panel { slot }`
@@ -275,6 +294,7 @@ export function createArrangeSurface(
     humanColumn,
     toolColumns,
     groupCount,
+    humanColumnHasHumanTabs,
   };
 
   /**

@@ -48,7 +48,7 @@ const config: ShowMeConfig = {
   editorGroup: "dedicated",
   html: { maxPanels: 2 },
   disabledTools: [],
-  redactedPathPatterns: [...DEFAULT_REDACTED_PATTERNS],
+  redaction: { patterns: [...DEFAULT_REDACTED_PATTERNS], blockLinksToRedacted: true },
   maxSelectionChars: 4000,
   injectTerminalEnv: true,
   listAllWorkspaces: false,

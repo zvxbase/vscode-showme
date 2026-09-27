@@ -1,9 +1,17 @@
 import { z } from "zod";
 import { HIGHLIGHT_COLORS } from "./highlight-style.js";
 
+/**
+ * `Location.path` の説明（D102）。`show_code` / `annotate` / `find_*` が同じ `locationSchema` を
+ * 共有するので、ここ1箇所に書く。
+ */
+export const OUTSIDE_AWARE_PATH_DESCRIPTION =
+  "Workspace-relative path. An absolute path outside the workspace is accepted only when the human " +
+  "turned on showme.allowOutsideWorkspace (list_workspaces.outsideWorkspace)";
+
 export const locationSchema = z
   .object({
-    path: z.string().min(1).max(1024).describe("Workspace-relative file path"),
+    path: z.string().min(1).max(1024).describe(OUTSIDE_AWARE_PATH_DESCRIPTION),
     text: z
       .string()
       .min(1)

@@ -21,6 +21,11 @@ The extension does not protect against a malicious extension already installed i
 VS Code, nor against an agent that has shell access through other means — those are outside what
 this layer can promise.
 
+Hard-link redaction does not follow a hard link to a secret outside the workspace, a secret
+inside a skipped directory (`.git`, `node_modules`, `.venv`, `venv`, `target`, `.tox`,
+`__pycache__`, `.cache`), a secret inside a directory the walk can't list, or a secret file
+created in the last ~10 seconds.
+
 ## Supported versions
 
 Only the latest release on the Marketplace / Open VSX receives fixes.

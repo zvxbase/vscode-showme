@@ -24,8 +24,10 @@ export const RATE_LIMIT_MAX_KEYS = 512;
  * オラクルにはならないが、空振りの表示を無限に叩けると人間の画面を
  * 潰せる（可視性そのものが防御なので、そこを守る）。
  *
- * 正規化はコロンを含むパスを必ず拒否するため、この鍵に実在のファイルが
- * 化けることはない — 合法な要求が巻き添えにならない。
+ * 実在のファイルの鍵がこの綴りに化けることはない — 合法な要求が巻き添えにならない。
+ * 中の鍵（正準の相対パス）は、正規化がコロンを含む綴りを必ず拒否するのでコロンを含まない。
+ * 外の鍵（D101。正準の絶対パス）はコロンを含みうる（Windows の `C:\…`）が、必ず根
+ * （`/` かドライブ）で始まる。この鍵はどちらの形でもない。
  */
 export const UNNORMALIZED_PATH_KEY = "unnormalized:path";
 
@@ -40,7 +42,7 @@ export const UNNORMALIZED_PATH_KEY = "unnormalized:path";
  * `rate-limited` になる（利用者側の DoS）。
  *
  * UNNORMALIZED_PATH_KEY と同じ理由で、実在のファイルがこの鍵に化けることは
- * ない（正準パスはコロンを含めないので綴りが衝突しない）。
+ * ない（中の鍵はコロンを含まず、外の鍵は根で始まる。この鍵はどちらでもない）。
  */
 export const NO_CANONICAL_PATH_KEY = "no-canonical:path";
 
@@ -69,13 +71,18 @@ export const NO_CANONICAL_PATH_KEY = "no-canonical:path";
  * `RATE_LIMIT_MAX_KEYS` を埋められる経路（上記の DoS）が残ったままになる。
  * 正準化1回分の realpath は、この後に控えている最大 5MB のファイル読み出しと
  * 走査に比べれば無視できる。
+ *
+ * **相対パスとして正規化できない綴りも、関門に聞いてから共有の鍵に畳む**（D101）。
+ * 人間が `showme.allowOutsideWorkspace` をオンにしていれば、関門は外の絶対パスを受け入れ、
+ * 正準の絶対パス（中を指していれば相対パス）を返す ―― 受け入れたファイルは綴りでなく実体で
+ * 鍵を持つ。落ちたもの（設定がオフの絶対パスも含む）は今までどおり `UNNORMALIZED_PATH_KEY`。
  */
 export function fileRateLimitKey(
   rawPath: string,
-  canonicalize: (rel: string) => string | undefined,
+  canonicalize: (path: string) => string | undefined,
 ): string {
   const spelled = normalizeWorkspaceRelative(rawPath);
-  if (spelled === undefined) return UNNORMALIZED_PATH_KEY;
+  if (spelled === undefined) return canonicalize(rawPath) ?? UNNORMALIZED_PATH_KEY;
   return canonicalize(spelled) ?? NO_CANONICAL_PATH_KEY;
 }
 

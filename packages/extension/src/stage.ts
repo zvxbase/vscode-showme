@@ -1,8 +1,11 @@
 import * as vscode from "vscode";
 import type { ShowMeConfig } from "./config.js";
+import { countTextTabs, humanColumnHasHumanTabs } from "./editor-surface.js";
 import type { StagePlacement } from "./handlers/show-code.js";
+import { useHumanColumnFor } from "./human-column.js";
 import type { OpenedByAgent } from "./opened-by-agent.js";
 import { placeStageColumn } from "./stage-column.js";
+import { recordsOpenedTab, urisInColumn } from "./stage-record.js";
 import { observeToolColumns } from "./tool-column-vscode.js";
 import { ToolError } from "./tool-error.js";
 
@@ -35,7 +38,10 @@ export const NO_STAGE_COLUMN_MESSAGE =
  * （どの列を再利用するか）は vscode 非依存の chooseStageColumns に切り出して
  * ある。
  *
- * 舞台は有界であり、人間が使っている列を決して含まない（設計書 §2A.7）。
+ * 舞台は有界である（設計書 §2A.7）。人間の列を舞台に含めてよいのは、人間の列を使える
+ * とき（`human-column.ts` の `useHumanColumnFor`。`shared` の既定、または人間の列に人間の
+ * タブが無いとき。D93 / D94）だけで、そのときも右の既存の列が先である（列を増やさないために
+ * 使う）。使えなければ人間の列は決して含まない（`dedicated`）。
  * 列数の上限は chooseStageColumns が持ち、VS Code に渡す直前の丸めは
  * clampStageColumn が持つ。ここはその2つを、そのときの可視列に当てるだけ。
  */
@@ -56,15 +62,15 @@ export class Stage {
    * 見ない（列を分けるという概念がその設定に無い）。道具の列を避ける設定（D90）も効かない。
    *
    * **置ける列が無ければ `no-stage-column` の `ToolError` を投げる**（`showme.stage.avoidToolColumns`
-   * がオンのときだけ起きる）。人間の列にも避ける列にも描かない。`show_code` は位置ごとの
+   * がオンのときだけ起きる）。人間の列（使えないとき）にも避ける列にも描かない。`show_code` は位置ごとの
    * `reason` に、`show_note` / `show_html` は呼び出しの断りにする。
    */
   targetColumn(placement: StagePlacement, settings: StageColumnSettings): vscode.ViewColumn {
     if (settings.editorGroup === "active") {
       return vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
     }
-    // 専用モード: 人間が使っている列の隣に置く。
-    // 既に右側の列があればそれを再利用し、新しい列を増やさない。
+    // `shared` / `dedicated`: 人間が使っている列の右に置く。既に右側の列があればそれを
+    // 再利用し、新しい列を増やさない。右に足りず人間の列を使えるなら（D93 / D94）人間の列に置く。
     const groups = vscode.window.tabGroups.all;
     const columns = groups
       .map((g) => g.viewColumn)
@@ -76,7 +82,20 @@ export class Stage {
     // 不変条件10 の直接の違反であり、そのとき `show_code` が開いたエディタが
     // `activeTextEditor` の座に就くので、`get_editor_state` の条件2
     // （設計書 §3.1.1 (d)）も同時に無効になる ―― 待ちが明ければ選択テキストが返る）。
-    const humanColumn = vscode.window.tabGroups.activeTabGroup.viewColumn;
+    const humanGroup = vscode.window.tabGroups.activeTabGroup;
+    const humanColumn = humanGroup.viewColumn;
+    // 人間の列を使えるか（D93 / D94）。判断は `useHumanColumnFor` 1つで、`gather-own` / `move-*`
+    // と同じ関数・同じ量（人間の列に own でないタブがあるか）。own の判定は `isOwnTab` で、
+    // 枚数の表は同じ `groups` の観測から作る（`isOwnTab` の「窓に1枚」規則と同じ観測）。
+    //
+    // 使えるとき、人間の列にエージェントのタブが開くと、それが `activeTextEditor` になりうる
+    // （`preserveFocus: true` でも同じ列の中では前面に出る）。選択テキストは `human-selection.ts` の
+    // 条件（焦点・自ツールから1秒・同じ範囲を二度返さない・秘匿は返さない）を今までどおり通り、
+    // `show_code` は選択を作らないので、返りうるのは人間が作った選択だけである。
+    const useHumanColumn = useHumanColumnFor(
+      settings.editorGroup,
+      humanColumnHasHumanTabs(humanGroup, this.opened, countTextTabs(groups)),
+    );
     // 道具の列（D90）は設定がオンのときだけ観測して渡す。オフなら渡さない ――
     // `placeStageColumn` は以前の道（枠の列を選んで丸めるだけ）を通り、断らない。
     // 観測は `gather-own` と同じ関数（`observeToolColumns`）で、同じ `groups` から取る。
@@ -90,6 +109,7 @@ export class Stage {
       humanColumn,
       groups.length,
       avoid,
+      useHumanColumn,
     );
     if (column === "none") throw new ToolError("no-stage-column", NO_STAGE_COLUMN_MESSAGE);
     return column === "beside" ? vscode.ViewColumn.Beside : (column as vscode.ViewColumn);
@@ -106,8 +126,20 @@ export class Stage {
     record: boolean,
     settings: StageColumnSettings,
   ): Promise<vscode.TextEditor> {
+    const viewColumn = this.targetColumn(placement, settings);
+    // **開く前に**行き先の列を観測する（D95）。人間が同じファイルを既にその列に開いていれば、
+    // `showTextDocument` はそのタブを使い回す ―― それは人間のタブで、記録すると own になる。
+    const targetUrisBefore = urisInColumn(
+      vscode.window.tabGroups.all.map((g) => ({
+        viewColumn: g.viewColumn,
+        uris: g.tabs.flatMap((t) =>
+          t.input instanceof vscode.TabInputText ? [t.input.uri.toString()] : [],
+        ),
+      })),
+      viewColumn,
+    );
     const editor = await vscode.window.showTextDocument(uri, {
-      viewColumn: this.targetColumn(placement, settings),
+      viewColumn,
       // フォーカスを奪わない。人間のタイピング先を取らないこと（設計書 §4.6）。
       preserveFocus: true,
       preview: false,
@@ -117,16 +149,16 @@ export class Stage {
     // `uri` ではなく、VS Code が実際に開いたほうを取る（タブの `input.uri` と
     // 同じ値で照合するため。同じ量を2つの綴りで持たない）。
     //
-    // **ここでは「既に開いていたか」を見ない。常に記録する。** 同じ文書のタブが
-    // 2枚あるとき（人間が先に開いていた／後から開いた）に own にしない判断は、
-    // 観測の側の `isOwnTab`（`editor-surface.ts`）が枚数を数えて**1箇所で**決める。
-    // ここでも見ると、同じ量を2箇所で決めることになる（不変条件14）。
+    // **窓の中の枚数はここで見ない。** 同じ文書のタブが2枚あるとき（人間が先に別の列に開いていた／
+    // 後から開いた）に own にしない判断は、観測の側の `isOwnTab`（`editor-surface.ts`）が枚数を
+    // 数えて**1箇所で**決める。ここで見るのは「行き先の列のタブを使い回すか」だけで、それは
+    // 枚数では見分けられない（使い回すと1枚のまま）別の量である（`recordsOpenedTab`。D95）。
     //
     // **記録するかは呼び出し側が1回だけ決めて渡す**（`stageOpenTarget`）。映し
     // （`showme-ro:` / `showme-rw:`）は記録しない ―― own はスキームで決まる（D82）。`realFile`
     // （D87）で開いた `file:` も記録しない ―― それは人間のタブである。記録するのは
     // `agentTabs: false` の従来の経路で `file:` を開いたときだけ（D53 のまま）。
-    if (record) {
+    if (recordsOpenedTab(record, targetUrisBefore, editor.document.uri.toString())) {
       this.opened.opened(editor.document.uri.toString());
     }
     return editor;

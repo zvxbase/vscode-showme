@@ -268,3 +268,30 @@ describe("列は両方そろったときだけ通る（設計 D34）", () => {
     expect(out.range).toEqual({ startLine: 2, endLine: 2 });
   });
 });
+
+describe("normalizePath を注入したら、その結果で読み・秘匿を判定する（D102）", () => {
+  it("絶対パスを受ける正規化を渡せば、normalizedPath はその鍵で、readText にもその鍵が渡る", () => {
+    const seen: string[] = [];
+    const r = resolveLocation(
+      { path: "/outside//b.ts", text: "NEEDLE" },
+      {
+        normalizePath: (raw) => raw.replace("//", "/"),
+        isRedacted: () => false,
+        readText: (key) => {
+          seen.push(key);
+          return "NEEDLE\n";
+        },
+        findSymbol: () => undefined,
+      },
+    );
+    expect(r).toMatchObject({ match: "one", normalizedPath: "/outside/b.ts" });
+    expect(seen).toEqual(["/outside/b.ts"]);
+  });
+  it("省略すれば今までどおり、絶対パスは invalid-path", () => {
+    const r = resolveLocation(
+      { path: "/outside/b.ts", text: "x" },
+      { isRedacted: () => false, readText: () => "x", findSymbol: () => undefined },
+    );
+    expect(r).toEqual({ resolvedBy: "none", match: "none", reason: "invalid-path" });
+  });
+});

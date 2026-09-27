@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { MAX_RESOLVE_BYTES } from "@zvx/vscode-showme-protocol";
 import { STAGE_SCHEME_READONLY, type StageScheme } from "./stage-uri.js";
-import { acceptWorkspacePath } from "./workspace-path-gate.js";
+import { type RedactionPolicy, acceptWorkspacePath } from "./workspace-path-gate.js";
 
 export type MirrorRead = { ok: true; bytes: Uint8Array } | { ok: false };
 export type MirrorStat =
@@ -15,7 +15,7 @@ export type MirrorWrite =
  * 関門と実体の検査を通ったファイル。stat は bigint で取る ―― dev/ino を number に
  * すると 2^53 を超える値で丸まり、別の inode が同じ値に見えうる（同一性の比較が緩む）。
  */
-type Resolved = { realPath: string; stat: fs.BigIntStats };
+type Resolved = { realPath: string; stat: fs.BigIntStats; outside: boolean };
 
 export type JudgedOpen =
   | { ok: true; fd: number; stat: fs.BigIntStats }
@@ -142,7 +142,10 @@ export class StageMirror {
     // どちらも関数で受けて**毎回読む**。窓のルートも秘匿の設定も後から変わりうるので、
     // 構築時の値を握ると古い判断で通してしまう。
     private readonly rootPath: () => string | undefined,
-    private readonly redactedPatterns: () => readonly string[],
+    private readonly redaction: () => RedactionPolicy,
+    // `showme.stage.editable`（D102）。ワークスペースの外の映しに showme-rw から書けるのは、これが
+    // オンのときだけ（映しの URI は誰でも組めるので、スキームが rw でも設定を見る）。省略は偽。
+    private readonly editable: () => boolean = () => false,
   ) {}
 
   /** 映しの版。人間の未保存の編集・ディスクの変更のたびに1つ上げる（mtime に足す。D81）。 */
@@ -196,7 +199,7 @@ export class StageMirror {
       ctime: nsToMs(stat.ctimeNs),
       // showme-rw でも、write が断るファイルは読み取り専用と答える（判断は `writable` 1つ）。
       // 答えないと、書けないファイルのタブが編集できる顔をして、保存の時に初めて落ちる。
-      readonly: scheme === STAGE_SCHEME_READONLY || !writable(resolved.realPath, stat),
+      readonly: scheme === STAGE_SCHEME_READONLY || !this.mayWrite(resolved, stat),
     };
   }
 
@@ -221,13 +224,13 @@ export class StageMirror {
     if (resolved === undefined) return { ok: false, reason: "not-found" };
     // 開く前に見る: 権限で書けないファイルは O_RDWR で開けず、開く所の失敗（io-error）に
     // なってしまう。stat の readonly と同じ述語で、同じ理由として断る。
-    if (!writable(resolved.realPath, resolved.stat)) return { ok: false, reason: "not-writable" };
+    if (!this.mayWrite(resolved, resolved.stat)) return { ok: false, reason: "not-writable" };
 
     const opened = openJudgedFile(resolved.realPath, resolved.stat, fs.constants.O_RDWR);
     if (!opened.ok) return { ok: false, reason: opened.reason };
     try {
       // 開いた後にもう一度（判定から開くまでの間にハードリンクが足されうる）。
-      if (!writable(resolved.realPath, opened.stat)) return { ok: false, reason: "not-writable" };
+      if (!this.mayWrite(resolved, opened.stat)) return { ok: false, reason: "not-writable" };
       // 先に先頭から書き、その後で長さに切り詰める。先に空にすると、書き終わるまで
       // （あるいは書き込みが途中で失敗すると）ファイルが空の瞬間が残る。
       let offset = 0;
@@ -258,21 +261,68 @@ export class StageMirror {
   }
 
   /**
+   * 書いてよいか: `writable`（ハードリンク・ディスクの権限）に、外の映し（D102）なら
+   * `editable` の設定を重ねる。stat の readonly と write の拒否がこの1つを見る。
+   */
+  private mayWrite(resolved: Resolved, stat: fs.BigIntStats): boolean {
+    if (resolved.outside && !this.editable()) return false;
+    return writable(resolved.realPath, stat);
+  }
+
+  /**
    * 全入口の共通の検査: 関門 → 実体が通常ファイル → 上限以内。
    * どこで落ちても `undefined` 1つ（理由を呼び出し側へ渡さない）。
+   *
+   * 鍵は中なら相対パス、外（D102）なら正規化した絶対パス。**読むたびに関門を通す** ――
+   * 人間が `showme.allowOutsideWorkspace` をオフに戻せば、開いている外の映しも次の読みから
+   * 読めなくなる。外は関門が lstat で見た実体（dev / ino）と同じものであることも確かめる
+   * （開く所の `openJudgedFile` がさらに fstat と突き合わせる）。
    */
-  private resolve(rel: string): Resolved | undefined {
-    const verdict = acceptWorkspacePath(this.rootPath(), rel, this.redactedPatterns());
+  private resolve(key: string): Resolved | undefined {
+    const verdict = acceptWorkspacePath(this.rootPath(), key, this.redaction());
     if (!verdict.ok) return undefined;
     try {
-      const stat = fs.statSync(verdict.realPath, { bigint: true });
+      const outside = verdict.kind === "outside";
+      const stat = outside
+        ? fs.lstatSync(verdict.realPath, { bigint: true })
+        : fs.statSync(verdict.realPath, { bigint: true });
       if (!stat.isFile()) return undefined;
+      if (outside && (String(stat.dev) !== verdict.dev || String(stat.ino) !== verdict.ino)) {
+        return undefined;
+      }
       // 上限は protocol が宣言する（`read-workspace-file.ts` と同じ定義元）。
       if (stat.size > CAP) return undefined;
-      return { realPath: verdict.realPath, stat };
+      return { realPath: verdict.realPath, stat, outside };
     } catch {
       return undefined;
     }
+  }
+}
+
+/**
+ * 関門が受け入れた**外の**実体（D102）の中身を読む。`read-workspace-file.ts` が外の鍵で呼ぶ。
+ * 関門の答え（`realPath` と lstat の dev / ino）をそのまま受け取り、`openJudgedFile` で開く ――
+ * 判定から開くまでに最後の部分や親をリンクに差し替えられても、別の実体を読まない。
+ */
+export function readAcceptedOutsideFile(verdict: {
+  realPath: string;
+  dev: string;
+  ino: string;
+}): string | undefined {
+  const opened = openJudgedFile(
+    verdict.realPath,
+    { dev: BigInt(verdict.dev), ino: BigInt(verdict.ino) },
+    fs.constants.O_RDONLY,
+  );
+  if (!opened.ok) return undefined;
+  try {
+    const bytes = readUpToCap(opened.fd);
+    // 中の読み（`readFileSync(…, "utf8")`）と同じ復号（BOM を剥がさない）。
+    return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    fs.closeSync(opened.fd);
   }
 }
 
@@ -282,7 +332,8 @@ export class StageMirror {
  *
  * - ハードリンク（nlink > 1）には書かない。同じ inode の別名がワークスペースの外に
  *   ありうるが、それをここから確かめる手段が無い（pnpm の store など）。読むのは別名が
- *   何であれ中身が同じ（外の名前を知らせない）ので許す
+ *   何であれ中身が同じ（外の名前を知らせない）ので許す。ワークスペースの中の秘匿ファイルへの
+ *   リンクは、ここに来る前に関門が落としている（D91。設定で切ったときは名前だけで判定する）
  * - ディスクの権限は `access(W_OK)` で見る。mode のビットを自分で読まない ―― 実効 uid・
  *   グループ・ACL・root・読み取り専用のマウントを OS が判断するので、`open(O_RDWR)` が
  *   通るかどうかと同じ答えになる（ビットで見ると、root が 444 に書ける場合や ACL で

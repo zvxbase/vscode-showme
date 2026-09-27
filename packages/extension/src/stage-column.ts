@@ -33,7 +33,9 @@ function defaultHumanColumn(
  * 可視の列の集合から舞台の列を選ぶ（判断ロジックのみ、vscode 非依存）。
  *
  * **不変条件10 の正しい形は「エージェントの舞台は有界であり、人間が使っている
- * 列を決して含まない」である**（設計書 §2A.7）。以前ここは「ちょうど1列」に
+ * 列を決して含まない」である**（設計書 §2A.7）。ただし人間の列を使ってよいと
+ * 渡されたとき（`useHumanColumn`。D93 / D94）は、決め方 6 のとおり人間の列も候補になる。
+ * 以前ここは「ちょうど1列」に
  * 固定していたが、そこには2つの別のことが混ざっていた。本当の要件は
  * 「人間の作業面を奪わない」で、「舞台の中でも複数の眺めを作れない」は
  * 巻き添えで課した制約だった。上限のある領域なら `layout: "split"` で
@@ -45,7 +47,8 @@ function defaultHumanColumn(
  *
  * 決め方:
  *
- * 1. **人間の列は舞台に含めない。** どれが人間の列かは `humanColumn` で渡す。
+ * 1. **人間の列は舞台に含めない**（`useHumanColumn` が偽のとき。真なら 6）。どれが人間の列かは
+ *    `humanColumn` で渡す。
  *    実機の呼び出し口（`stage.ts`）は `tabGroups.activeTabGroup.viewColumn` を
  *    渡す ―― **観測であって推測ではない**。省略時は最小の列とみなすが、それは
  *    人間がいちばん手前の列に居るときしか当たらない仮定で、分割エディタや
@@ -61,6 +64,10 @@ function defaultHumanColumn(
  *    いる列のこと。外すのは 2 の「再利用する既存の列」からだけで、3 の「右端」は避ける列を
  *    **含めた**右端のまま ―― 避ける列の間に割り込むと、それより右の列が番号ずれを起こす
  *    のは 3 と同じ理由。避ける列が空なら、答えは避ける列を持たなかったときと同じ
+ * 6. **人間の列を使ってよいなら（`useHumanColumn`。D93 / D94）、2 と 3 の間で人間の列を使う。**
+ *    順序は「右の既存の列 → 人間の列 → 右端の外」。人間の列が避ける列なら使わない。左の列は
+ *    使わない。選んだ列は昇順に並べて返す（枠0がいちばん左）。偽なら 1〜5 のままで、答えは
+ *    この引数を持たなかったときと同じ
  *
  * ここが返すのは論理的な列で、VS Code に渡せるか（丸めても人間の列や避ける列に落ちない
  * か）は `resolveStageColumn` が決める。
@@ -73,6 +80,7 @@ export function chooseStageColumns(
   layout: StageLayout,
   humanColumn?: number,
   avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
+  useHumanColumn = false,
 ): StageColumn[] {
   const want = layout === "split" ? MAX_STAGE_COLUMNS : 1;
   const sorted = [...new Set(visibleColumns)].sort((a, b) => a - b);
@@ -83,7 +91,15 @@ export function chooseStageColumns(
 
   // 人間の列より右の既存の列を再利用する。ここが「列を増やさない」の本体。
   // 避ける列は再利用しない（D90）。
-  const chosen: StageColumn[] = sorted.filter((c) => c > human && !avoid.has(c)).slice(0, want);
+  const chosen: number[] = sorted.filter((c) => c > human && !avoid.has(c)).slice(0, want);
+
+  // 右の既存の列で足りなければ、列を足す前に人間の列を使う（D93 / D94）。人間の列を使うのは
+  // 「使わなければ列を増やすことになるとき」だけで、右に既存の列があれば答えは使わないときと同じ。
+  // 使ってよいか（`shared` か、`dedicated` で人間のタブが無い列か）は `human-column.ts` が決め、
+  // ここは渡された値を見るだけ。避ける列（D90）は人間の列であっても使わない ―― 道具に被せない。
+  // 偽ならこの分岐を通らず、以前の答えのまま。
+  const withHuman = useHumanColumn && chosen.length < want && !avoid.has(human);
+  if (withHuman) chosen.push(human);
 
   // 足りなければ右端の外側に足す。割り込まないので人間の列は動かない。
   // 人間の列も上限に含める ―― 渡された humanColumn が可視列より右にあるとき、
@@ -91,7 +107,9 @@ export function chooseStageColumns(
   // 足す列は避ける列より右になる。
   let next = Math.max(...sorted, human);
   while (chosen.length < want) chosen.push(++next);
-  return chosen;
+  // 人間の列は右の既存の列より左、右端の外より左にあるので、足した順は昇順でない。枠0が
+  // いちばん左になるように並べる（split を昇順に開けば、枠0は存在する列に落ちて列を増やさない）。
+  return withHuman ? chosen.sort((a, b) => a - b) : chosen;
 }
 
 /**
@@ -106,8 +124,9 @@ export function stageColumnForSlot(
   slot: number,
   humanColumn?: number,
   avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
+  useHumanColumn = false,
 ): StageColumn {
-  const columns = chooseStageColumns(visibleColumns, layout, humanColumn, avoid);
+  const columns = chooseStageColumns(visibleColumns, layout, humanColumn, avoid, useHumanColumn);
   const index = Math.min(Math.max(Math.trunc(slot), 0), columns.length - 1);
   return columns[index] ?? "beside";
 }
@@ -141,13 +160,16 @@ export type NoStageColumn = "none";
 
 /**
  * 舞台の枠を、VS Code に**実際に渡す**列まで決める（`stageColumnForSlot` → `clampStageColumn`）。
- * 丸めた結果が人間の列・避ける列・`ViewColumn.Nine` の外に落ちるなら `"none"` を返す。
+ * 丸めた結果が人間の列（使えないとき）・避ける列・`ViewColumn.Nine` の外に落ちるなら `"none"` を返す。
+ * 人間の列を使ってよいとき（`useHumanColumn`。D93 / D94）は、人間の列に落ちても断らない ――
+ * そこは選び方が候補にした列である（避ける列なら選び方も丸めも断る側のまま）。
  *
  * **`"beside"` に倒さない理由。** `ViewColumn.Beside` は「いまアクティブな列の隣」で、
  * アクティブな列は人間の列である。隣が既にあればそこに開くので、人間の列の右が避ける列なら
  * **まさに避けた列に描く**。Nine の外で Beside を渡しても作れる列は無く、VS Code が
  * 既存のどこかに置く ―― どこになるかは我々が決めていない。どちらも「人間の列にも避ける列にも
- * 描かない」を守れないので、番号を決められないときは決めずに断る:
+ * 描かない」を守れないので、番号を決められないときは決めずに断る。表の行は、印を付けた最後の
+ * 1行（「人間の列を使える」）を除いて、人間の列を使えない（`useHumanColumn` が偽）ときの答えである:
  *
  * | 可視列 | 人間 | 避ける列 | layout・枠 | 論理の列 | 丸め後 | 返す値 |
  * |---|---|---|---|---|---|---|
@@ -158,6 +180,7 @@ export type NoStageColumn = "none";
  * | 1..9 | 9 | なし | single・0 | 10 | 10 | none（Nine の外） |
  * | 1,3（飛び番、存在2） | 1 | 3 | single・0 | 4 | 3 | none（丸めが避ける列に落ちる） |
  * | 1,3（飛び番、存在2） | 3 | なし | single・0 | 4 | 3 | none（丸めが人間の列に落ちる） |
+ * | 1,3（飛び番、存在2）、人間の列を使える | 3 | なし | single・0 | 3 | 3 | 3 |
  *
  * split の枠1が丸められて枠0と同じ列に落ちるのは許す。そこは舞台の列で、人間の列でも
  * 避ける列でもない（避ける列が無いときに「降順に開くと2列にならない」のと同じ振る舞い）。
@@ -176,13 +199,22 @@ export function resolveStageColumn(
   humanColumn: number | undefined,
   existingColumnCount: number,
   avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
+  useHumanColumn = false,
 ): StageColumn | NoStageColumn {
-  const chosen = stageColumnForSlot(visibleColumns, layout, slot, humanColumn, avoid);
+  const chosen = stageColumnForSlot(
+    visibleColumns,
+    layout,
+    slot,
+    humanColumn,
+    avoid,
+    useHumanColumn,
+  );
   const column = clampStageColumn(chosen, existingColumnCount);
   if (column === "beside") return "beside";
   // 人間の列は `chooseStageColumns` と同じ関数で決める（同じ量を2箇所で書かない）。
   const human = defaultHumanColumn(visibleColumns, humanColumn);
-  if (column === human || avoid.has(column) || column > MAX_VIEW_COLUMN) return "none";
+  if (column === human && !useHumanColumn) return "none";
+  if (avoid.has(column) || column > MAX_VIEW_COLUMN) return "none";
   return column;
 }
 
@@ -192,12 +224,14 @@ export function resolveStageColumn(
  * - `avoid` が `undefined` ＝ `showme.stage.avoidToolColumns` がオフ。**以前の道のまま**
  *   （`stageColumnForSlot` → `clampStageColumn`）で、断らない。9列で人間が列9に居る端の場合も、
  *   以前どおりの番号を渡す ―― 設定を足しただけで既定の振る舞いを変えない
- * - 集合を渡す ＝ オン。`resolveStageColumn` で、人間の列・避ける列・`ViewColumn.Nine` の外に
+ * - 集合を渡す ＝ オン。`resolveStageColumn` で、人間の列（使えないとき）・避ける列・`ViewColumn.Nine` の外に
  *   落ちるなら置かない。**枠1以降が置けず枠0が置けるなら、枠0の列に重ねる**（split の2列目が
  *   足りないだけで呼び出しごと断らない。避ける列が無いときに丸めが枠0の列に落とすのと同じ結果）。
  *   枠0も置けなければ `"none"` ―― 呼び出し側が理由付きで断る
  *
  * 避ける集合の中身（どの列が道具か）は `tool-column.ts` が決める。ここは列の番号だけを見る。
+ * 人間の列を使ってよいか（`useHumanColumn`。D93 / D94）は `human-column.ts` が決め、どちらの道にも
+ * そのまま渡す。偽（引数を省いたときは偽）なら以前の答え。
  */
 export function placeStageColumn(
   visibleColumns: readonly number[],
@@ -206,10 +240,18 @@ export function placeStageColumn(
   humanColumn: number | undefined,
   existingColumnCount: number,
   avoid: ReadonlySet<number> | undefined,
+  useHumanColumn = false,
 ): StageColumn | NoStageColumn {
   if (avoid === undefined) {
     return clampStageColumn(
-      stageColumnForSlot(visibleColumns, layout, slot, humanColumn),
+      stageColumnForSlot(
+        visibleColumns,
+        layout,
+        slot,
+        humanColumn,
+        NO_AVOIDED_COLUMNS,
+        useHumanColumn,
+      ),
       existingColumnCount,
     );
   }
@@ -220,7 +262,16 @@ export function placeStageColumn(
     humanColumn,
     existingColumnCount,
     avoid,
+    useHumanColumn,
   );
   if (column !== "none" || slot <= 0) return column;
-  return resolveStageColumn(visibleColumns, layout, 0, humanColumn, existingColumnCount, avoid);
+  return resolveStageColumn(
+    visibleColumns,
+    layout,
+    0,
+    humanColumn,
+    existingColumnCount,
+    avoid,
+    useHumanColumn,
+  );
 }

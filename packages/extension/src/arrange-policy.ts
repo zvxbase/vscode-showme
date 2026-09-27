@@ -22,12 +22,22 @@
 import type { ArrangeLayoutAction } from "./handlers/arrange-editors.js";
 import { NO_AVOIDED_COLUMNS, stageColumnForSlot } from "./stage-column.js";
 
-/** 触る許可。**2つは直交する**（設計 D43）。 */
+/**
+ * 触る許可。**3つは互いに直交する**（設計 D43 / D92）: `closeHumanTabs` は reach だけ、
+ * `protectViewingTab` は床1 だけ、`closeDirtyTabs` は床2 だけを動かす。
+ */
 export interface ArrangePermissions {
   /** 人間のタブを閉じる・動かすことを許すか（`showme.layout.closeHumanTabs`）。 */
   closeHumanTabs: boolean;
   /** 未保存のタブも閉じることを許すか（`showme.layout.closeDirtyTabs`）。 */
   closeDirtyTabs: boolean;
+  /**
+   * 人間がいま見ているタブを、閉じる・動かす対象から外すか（`showme.layout.protectViewingTab`。D92）。
+   * 既定はオフ ―― 実機で使うと、エージェントが自分で開いたタブを人間の目の前で
+   * 片づけられないことのほうが邪魔だった。人間のタブと未保存は、この設定と関係なく
+   * reach と床2 が守る。
+   */
+  protectViewingTab: boolean;
 }
 
 /** 画面に対する操作の種類。床2（未保存）が掛かるのは `close` だけ。 */
@@ -48,6 +58,7 @@ export interface TouchCandidate {
   isDirty: boolean;
   /**
    * 人間が**見ている**タブか（`activeTabGroup.activeTab`）。窓に1枚しか無い。
+   * 判断に効くのは `protectViewingTab` がオンのときだけ（D92）。
    * 各グループの `isActive`（列ごとに1枚）とは別の量である。**観測する。推測しない。**
    */
   viewing: boolean;
@@ -58,13 +69,19 @@ export interface TouchCandidate {
  *
  * ```
  * reach  = own || closeHumanTabs                          // 届いてよいか
- * floor1 = !viewing                                       // 人間が見ているものは触らない。設定で外れない
+ * floor1 = !(protectViewingTab && viewing)                // 見ているものを守る、と人間が言ったなら触らない
  * floor2 = op !== "close" || !isDirty || closeDirtyTabs   // 未保存は消さない
  * 触ってよい = reach && floor1 && floor2
  * ```
  *
- * **床は設定で外れない。** `closeHumanTabs: true` でも `viewing` には触らない。
+ * **3つの設定は1つずつ別の項だけを動かす（D92）。** `closeHumanTabs` は reach だけを広げ、
+ * 床1 は外さない（`protectViewingTab: true` なら人間のタブを触ってよくても `viewing` には触らない）。
+ * `protectViewingTab` は床1 だけを立てる ―― 既定のオフでは `viewing` は判断に効かないが、
+ * それで新しく対象になるのは reach を通るもの、既定ではエージェント自身のタブだけである。
  * `closeDirtyTabs` は床2 だけを外す（未保存を消してよい、と人間が言った場合）。
+ *
+ * 床1 はかつて設定で外れない床だった。実機のデモで、エージェントが自分で開いたタブを
+ * 人間が見ている最中に片づけられないのは守りすぎだと分かり、オプトインに変えた。
  *
  * 増分4B の式は `own || (closeHumanTabs && (!isDirty || closeDirtyTabs))` で、
  * 「自分のものは未保存でも消せる」例外を持っていた。webview は未保存になれないので
@@ -77,7 +94,7 @@ export function mayTouch(
   permissions: ArrangePermissions,
 ): boolean {
   const reach = candidate.own || permissions.closeHumanTabs;
-  const floor1 = !candidate.viewing;
+  const floor1 = !(permissions.protectViewingTab && candidate.viewing);
   const floor2 = op !== "close" || !candidate.isDirty || permissions.closeDirtyTabs;
   return reach && floor1 && floor2;
 }
@@ -284,7 +301,7 @@ export type MoveTargetVerdict =
  * ```
  * toColumn が 1..groupCount+1 の整数でない → invalid-request（VS Code は飛び番の枠を作る）
  * humanColumn が観測できない            → human-column-target（どの列が人間か言えないのに流し込まない）
- * toColumn === humanColumn              → closeHumanTabs が無ければ human-column-target
+ * toColumn === humanColumn              → closeHumanTabs も useHumanColumn も無ければ human-column-target
  * toColumn が避ける列（D90）             → tool-column-target
  * ```
  *
@@ -295,10 +312,14 @@ export type MoveTargetVerdict =
  * `avoid` の既定は空で、そのときは以前の答え。
  *
  * 人間の列にタブを流し込むのは `single-column` が起こしたことと同じである。
- * `closeHumanTabs: true` は「人間の面に触ってよい」の宣言なので、そのときだけ通す。
+ * `closeHumanTabs: true` は「人間の面に触ってよい」の宣言なので、そのときは通す。
+ * もう1つは人間の列を舞台に使ってよいとき（`useHumanColumn`。D93 / D94。決めるのは
+ * `human-column.ts`）―― `show_code` がそこに開けるのに、自分のタブをそこへ動かせないのは
+ * 一貫しない。どちらも道具の列（`avoid`）は外さない。どのタブを動かせるか（人間のタブは
+ * `closeHumanTabs`）は `mayTouch` が別に決めるので、ここで行き先を通しても人間のタブは動かない。
  *
  * **観測できないときは断る側に倒す**（`layoutWouldMergeHumanColumn` と同じ）。設定を
- * 立てていても通さない ―― 人間の列が分からない状態で「人間の列に触ってよい」は
+ * 立てていても、人間の列を使える場合でも通さない ―― 人間の列が分からない状態で「人間の列に触ってよい」は
  * 判定できない。`groupCount+1` を許すのは、右端の外側に**1つだけ**新しい列を作るのは
  * 意図どおりの結果になるから（それより先は VS Code が空の枠を挟む）。
  */
@@ -308,12 +329,13 @@ export function moveTargetVerdict(
   humanColumn: number | undefined,
   permissions: ArrangePermissions,
   avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
+  useHumanColumn = false,
 ): MoveTargetVerdict {
   if (!Number.isInteger(toColumn) || toColumn < 1 || toColumn > groupCount + 1) {
     return { ok: false, reason: "invalid-request" };
   }
   if (humanColumn === undefined) return { ok: false, reason: "human-column-target" };
-  if (toColumn === humanColumn && !permissions.closeHumanTabs) {
+  if (toColumn === humanColumn && !permissions.closeHumanTabs && !useHumanColumn) {
     return { ok: false, reason: "human-column-target" };
   }
   if (avoid.has(toColumn)) return { ok: false, reason: "tool-column-target" };
@@ -322,7 +344,7 @@ export function moveTargetVerdict(
 
 /**
  * `gather-own` の集め先（設計 D55-1）: **舞台の最初の列** ―― 人間の列より右で最小の列。
- * 右に無ければ人間の隣（新しい列）。
+ * 右に無ければ人間の隣（新しい列）。人間の列を使えるなら（D93 / D94）、右に無ければ人間の列。
  *
  * **「舞台の最初の列」を決めているのは `stage-column.ts` の `chooseStageColumns` である**
  * （`show_code` が `layout: "single"` で開く列と同じ量）。ここで別の式を書くと、
@@ -330,7 +352,10 @@ export function moveTargetVerdict(
  * 実際に別の式を書いていた。レビュー I2）。`stageColumnForSlot(columns, "single", 0, human)`
  * を通し、`test/arrange-policy.test.ts` が生成した表の全組み合わせで等しいことを見ている。
  *
- * 人間の列そのものは**決して**返さない ―― 返せば `single-column` の再来である。
+ * 人間の列を使えないとき（`useHumanColumn` が偽。引数を省いたときは偽）は、人間の列そのものは**決して**返さない
+ * ―― 返せば `single-column` の再来である。使えるとき（D93 / D94）は、右に使える列が無ければ
+ * 人間の列が集め先になる ―― `show_code` が single で開く列と同じ答えで、そこへは人間のタブを
+ * 流し込まない（動かすのは own のタブだけ）。
  * 人間の列が観測できなければ `undefined`（推測で集め先を決めない。ハンドラが断る）。
  * `stageColumnForSlot` は `humanColumn` 省略時に「最小の列が人間」と**推測**するので、
  * ここで先に止める。可視列が無く番号が決まらない（"beside"）ときも `undefined`。
@@ -340,13 +365,15 @@ export function moveTargetVerdict(
  * `avoid` は舞台に選ばない列（D90。ターミナルや他の拡張のパネルを表示している列）。
  * `show_code` と同じ集合を `stageColumnForSlot` にそのまま渡す ―― ここで別に除くと、
  * 避けた結果の列が2箇所で決まる。既定は空で、そのときは避ける列の無い以前の答え。
+ * `useHumanColumn` も同じ理由で `stageColumnForSlot` にそのまま渡す。
  */
 export function firstStageColumn(
   columns: readonly number[],
   humanColumn: number | undefined,
   avoid: ReadonlySet<number> = NO_AVOIDED_COLUMNS,
+  useHumanColumn = false,
 ): number | undefined {
   if (humanColumn === undefined) return undefined;
-  const column = stageColumnForSlot(columns, "single", 0, humanColumn, avoid);
+  const column = stageColumnForSlot(columns, "single", 0, humanColumn, avoid, useHumanColumn);
   return column === "beside" ? undefined : column;
 }

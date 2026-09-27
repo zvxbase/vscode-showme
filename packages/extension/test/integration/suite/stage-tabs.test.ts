@@ -23,6 +23,7 @@ import {
   layoutGroups,
   layoutTabs,
   lendWindow,
+  pinDedicatedStage,
   showCode,
   showOne,
   stageUri,
@@ -136,6 +137,8 @@ async function humanFocuses(editor: vscode.TextEditor): Promise<void> {
 }
 
 suite("舞台を映しで開く（D84 / D85）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -306,10 +309,12 @@ suite("舞台を映しで開く（D84 / D85）", () => {
  * 映しのタブは `show_code` だけが開き、スキームは人間の移動でもプリセットの合流でも残る。
  * だから own は記録ではなくスキームで決まる ―― 人間が映しを別の列へ動かしても own のまま
  * `close-own` で閉じられ、人間が同じファイルを `file:` で開いたタブは own にならない。
- * 床（人間が見ているタブは閉じない）は変わらない。観測の側では、映しのタブも `file:` と同じ
+ * 床（未保存は閉じない。protectViewingTab がオンなら人間が見ているタブも）は変わらない。観測の側では、映しのタブも `file:` と同じ
  * 相対パスで `get_editor_state` / `arrange_editors` に現れる。
  */
 suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -368,11 +373,12 @@ suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）"
     });
   });
 
-  test("人間が映しのタブを別の列へ動かしても own のまま。見ている間は close-own でも閉じず、離れたら閉じる（D82・床1）", async () => {
+  test("人間が映しのタブを別の列へ動かしても own のまま。protectViewingTab: true なら見ている間は close-own でも閉じず、離れたら閉じる（D82・床1）", async () => {
     const rel = STAGE_TABS_RELS.moved;
     const mirror = await stageUri(rel, STAGE_SCHEME_READONLY);
     const humanRel = STAGE_TABS_RELS.human;
-    await withSettings({ "stage.agentTabs": true }, async () => {
+    // 床1 は既定で外れている（D92）。見ている間に守られることを見るので、保護をオンにする。
+    await withSettings({ "stage.agentTabs": true, "layout.protectViewingTab": true }, async () => {
       await humanOpens(humanRel);
       const humanColumn = vscode.window.tabGroups.activeTabGroup.viewColumn;
       const staged = await stageMirror(rel);
@@ -386,7 +392,7 @@ suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）"
       const moved = await observedTab(rel, humanColumn);
       assert.strictEqual(moved?.own, true, `動かしたら own が消えた: ${JSON.stringify(moved)}`);
 
-      // 床1: 人間が見ている映しは閉じない。
+      // 床1（protectViewingTab: true）: 人間が見ている映しは閉じない。
       assert.strictEqual(
         vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputText &&
           vscode.window.tabGroups.activeTabGroup.activeTab.input.uri.toString(),
@@ -415,6 +421,8 @@ suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）"
     const mirror = await stageUri(rel, STAGE_SCHEME_READONLY);
     const file = fileUri(rel);
     await withSettings({ "stage.agentTabs": true }, async () => {
+      // 人間の列には人間のタブがある（空の列1なら dedicated でも舞台がそこに開く。D94）。
+      await humanOpens(STAGE_TABS_RELS.human);
       const staged = await stageMirror(rel);
       // 映しの後から、人間が同じファイルを自分の列に file: で開く。
       await humanOpens(rel);
@@ -599,7 +607,7 @@ suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）"
       assert.strictEqual(closedEvents, 1, `合流で closed が1回発火しなかった: ${closedEvents} 回`);
       assert.strictEqual(columnOfUri(moved), 2, "合流で動いた映しが列2に無い");
 
-      // 人間は自分の file: を見ている（床1 で残らないように）。
+      // 人間は自分の file: を見ている（protectViewingTab がオンでも床1 で残らないように ―― 閉じた理由を所有だけにする）。
       await humanOpens(humanRel);
       for (const rel of rels) {
         const tab = layoutTabs(await getEditorState()).find((t) => t.path === rel);
@@ -649,12 +657,13 @@ suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）"
     });
   });
 
-  test("人間の › は吹き出しの URI（映し）を開く。それは own で、見ている間は床1 が守る（D85）", async () => {
+  test("人間の › は吹き出しの URI（映し）を開く。それは own で、protectViewingTab: true なら見ている間は床1 が守る（D85）", async () => {
     const fromRel = STAGE_TABS_RELS.navFrom;
     const toRel = STAGE_TABS_RELS.navTo;
     const toMirror = await stageUri(toRel, STAGE_SCHEME_READONLY);
     const humanRel = STAGE_TABS_RELS.human;
-    await withSettings({ "stage.agentTabs": true }, async () => {
+    // 床1 は既定で外れている（D92）。見ている間に守られることを見るので、保護をオンにする。
+    await withSettings({ "stage.agentTabs": true, "layout.protectViewingTab": true }, async () => {
       const [first, second] = await annotate([
         { location: { path: fromRel, text: STAGE_TABS_MARKER }, text: "from" },
         { location: { path: toRel, text: STAGE_TABS_MARKER }, text: "to" },
@@ -682,7 +691,7 @@ suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）"
         `› で開いた映しが own でない: ${JSON.stringify(opened)}`,
       );
 
-      // 床1: 人間が見ている間は close-own でも閉じない。
+      // 床1（protectViewingTab: true）: 人間が見ている間は close-own でも閉じない。
       const whileViewing = await arrangeEditors("close-own");
       assert.deepStrictEqual(
         whileViewing,
@@ -707,6 +716,8 @@ suite("所有はスキーム・観測で映しを相対パスに（D82 / D83）"
  * 見ている位置の行を持っていく。映しでない編集器で押しても何も開かない。
  */
 suite("本物のファイルを開く（D87）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -845,6 +856,8 @@ suite("本物のファイルを開く（D87）", () => {
  * 映し、従来の窓では記録して own）。
  */
 suite("show_code の realFile: true（D87）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();

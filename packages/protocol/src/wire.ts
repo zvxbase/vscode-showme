@@ -47,7 +47,10 @@ export const showCodeArgsSchema = z
       .describe(
         "How to lay out the stage. split places the locations side by side in at most 2 columns " +
           '("defined here, used here"); single stacks them as tabs in one column. Default is single. ' +
-          "Either way the column the human is using is never used, and the stage never exceeds 2 columns",
+          "With the human's default editorGroup setting (shared), the human's column is used when no other " +
+          "column is already open to its right; with editorGroup: dedicated, the column the human is in is " +
+          "never used while it holds any of the human's tabs (columns to the right of it are still reused). " +
+          "Either way the stage never exceeds 2 columns",
       ),
     // 本物のファイルを開く選択肢（D87）。開いたタブは人間のもの（own にしない）で、`close-own` は
     // 閉じない ―― 「自分で片づけられないタブを増やす」ことを、説明で知ってから使わせる。
@@ -414,7 +417,9 @@ export const arrangeEditorsArgsSchema = z
       .max(MAX_REL_PATH_CHARS)
       .optional()
       .describe(
-        "Only for move-tab. Workspace-relative path of the tab to move. " +
+        "Only for move-tab. Workspace-relative path of the tab to move (the path get_editor_state reports). " +
+          "A tab of a file outside the workspace is addressed by its absolute path, only when the human turned on " +
+          "showme.allowOutsideWorkspace (list_workspaces.outsideWorkspace). " +
           "**Tabs are addressed by path; they cannot be addressed by title (label)**",
       ),
     toColumn: z
@@ -426,7 +431,8 @@ export const arrangeEditorsArgsSchema = z
       .describe(
         "Only for move-tab / move-panel. Destination column (1-based). " +
           "Up to the current column count + 1 is accepted (a larger number is invalid-request). " +
-          "The column the human is in is refused by default (withheld: [human-column-target]); " +
+          "The human's column is refused only when the human's setting showme.stage.editorGroup is dedicated " +
+          "and that column shows the human's own tabs (withheld: [human-column-target]; allowed with closeHumanTabs); " +
           "with showme.stage.avoidToolColumns on, so is a column showing a terminal or another extension's panel (withheld: [tool-column-target])",
       ),
     slot: panelSlotSchema
@@ -445,7 +451,9 @@ export const arrangeEditorsArgsSchema = z
       .max(MAX_CLOSE_TABS_PATHS)
       .optional()
       .describe(
-        "Only for close-tabs. Workspace-relative paths of the tabs to close (1-50). " +
+        "Only for close-tabs. Workspace-relative paths of the tabs to close (1-50; the paths get_editor_state reports). " +
+          "A tab of a file outside the workspace is addressed by its absolute path, only when the human turned on " +
+          "showme.allowOutsideWorkspace (list_workspaces.outsideWorkspace). " +
           "Tabs without a path (terminals, panels) cannot be addressed and are never closed by this action; " +
           "use close-own for your own panels",
       ),
@@ -684,10 +692,22 @@ export const listWorkspacesResultSchema = z
      * 「やってみて断られる」は最後の砦であって、普段の知り方ではない。
      * 値は拡張の `readConfig()` から写すだけなので、ワークスペース値は載らない（不変条件9）。
      *
-     * 3欄とも**必須**。optional にすると、古い拡張と新しいブリッジの組み合わせで
-     * 欄が黙って消え、エージェントは「制約が無い」と読む。線で落として気づかせる。
+     * `protectViewingTab` は `showme.layout.protectViewingTab`（D92）。
+     * **既定は false** ―― 人間が見ているタブでも、own（own でなければ closeHumanTabs）と
+     * 床2（closeDirtyTabs）を通れば動かせる。true にすると見ているタブが床に戻り、
+     * `viewing-tab` で断られる。
+     *
+     * `permissions` / `features` / `disabledTools` / `editorGroup` の4欄とも**必須**
+     * （`permissions` 自身の鍵は3つ）。optional にすると、古い拡張と新しいブリッジの
+     * 組み合わせで欄が黙って消え、エージェントは「制約が無い」と読む。線で落として気づかせる。
      */
-    permissions: z.object({ closeHumanTabs: z.boolean(), closeDirtyTabs: z.boolean() }).strict(),
+    permissions: z
+      .object({
+        closeHumanTabs: z.boolean(),
+        closeDirtyTabs: z.boolean(),
+        protectViewingTab: z.boolean(),
+      })
+      .strict(),
     /**
      * 人間が切れる3機能（増分6 D74）。`showme.stage.enabled` / `showme.html.enabled` /
      * `showme.layout.enabled` を写す。`disabledTools` は**ここから導出**される
@@ -702,8 +722,16 @@ export const listWorkspacesResultSchema = z
      * 長さの上限は語彙の数（重複で膨らませられない）。
      */
     disabledTools: z.array(z.enum(TOOL_NAMES)).max(TOOL_NAMES.length),
-    /** `active` なら `show_code` は人間の列に開く。`showme.stage.editorGroup` の enum と同じ。 */
-    editorGroup: z.enum(["dedicated", "active"]),
+    /**
+     * `showme.stage.editorGroup` の enum と同じ（D93）。
+     * `shared`（**既定**）は、人間の列より右に既存の列が無いときは人間の列も使う
+     * （足りていれば `dedicated` と同じ答えになる）。
+     * `dedicated` は、人間が今いる列に own でないタブ（人間のタブ）が1枚でもあれば、その列を
+     * 決して使わない（D94。空の列、またはエージェントのタブだけの列は避けない）。人間の列より
+     * 右の既存の列は、`shared` と同じく先に使う ―― 使わないのは人間が今いる列だけ。
+     * `active` は常に人間の列に開く。
+     */
+    editorGroup: z.enum(["shared", "dedicated", "active"]),
     /**
      * `showme.stage.avoidToolColumns` を写す（D90）。`true` なら、ターミナルや他の拡張のパネルを
      * 表示している列には開かず、開ける列が無ければ `no-stage-column` で断る。**必須** ――
@@ -719,6 +747,13 @@ export const listWorkspacesResultSchema = z
      */
     panels: z.object({ max: panelLimitSchema }).strict(),
     otherWindowsListed: z.boolean(),
+    /**
+     * `showme.allowOutsideWorkspace` を写す（D101）。`true` のときだけ、`show_code` / `annotate` /
+     * `find_*` の `path` にワークスペースの外の絶対パスを渡せる（資格情報の置き場所などは、オンでも
+     * `excluded-path`）。**必須** ―― 欄が消えると、エージェントは絶対パスの `invalid-path` を
+     * 設定と結びつけられない。
+     */
+    outsideWorkspace: z.boolean(),
   })
   .strict();
 
@@ -937,7 +972,9 @@ export const ARRANGE_WITHHELD_REASONS = [
   "dirty-tabs-not-allowed",
   /**
    * 人間が**見ている**タブ（`activeTabGroup.activeTab`）なので触らなかった。
-   * **どの設定でも外れない**（増分5 §C1 の床1）。人間に設定を頼んでも変わらない。
+   * `showme.layout.protectViewingTab` が true のときだけ床になる（D92）。
+   * **既定は false** ―― own（own でなければ closeHumanTabs）と床2（closeDirtyTabs）を
+   * 通れば、見ていても動く。true にすると増分5 §C1 のもとの床に戻る。
    */
   "viewing-tab",
   /**
@@ -947,8 +984,10 @@ export const ARRANGE_WITHHELD_REASONS = [
    */
   "human-column-would-merge",
   /**
-   * `move-tab` / `move-panel` の移動先が**人間の列**（`activeTabGroup`）なので、動かさなかった
-   * （増分5 D59）。人間の列にタブを流し込むのは `single-column` が起こしたことと同じ。
+   * `move-tab` / `move-panel` の移動先が**人間の列**（`activeTabGroup`）で、その列が使えないので
+   * 動かさなかった（増分5 D59 / D93・D94）。使えないのは `showme.stage.editorGroup` が
+   * `dedicated` で、かつその列に own でない（人間の）タブが1枚でもあるときだけ ――
+   * `shared` / `active`、あるいは `dedicated` でもその列が空か own のタブだけのときは出ない。
    * `showme.layout.closeHumanTabs` が true なら通る（人間の面に触ってよいと言われている）。
    */
   "human-column-target",

@@ -2,14 +2,19 @@ import * as fs from "node:fs";
 import * as vscode from "vscode";
 import type { DefinitionTarget } from "./config.js";
 import { relativizeToRoot } from "./editor-observation.js";
-import { relOfStageUri, stageUriFor } from "./stage-uri-vscode.js";
+import { stageKeyOfUri, stageUriFor } from "./stage-uri-vscode.js";
 import {
   STAGE_SCHEME_EDITABLE,
   STAGE_SCHEME_READONLY,
   type StageScheme,
   isStageScheme,
 } from "./stage-uri.js";
-import { acceptWorkspacePath } from "./workspace-path-gate.js";
+import {
+  type RedactionPolicy,
+  acceptWorkspacePath,
+  agentPathKey,
+  verdictPath,
+} from "./workspace-path-gate.js";
 
 /** `vscode.executeDefinitionProvider` / `executeReferenceProvider` が返す1件。 */
 export type LocationResult = vscode.Location | vscode.LocationLink;
@@ -20,11 +25,14 @@ export type LocationResult = vscode.Location | vscode.LocationLink;
  * - `outside`: ワークスペースの外（型定義の `lib.d.ts` など）か、`file:` でない。写さない
  * - `rejected`: ワークスペースの中だが関門（`acceptWorkspacePath`）に落ちる。返さない
  * - `inside`: 関門を通る。`rel` は結果の綴り（映しの URI を組む）、`canonical` は正準名（同じファイルかの比較）
+ * - `outside-accepted`: ワークスペースの外だが、人間が `showme.allowOutsideWorkspace` をオンにしていて
+ *   関門を通る（D102）。`rel` は正規化した絶対パスの綴り（外の映しの鍵）、`canonical` は実体の絶対パス
  */
 export type ResultPlace =
   | { readonly kind: "outside" }
   | { readonly kind: "rejected" }
-  | { readonly kind: "inside"; readonly rel: string; readonly canonical: string };
+  | { readonly kind: "inside"; readonly rel: string; readonly canonical: string }
+  | { readonly kind: "outside-accepted"; readonly rel: string; readonly canonical: string };
 
 /**
  * 結果の `file:` URI → ワークスペースの置き場所を答える関数を作る。関門は `acceptWorkspacePath` 1つ
@@ -36,7 +44,7 @@ export type ResultPlace =
  */
 export function resultPlacer(
   root: vscode.Uri,
-  redactedPatterns: readonly string[],
+  redaction: RedactionPolicy,
 ): (uri: vscode.Uri) => ResultPlace {
   let realRoot: vscode.Uri | null | undefined; // undefined = まだ取っていない、null = 使わない
   const realRootUri = (): vscode.Uri | null => {
@@ -50,6 +58,21 @@ export function resultPlacer(
       // ルートが読めなければ綴りだけで決める（関門も同じルートで落とす）。
     }
     return realRoot;
+  };
+  /**
+   * ワークスペースの外の結果（D102）。設定がオンで関門を通るものだけ `outside-accepted`（外の映しに
+   * 写せる）。それ以外は今までどおり `outside`（`file:` のまま返す）。
+   */
+  const outsidePlace = (uri: vscode.Uri): ResultPlace => {
+    if (redaction.allowOutsideWorkspace !== true || uri.scheme !== "file")
+      return { kind: "outside" };
+    const verdict = acceptWorkspacePath(root.fsPath, uri.fsPath, redaction);
+    if (!verdict.ok) return { kind: "outside" };
+    const key = agentPathKey(root.fsPath, uri.fsPath, redaction);
+    if (key === undefined) return { kind: "outside" };
+    return verdict.kind === "inside"
+      ? { kind: "inside", rel: key, canonical: verdict.canonical }
+      : { kind: "outside-accepted", rel: key, canonical: verdict.absPath };
   };
   const cache = new Map<string, ResultPlace>();
   return (uri) => {
@@ -66,11 +89,11 @@ export function resultPlacer(
       if (real !== null) rel = relativizeToRoot(real, uri);
     }
     let place: ResultPlace;
-    if (rel === undefined) place = { kind: "outside" };
+    if (rel === undefined) place = outsidePlace(uri);
     else {
-      const verdict = acceptWorkspacePath(root.fsPath, rel, redactedPatterns);
+      const verdict = acceptWorkspacePath(root.fsPath, rel, redaction);
       place = verdict.ok
-        ? { kind: "inside", rel, canonical: verdict.canonical }
+        ? { kind: "inside", rel, canonical: verdictPath(verdict) }
         : { kind: "rejected" };
     }
     cache.set(key, place);
@@ -82,9 +105,9 @@ export function resultPlacer(
 export function placeOfResult(
   root: vscode.Uri,
   uri: vscode.Uri,
-  redactedPatterns: readonly string[],
+  redaction: RedactionPolicy,
 ): ResultPlace {
-  return resultPlacer(root, redactedPatterns)(uri);
+  return resultPlacer(root, redaction)(uri);
 }
 
 export interface MirrorMapping {
@@ -145,7 +168,7 @@ export function mapMirrorLocations(
 
 /** 1回の問い合わせで使う設定。**1つの設定の写しから作る**（途中で変わっても割れない）。 */
 export interface StageLanguageSettings {
-  readonly redactedPatterns: readonly string[];
+  readonly redaction: RedactionPolicy;
   readonly target: DefinitionTarget;
   /** `MirrorMapping.agentTabScheme` と同じ。 */
   readonly agentTabScheme: "file" | StageScheme;
@@ -165,7 +188,7 @@ export interface StageLanguageDeps {
  * には決して聞かない（聞けば自分が呼ばれる）。
  *
  * **細工した映しの URI もここに届く**（どのプロバイダも URI を選べない）ので、聞く前に
- * `relOfStageUri`（正しい綴りか）と `acceptWorkspacePath`（関門）を通す。落ちれば何も返さない。
+ * `stageKeyOfUri`（正しい綴りか。中と外の映し）と `acceptWorkspacePath`（関門）を通す。落ちれば何も返さない。
  *
  * 参照: `executeReferenceProvider` は宣言を常に含める（`context.includeDeclaration` を渡す口が
  * 無い）。人間の画面に出す一覧なので、宣言が混ざっても害は無い。
@@ -200,10 +223,11 @@ export class StageLanguageProvider implements vscode.DefinitionProvider, vscode.
   ): Promise<LocationResult[]> {
     const root = this.deps.root();
     if (root === undefined || !isStageScheme(uri.scheme)) return [];
-    const rel = relOfStageUri(uri);
+    // 中は相対パス、外の映し（D102）は正規化した絶対パスの鍵。
+    const rel = stageKeyOfUri(uri);
     if (rel === undefined) return [];
     const settings = this.deps.settings();
-    const source = acceptWorkspacePath(root.fsPath, rel, settings.redactedPatterns);
+    const source = acceptWorkspacePath(root.fsPath, rel, settings.redaction);
     if (!source.ok) return [];
     const fileUri = stageUriFor(root, rel, "file");
     let results: LocationResult[] | undefined;
@@ -214,11 +238,11 @@ export class StageLanguageProvider implements vscode.DefinitionProvider, vscode.
       return [];
     }
     return mapMirrorLocations(results ?? [], {
-      sourceCanonical: source.canonical,
+      sourceCanonical: verdictPath(source),
       target: settings.target,
       agentTabScheme: settings.agentTabScheme,
       root,
-      place: resultPlacer(root, settings.redactedPatterns),
+      place: resultPlacer(root, settings.redaction),
     });
   }
 }

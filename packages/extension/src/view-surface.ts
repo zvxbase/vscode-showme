@@ -1,7 +1,7 @@
 import type { ViewAction } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
 import type { ViewSurface } from "./handlers/show-view.js";
-import { acceptWorkspacePath } from "./workspace-path-gate.js";
+import { type RedactionPolicy, acceptWorkspacePath, insideOnly } from "./workspace-path-gate.js";
 
 /**
  * 操作名 → VS Code のコマンド名（設計 D36/D44）。
@@ -55,7 +55,7 @@ export const VIEW_COMMANDS: readonly string[] = Object.values(COMMAND_BY_ACTION)
  */
 export function createViewSurface(
   workspaceRoot: vscode.Uri | undefined,
-  extraRedactedPatterns: () => readonly string[],
+  redaction: () => RedactionPolicy,
 ): ViewSurface {
   const run = async (command: string, ...args: unknown[]): Promise<boolean> => {
     try {
@@ -78,7 +78,8 @@ export function createViewSurface(
       //
       // 実体パスで示す。正準名をルートに再結合すると、その綴りのリンクを
       // 辿り直すことになる。
-      const accepted = acceptWorkspacePath(workspaceRoot?.fsPath, relPath, extraRedactedPatterns());
+      // エクスプローラーはワークスペースの木（外のファイル D101 は対象外。閉じる側に畳む）。
+      const accepted = insideOnly(acceptWorkspacePath(workspaceRoot?.fsPath, relPath, redaction()));
       if (!accepted.ok) return false;
       return run("revealInExplorer", vscode.Uri.file(accepted.realPath));
     },

@@ -57,3 +57,16 @@ describe("上限は舞台の上限とは別の量である", () => {
     expect(MAX_FOUND_LOCATIONS).toBeGreaterThan(3);
   });
 });
+
+describe("outsideResultName（D102: 外の結果の名前でリンクの指す先を明かさない）", () => {
+  it("錨の実体と同じファイルの結果は、エージェントが渡した綴りで返す", async () => {
+    const { outsideResultName } = await import("./language-lookup.js");
+    const anchors = new Map([["/x/real/b.ts", "/x/alias.ts"]]);
+    expect(outsideResultName("/x/real/b.ts", "/x/real/b.ts", anchors)).toBe("/x/alias.ts");
+  });
+  it("錨と別のファイルは、結果の綴りのまま", async () => {
+    const { outsideResultName } = await import("./language-lookup.js");
+    const anchors = new Map([["/x/real/b.ts", "/x/alias.ts"]]);
+    expect(outsideResultName("/x/real/c.ts", "/x/real/c.ts", anchors)).toBe("/x/real/c.ts");
+  });
+});

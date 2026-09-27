@@ -44,3 +44,70 @@ export function normalizeWorkspaceRelative(raw: string): string | undefined {
   const cleaned = normalized === "." ? "" : normalized;
   return cleaned.length === 0 ? undefined : cleaned;
 }
+
+/** `normalizeAbsolutePath` が使うパスの関数だけ。`path.posix` も `path.win32` も満たす。 */
+export type AbsolutePathModule = Pick<
+  typeof path.posix,
+  "sep" | "isAbsolute" | "normalize" | "parse"
+>;
+
+/**
+ * エージェントが渡した絶対パスを、ワークスペースの外のパスとして受け入れられる形に正規化する
+ * （D102。`normalizeWorkspaceRelative` の絶対パス版）。受け入れないものは `undefined`。
+ *
+ * **綴りの正規化だけ**で、受け入れるかどうか（設定・秘匿・資格情報の置き場所・実体）は拡張の
+ * 関門が決める。結果は正準キーでもある ―― 同じ綴りの揺れ（`//`）は同じ値になる。
+ *
+ * - `~` で始まるものは通さない（展開しない。展開するとエージェントの言うホームと
+ *   拡張のホームが一致する前提を置くことになる。絶対パスで指させる）
+ * - `.` / `..` の部分は通さない（正規化で消せるが、消した後の綴りと入力が別の実体を指しうる
+ *   ―― リンクを辿る前の `..` は、辿った後の `..` と意味が違う）
+ * - NUL を通さない。posix ではバックスラッシュも通さない（区切りかどうかが流儀で割れる）
+ * - Windows: ドライブからの絶対パス（`C:\…`）だけ。UNC（`\\server\share`）は通さない ――
+ *   触った時点で外のサーバへ SMB で問い合わせ、資格情報を送りうる。`\\?\` などの名前空間、
+ *   ドライブ相対（`C:a`）、ドライブの無い根（`\a`）も通さない。ドライブの後のコロン
+ *   （代替データストリーム `.env::$DATA`）と、末尾が空白・ドットの部分（剥がされて別の実体を
+ *   指す）、8.3 の短い名前（`PROGRA~1`。別の綴りで同じ実体を指す。普通の名前の `~1` も
+ *   巻き添えで落ちる）も通さない。**ドライブ文字は小文字に揃える**（`C:` と `c:` を同じ鍵にし、
+ *   映しの URI の綴りを1つに決める。VS Code も URI の文字列ではドライブ文字を小文字にする）
+ */
+export function normalizeAbsolutePath(
+  raw: string,
+  p: AbsolutePathModule = path,
+): string | undefined {
+  if (raw.length === 0) return undefined;
+  if (raw.includes("\u0000")) return undefined;
+  if (raw.startsWith("~")) return undefined;
+  const windows = p.sep === "\\";
+  let unified = raw;
+  if (windows) {
+    unified = raw.replace(/\//g, "\\");
+    // ドライブ文字＋コロン＋区切り、だけを根として認める。
+    if (!/^[A-Za-z]:\\/.test(unified)) return undefined;
+    if (unified.indexOf(":", 2) !== -1) return undefined;
+    unified = unified.charAt(0).toLowerCase() + unified.slice(1);
+  } else {
+    if (raw.includes("\\")) return undefined;
+    if (!raw.startsWith("/")) return undefined;
+  }
+  if (!p.isAbsolute(unified)) return undefined;
+  const root = p.parse(unified).root;
+  const segments = unified
+    .slice(root.length)
+    .split(p.sep)
+    .filter((s) => s.length > 0);
+  if (segments.length === 0) return undefined; // 根そのもの
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") return undefined;
+    if (windows) {
+      const last = segment.charAt(segment.length - 1);
+      if (last === " " || last === ".") return undefined;
+      if (/~\d/.test(segment)) return undefined;
+    }
+  }
+  const normalized = p.normalize(unified);
+  // 末尾の区切りは落とす（ファイルは区切りで終わらない。`/a/` と `/a` を同じ鍵にする）。
+  return normalized.length > root.length && normalized.endsWith(p.sep)
+    ? normalized.slice(0, -1)
+    : normalized;
+}

@@ -2,8 +2,14 @@ import * as path from "node:path";
 import type { FoundLocation, Location } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
 import type { AnchorResolution, LanguageSurface } from "./handlers/find-locations.js";
+import { outsideResultName } from "./language-lookup.js";
 import { probeUntilNonEmpty } from "./symbol-lookup.js";
-import { acceptWorkspacePath } from "./workspace-path-gate.js";
+import {
+  type RedactionPolicy,
+  acceptWorkspacePath,
+  agentPathKey,
+  verdictPath,
+} from "./workspace-path-gate.js";
 
 /**
  * 言語プロバイダに聞く面。**`vscode` の値に触るのはここだけ**（判断は `language-lookup.ts`）。
@@ -21,7 +27,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 export function createLanguageSurface(
   workspaceRoot: vscode.Uri | undefined,
-  extraRedactedPatterns: () => readonly string[],
+  redaction: () => RedactionPolicy,
 ): LanguageSurface {
   const toRelative = (uri: vscode.Uri): string | undefined => {
     if (workspaceRoot === undefined) return undefined;
@@ -38,10 +44,26 @@ export function createLanguageSurface(
     // 別に当てていた ―― 同じ量を2箇所で決めていた形である（不変条件14）。
     if (uri.scheme !== "file") return undefined;
     const rel = path.relative(workspaceRoot.fsPath, uri.fsPath);
-    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+      // **外（D102）は、人間が設定をオンにしているときだけ**、関門を通るものを正規化した絶対パス
+      // （綴り。realpath ではない）で返す。オフなら今までどおり返さない（関門が落とす）。
+      const accepted = acceptPath(uri.fsPath);
+      if (!accepted.ok) return undefined;
+      if (accepted.kind === "inside") return accepted.canonical;
+      const spelled = agentPathKey(workspaceRoot.fsPath, uri.fsPath, redaction());
+      if (spelled === undefined) return undefined;
+      // 錨と同じ実体なら、エージェントの綴りで返す（リンクの指す先を明かさない）。
+      return outsideResultName(accepted.realPath, spelled, anchorSpellings);
+    }
     const accepted = acceptPath(rel.split(path.sep).join("/"));
-    return accepted.ok ? accepted.canonical : undefined;
+    return accepted.ok ? verdictPath(accepted) : undefined;
   };
+
+  /**
+   * 外の錨（D102）の実体 → エージェントの綴り。`resolveAnchor` が覚え、結果の名前（`toRelative`）が
+   * 引く。この面は1回の問い合わせごとに作られる（`findDeps`）ので、問い合わせをまたいで持ち越さない。
+   */
+  const anchorSpellings = new Map<string, string>();
 
   const toFound = (items: unknown): readonly FoundLocation[] | undefined => {
     if (!Array.isArray(items)) return undefined;
@@ -92,8 +114,9 @@ export function createLanguageSurface(
    * **正準化した名前**に対して当てる。
    */
   /** パスの判断は共通の関門に任せる（`workspace-path-gate.ts`）。**ここで書き直さない。** */
+  // 外のファイル（D102）も同じ関門が決める（設定がオフなら外は `invalid-path`）。
   const acceptPath = (rawPath: string) =>
-    acceptWorkspacePath(workspaceRoot?.fsPath, rawPath, extraRedactedPatterns());
+    acceptWorkspacePath(workspaceRoot?.fsPath, rawPath, redaction());
 
   /**
    * 開く先の `Uri`。**正準名をルートに再結合せず、解決済みの実体パスを使う。**
@@ -123,13 +146,17 @@ export function createLanguageSurface(
       // **何をするより先に、実体まで辿って受け入れるか決める。**
       const accepted = acceptPath(location.path);
       if (!accepted.ok) return { ok: false, reason: accepted.reason };
+      if (accepted.kind === "outside") {
+        const spelled = agentPathKey(workspaceRoot?.fsPath, location.path, redaction());
+        if (spelled !== undefined) anchorSpellings.set(accepted.realPath, spelled);
+      }
       if (workspaceRoot === undefined) return { ok: false, reason: "invalid-path" };
 
       // 行の指定がいちばん素直。`text` は開いてから探す。
       if (location.lines !== undefined) {
         return {
           ok: true,
-          anchor: { path: accepted.canonical, line: location.lines.start, column: 0 },
+          anchor: { path: verdictPath(accepted), line: location.lines.start, column: 0 },
         };
       }
       const uri = uriFor(accepted);
@@ -151,7 +178,7 @@ export function createLanguageSurface(
           // **識別子の途中を指す。** 先頭だと、直前の記号を拾うプロバイダがある。
           return {
             ok: true,
-            anchor: { path: accepted.canonical, line: line + 1, column: column + 1 },
+            anchor: { path: verdictPath(accepted), line: line + 1, column: column + 1 },
           };
         }
       }

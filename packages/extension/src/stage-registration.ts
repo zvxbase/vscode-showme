@@ -2,7 +2,9 @@ import * as vscode from "vscode";
 import { relativizeToRoot } from "./editor-observation.js";
 import { StageFileSystemProvider } from "./stage-fs-provider.js";
 import { StageMirror } from "./stage-mirror.js";
+import { stageKeyOfUri } from "./stage-uri-vscode.js";
 import { STAGE_SCHEME_EDITABLE, STAGE_SCHEME_READONLY } from "./stage-uri.js";
+import { type RedactionPolicy, spellAgentPath } from "./workspace-path-gate.js";
 
 /**
  * 映しの2つのスキームを登録し、変更の知らせを配線する（設計 D81）。activate で1回呼ぶ。
@@ -17,12 +19,13 @@ import { STAGE_SCHEME_EDITABLE, STAGE_SCHEME_READONLY } from "./stage-uri.js";
  * 返す Disposable は呼び出し側の `disposables` に積む（確保と逆順に返る）。
  */
 export function registerStageFileSystem(
-  redactedPatterns: () => readonly string[],
+  redaction: () => RedactionPolicy,
+  editable: () => boolean,
 ): vscode.Disposable[] {
   const disposables: vscode.Disposable[] = [];
   // ルートは毎回読む（`StageMirror` の構築子の説明と同じ理由）。
   const rootUri = (): vscode.Uri | undefined => vscode.workspace.workspaceFolders?.[0]?.uri;
-  const mirror = new StageMirror(() => rootUri()?.fsPath, redactedPatterns);
+  const mirror = new StageMirror(() => rootUri()?.fsPath, redaction, editable);
 
   /**
    * 人間の `file:` 文書 → ワークスペース相対パス。未保存の中身を引く側と、変更を
@@ -30,8 +33,15 @@ export function registerStageFileSystem(
    * 2通りに決めない。片方を `Uri.joinPath` の文字列比較にすると、綴りの正規化が
    * 食い違ったときに「知らせたのに未保存が映らない」が起きる）。
    */
-  const relOfHumanDocument = (uri: vscode.Uri): string | undefined =>
-    uri.scheme === "file" ? relativizeToRoot(rootUri(), uri) : undefined;
+  const relOfHumanDocument = (uri: vscode.Uri): string | undefined => {
+    if (uri.scheme !== "file") return undefined;
+    const rel = relativizeToRoot(rootUri(), uri);
+    if (rel !== undefined) return rel;
+    // 外のファイル（D102）は、映しの鍵と同じ綴りの読み方（`spellAgentPath`）で絶対パスの鍵にする。
+    // 設定がオフなら外の鍵は作らない（外の映しはそもそも読めない）。
+    const spelled = spellAgentPath(rootUri()?.fsPath, uri.fsPath, redaction());
+    return spelled?.kind === "outside" ? spelled.abs : undefined;
+  };
 
   // 既知の制限: 一致は正規化した綴りの完全一致で見る。大文字小文字を区別しない
   // ファイルシステムで、映しの綴りと人間の文書の綴りが大小だけ違うと、未保存の中身では
@@ -80,6 +90,28 @@ export function registerStageFileSystem(
     // 事象のモデル（未保存で開いた文書は onDidChangeTextDocument を出さない）から足してある。
     vscode.workspace.onDidOpenTextDocument((doc) => {
       if (doc.isDirty) humanChanged(doc.uri);
+    }),
+  );
+
+  // 設定（ワークスペースの外を開けるか・秘匿のパターン・editable）が変わったら、開いている外の
+  // 映し（D102）に読み直させる。読みは毎回関門を通るので、オフに戻せば読み直しで FileNotFound に
+  // なる（開いたままの古い中身が残らない）。
+  disposables.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        !e.affectsConfiguration("showme.allowOutsideWorkspace") &&
+        !e.affectsConfiguration("showme.redactedPathPatterns") &&
+        !e.affectsConfiguration("showme.stage.editable")
+      ) {
+        return;
+      }
+      mirror.bump();
+      for (const doc of vscode.workspace.textDocuments) {
+        const key = stageKeyOfUri(doc.uri);
+        if (key === undefined) continue;
+        ro.notifyChanged(key);
+        rw.notifyChanged(key);
+      }
     }),
   );
 

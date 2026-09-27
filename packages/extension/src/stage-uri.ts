@@ -1,4 +1,9 @@
-import { normalizeWorkspaceRelative } from "@zvx/vscode-showme-protocol";
+import * as path from "node:path";
+import {
+  type AbsolutePathModule,
+  normalizeAbsolutePath,
+  normalizeWorkspaceRelative,
+} from "@zvx/vscode-showme-protocol";
 
 /** 映しのスキーム（設計 D81）。読み取り専用と、編集できるもの。 */
 export const STAGE_SCHEME_READONLY = "showme-ro";
@@ -85,7 +90,8 @@ export interface StageOpenTarget {
  * - `realFile` で開いた `file:` タブを後から `realFile` なしの `show_code` が使い回すと、記録されて
  *   own になる
  * どちらも D53 の今までの振る舞い（URI で記録し、同じ文書のタブが1枚のときだけ own）と同じで、
- * 床（人間が見ているタブ・未保存のタブは閉じない。`arrange-policy.ts` の `mayTouch`）は変わらず守る。
+ * 床（未保存のタブは閉じない。`protectViewingTab` がオンなら人間が見ているタブも。`arrange-policy.ts` の
+ * `mayTouch`）は変わらず守る。
  * 映しの窓（既定）では映しと `file:` は別の URI なので、この使い回しは起きない。
  */
 export function stageOpenTarget(opts: {
@@ -172,4 +178,53 @@ export function relOfStagePath(
   if (rel === undefined) return undefined;
   if (rel.endsWith("/")) return undefined;
   return stageUriPath(rel) === path ? rel : undefined;
+}
+
+/**
+ * ワークスペースの外の映しの authority（D102）。外の映しの URI は
+ * `showme-ro://outside/<絶対パス>`（Windows は `showme-ro://outside/c:/Users/…`）。
+ * 中の映し（authority 空）と綴りで混ざらない。
+ */
+export const OUTSIDE_STAGE_AUTHORITY = "outside";
+
+/**
+ * 映しの鍵（中は正規化した相対パス、外は正規化した絶対パス ―― 関門の `agentPathKey`）から、
+ * 映しの URI の authority と path を作る。**中と外の正準形を決める唯一の場所**
+ * （`stageMirrorUri` がここを通す）。鍵はすでに正規化済みであること。
+ *
+ * 外の path: posix は絶対パスそのもの。Windows はドライブ文字（小文字。`normalizeAbsolutePath` が
+ * 揃える）の前に `/` を1つ置き、区切りを `/` にする（`/c:/Users/me/a.ts`）。
+ */
+export function stageUriPartsOfKey(
+  key: string,
+  p: AbsolutePathModule = path,
+): { authority: string; path: string } {
+  if (!p.isAbsolute(key)) return { authority: "", path: stageUriPath(key) };
+  const uriPath = p.sep === "\\" ? `/${key.replace(/\\/g, "/")}` : key;
+  return { authority: OUTSIDE_STAGE_AUTHORITY, path: uriPath };
+}
+
+/**
+ * 映しの URI（scheme・authority・path）→ 映しの鍵。中は `relOfStagePath`（authority 空）、外は
+ * authority `outside` の絶対パス。**正準の綴りだけを受ける**: 鍵に戻してから
+ * `stageUriPartsOfKey` でもう一度 URI の部品を作り、渡された綴りと一致するときだけ返す
+ * （`relOfStagePath` と同じ往復の等値。別綴りを受けると同じ実体が2つの URI で開け、D82 の
+ * 所有が崩れる）。受け入れるかどうか（設定・秘匿・資格情報の置き場所）は関門の仕事。
+ */
+export function keyOfStagePath(
+  scheme: string,
+  authority: string,
+  uriPath: string,
+  p: AbsolutePathModule = path,
+): string | undefined {
+  if (!isStageScheme(scheme)) return undefined;
+  if (authority === "") return relOfStagePath(scheme, authority, uriPath);
+  if (authority !== OUTSIDE_STAGE_AUTHORITY) return undefined;
+  if (!uriPath.startsWith("/")) return undefined;
+  const raw = p.sep === "\\" ? uriPath.slice(1).replace(/\//g, "\\") : uriPath;
+  if (p.sep === "\\" && uriPath.includes("\\")) return undefined;
+  const key = normalizeAbsolutePath(raw, p);
+  if (key === undefined) return undefined;
+  const again = stageUriPartsOfKey(key, p);
+  return again.authority === authority && again.path === uriPath ? key : undefined;
 }

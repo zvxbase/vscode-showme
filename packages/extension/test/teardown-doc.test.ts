@@ -23,6 +23,19 @@ describe.each(["en", "ja"] as const)("buildTeardownDocument（D62）[%s]", (lang
     expect(SOCKET_ENV_VAR).toBe("SHOWME_SOCK"); // 名前が変わったら文書の読み手も変わる
   });
 
+  it("他のスコープ・repo に置いた設定の消し方も書いてある", () => {
+    expect(doc).toContain("claude mcp remove showme -s user");
+    expect(doc).toContain("claude mcp remove showme -s project");
+    // -s を付けないと、同じ名前が複数のスコープにあれば -s で選ぶよう求められる（local だけを消すとは言わない）
+    expect(doc).toMatch(
+      lang === "en" ? /asks you to choose one with -s/ : /-s で選ぶよう求められる/,
+    );
+    expect(doc).not.toMatch(/removes the local scope|local のスコープを消す/);
+    expect(doc).toContain(".codex/config.toml");
+    expect(doc).toMatch(/`\.mcp\.json`/);
+    expect(doc).toContain(".github/mcp.json");
+  });
+
   it("拡張が自分で消すものと、人間が消すものを分けている", () => {
     expect(doc).toContain("deactivate");
     expect(doc).toMatch(/開き直|reopen/); // 既に開いている端末には環境変数が残る

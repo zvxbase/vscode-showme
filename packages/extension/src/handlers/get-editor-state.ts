@@ -6,7 +6,6 @@ import {
   MAX_SELECTED_TEXT_CHARS,
   MAX_TABS_PER_GROUP,
   MAX_TAB_LABEL_CHARS,
-  isRedactedPath,
   truncateDisplayText,
 } from "@zvx/vscode-showme-protocol";
 import type { ShowMeConfig } from "../config.js";
@@ -27,6 +26,13 @@ import {
   sharedEditorStateLimiter,
 } from "../rate-limit.js";
 import { ToolError } from "../tool-error.js";
+import {
+  type ToolCallWindow,
+  type ToolShownSelection,
+  sharedToolCallWindow,
+  sharedToolShownSelection,
+} from "../tool-shown-selection.js";
+import { isRedactedEntity } from "../workspace-path-gate.js";
 
 /** 1始まりの行と0始まりの桁。線上の `cursor` と同じ数え方。 */
 export interface CursorPosition {
@@ -136,6 +142,12 @@ export interface EditorStateStatus {
 
 export interface GetEditorStateDeps {
   config: () => ShowMeConfig;
+  /**
+   * 観測したパスの基準のルート。**省略できない**（`undefined` は「ルートの無い窓」）。
+   * 秘匿の判定は名前だけでなく実体（秘匿ファイルへのハードリンク。D91）まで見るので、
+   * 相対パスを実体に辿るルートが要る。
+   */
+  workspaceRoot: string | undefined;
   surface: EditorStateSurface;
   /**
    * 呼び出し回数制限の可視化。**省略できない。**
@@ -154,6 +166,10 @@ export interface GetEditorStateDeps {
   memory?: SelectionMemory;
   /** 自ツールがエディタに触った時刻。省略は同上。 */
   clock?: OwnToolCallClock;
+  /** ツールが前面に出した編集器の選択（D95）。省略は同上。 */
+  toolShown?: ToolShownSelection;
+  /** 前面を変えうるツールの呼び出しの窓（D95）。省略は同上。 */
+  toolWindow?: ToolCallWindow;
   /** 現在時刻。検査で固定するためだけに開けてある。 */
   now?: () => number;
   /**
@@ -221,6 +237,8 @@ export function handleGetEditorState(deps: GetEditorStateDeps): Record<string, u
   const config = deps.config();
   const memory = deps.memory ?? sharedSelectionMemory;
   const clock = deps.clock ?? sharedOwnToolClock;
+  const toolShown = deps.toolShown ?? sharedToolShownSelection;
+  const toolWindow = deps.toolWindow ?? sharedToolCallWindow;
   const now = deps.now ?? Date.now;
 
   // **1回の観測から2つに畳む**（不変条件14）。`groups` と `openPaths` を
@@ -230,16 +248,16 @@ export function handleGetEditorState(deps: GetEditorStateDeps): Record<string, u
   // `maxGroups` / `maxTabsPerGroup` は表示だけを切る。片方からもう片方を
   // 導出すると、「`openPaths.length === MAX_OPEN_PATHS` なら溢れている」という
   // 合図を2つの量が別々に決めることになる。
-  const layout = buildEditorLayout(
-    deps.surface.groups(),
-    (rel) => isRedactedPath(rel, config.redactedPathPatterns),
-    {
-      maxOpenPaths: MAX_OPEN_PATHS,
-      maxGroups: MAX_EDITOR_GROUPS,
-      maxTabsPerGroup: MAX_TABS_PER_GROUP,
-      maxLabelChars: MAX_TAB_LABEL_CHARS,
-    },
-  );
+  // 秘匿の判定は関門と同じ口（`isRedactedEntity`）。名前が秘匿でなくても、実体が秘匿ファイルへの
+  // ハードリンクなら秘匿（D91）。タブの可視行と、下の選択の判定が同じものを通る。
+  const isRedacted = (rel: string): boolean =>
+    isRedactedEntity(deps.workspaceRoot, rel, config.redaction);
+  const layout = buildEditorLayout(deps.surface.groups(), isRedacted, {
+    maxOpenPaths: MAX_OPEN_PATHS,
+    maxGroups: MAX_EDITOR_GROUPS,
+    maxTabsPerGroup: MAX_TABS_PER_GROUP,
+    maxLabelChars: MAX_TAB_LABEL_CHARS,
+  });
   const result: Record<string, unknown> = { openPaths: layout.openPaths };
   // 列が1つも無いときは鍵ごと省く。「レイアウトは空だ」を毎回わざわざ言わない。
   if (layout.groups.length > 0) result.groups = layout.groups;
@@ -274,7 +292,7 @@ export function handleGetEditorState(deps: GetEditorStateDeps): Record<string, u
   }
 
   const relPath = active.relPath;
-  const redacted = relPath !== undefined && isRedactedPath(relPath, config.redactedPathPatterns);
+  const redacted = relPath !== undefined && isRedacted(relPath);
 
   if (relPath !== undefined) {
     result.activePath = relPath;
@@ -285,6 +303,7 @@ export function handleGetEditorState(deps: GetEditorStateDeps): Record<string, u
     }
   }
 
+  const nowMs = now();
   const observation: SelectionObservation = {
     outsideWorkspace: relPath === undefined,
     redacted,
@@ -292,7 +311,13 @@ export function handleGetEditorState(deps: GetEditorStateDeps): Record<string, u
     coversWholeDocument: active.coversWholeDocument,
     windowFocused: deps.surface.windowFocused(),
     isActiveEditor: active.isActiveEditor,
-    msSinceOwnToolCall: clock.msSince(now()),
+    // 待ちは `show_code` の時計と、前面を変えうるツールの窓（D95）の近いほう。窓の間は
+    // `too-soon-after-tool`（呼び出しの最中・記録の前の選択を読む競合を塞ぐ）。
+    msSinceOwnToolCall: Math.min(clock.msSince(nowMs), toolWindow.msSince(nowMs)),
+    // 鍵は下の `alreadyReturned` と同じ綴り（`selectionKey(relPath, selection)`）。覚える側
+    // （`extension.ts` の記録点）も同じ関数・同じ `observedRelPath` から作る（D95）。
+    shownByTool:
+      relPath !== undefined && toolShown.matches(relPath, selectionKey(relPath, active.selection)),
     alreadyReturned:
       relPath !== undefined && memory.wasReturned(selectionKey(relPath, active.selection)),
   };

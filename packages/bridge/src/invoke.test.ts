@@ -24,13 +24,14 @@ const beta: RegistryEntry = {
 const listResult = {
   isTrusted: true,
   capabilities: { symbolResolution: true, terminalEnvInjection: true },
-  permissions: { closeHumanTabs: false, closeDirtyTabs: false },
+  permissions: { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false },
   features: { stage: true, html: true, layout: true },
   disabledTools: [],
   editorGroup: "dedicated",
   avoidToolColumns: false,
   panels: { max: 2 },
   otherWindowsListed: false,
+  outsideWorkspace: false,
 };
 
 function ok(request: WireRequestInput, result: Record<string, unknown>): WireResponse {

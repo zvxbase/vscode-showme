@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { CREDENTIAL_LOCATIONS } from "../src/outside-path";
+import { DEFAULT_MAX_WALK_ENTRIES, SKIPPED_DIRECTORIES } from "../src/redacted-links";
 
 /**
  * `package.json` の `%key%` と `package.nls.json` / `package.nls.ja.json` の対応を検査する。
@@ -230,5 +232,61 @@ describe("package.nls（%key% が英日の両方で解決される）", () => {
     expect(ids).toContain("showme.clearAnnotations");
     expect(nlsEn["showme.command.clearHighlights"]).toBe("ShowMe: Clear highlights");
     expect(nlsEn["showme.command.clearAnnotations"]).toBe("ShowMe: Clear annotations");
+  });
+});
+
+/**
+ * 設定の説明が挙げる「走査しないフォルダ」と上限の数は、`redacted-links.ts` の実際の値と同じであること。
+ * 説明は設定画面と README（生成範囲）に出る。コードの一覧や上限を変えたら、ここが説明を直させる。
+ */
+describe("blockLinksToRedactedFiles の説明が実装の値と一致する", () => {
+  const key = "showme.config.blockLinksToRedactedFiles";
+  const dirs = [...SKIPPED_DIRECTORIES];
+
+  it("英語: 走査しないフォルダを全部、実装の順に挙げ、上限の数を書く", () => {
+    const list = `${dirs.slice(0, -1).join(", ")} and ${dirs[dirs.length - 1]}`;
+    expect(nlsEn[key]).toContain(`never scanned: ${list})`);
+    expect(nlsEn[key]).toContain(
+      `over ${DEFAULT_MAX_WALK_ENTRIES.toLocaleString("en-US")} entries`,
+    );
+  });
+
+  it("日本語: 走査しないフォルダを全部、実装の順に挙げ、上限の数を書く", () => {
+    expect(nlsJa[key]).toContain(`走査しないフォルダ（${dirs.join("・")}）`);
+    expect(nlsJa[key]).toContain(
+      `${DEFAULT_MAX_WALK_ENTRIES.toLocaleString("en-US")} 項目を超える`,
+    );
+  });
+});
+
+/**
+ * D101: `showme.allowOutsideWorkspace` の説明は、オンにする人が受け入れる2つのリスクと、
+ * 外せない守りの限界を平易に言う。例に挙げる資格情報の置き場所は、実装の一覧
+ * （`outside-path.ts` の `CREDENTIAL_LOCATIONS`）に実際にある ―― 説明と実装がずれない。
+ */
+describe("allowOutsideWorkspace の説明が2つのリスクと守りの限界を言う", () => {
+  const key = "showme.config.allowOutsideWorkspace";
+  const en = nlsEn[key] ?? "";
+  const ja = nlsJa[key] ?? "";
+
+  it("英語: 既定オフ・迂回・画面に出る・すべては守れない", () => {
+    expect(en).toMatch(/off by default/i);
+    expect(en).toMatch(/get around/);
+    expect(en).toMatch(/on your screen/);
+    expect(en).toMatch(/not everything can be protected/);
+  });
+
+  it("日本語: 既定オフ・迂回・画面に出る・すべては守れない", () => {
+    expect(ja).toContain("既定はオフ");
+    expect(ja).toContain("迂回");
+    expect(ja).toContain("画面に出る");
+    expect(ja).toContain("すべては守れない");
+  });
+
+  it("例に挙げた置き場所は実装の一覧にある", () => {
+    const named = [...en.matchAll(/~\/([A-Za-z0-9_./-]+?)(?=[,\s])/g)].map((m) => m[1]);
+    expect(named.length).toBeGreaterThanOrEqual(3);
+    for (const entry of named) expect(CREDENTIAL_LOCATIONS, entry).toContain(entry);
+    for (const entry of named) expect(ja, entry).toContain(`~/${entry}`);
   });
 });

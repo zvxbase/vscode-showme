@@ -20,9 +20,18 @@ export function run(): Promise<void> {
   }
 
   const mocha = new Mocha({ ui: "tdd", color: true, timeout: 30_000 });
+  // 開発中に一部の検査だけを走らせる口（`SHOWME_TEST_GREP`。検査名の部分一致）。既定は全部。
+  const grep = process.env.SHOWME_TEST_GREP;
+  if (grep !== undefined && grep !== "") {
+    // 絞ったことを出力に残す（全部走ったと読み違えない）。
+    console.log(
+      `[showme] SHOWME_TEST_GREP=${JSON.stringify(grep)}: 名前が一致する検査だけを走らせる`,
+    );
+    mocha.grep(grep);
+  }
   if (mode === "locale-ja") {
     // `--locale=ja` の回（runLocaleJa.ts）。**日本語になることだけ**を見る。振る舞いの
-    // 検査は trusted / restricted の回が持ち、その件数（161 / 91）をこの回で増やさない。
+    // 検査は trusted / restricted の回が持ち、この回では増やさない。
     mocha.addFile(path.resolve(__dirname, "./locale-ja.test.js"));
     return runMocha(mocha);
   }
@@ -50,15 +59,22 @@ export function run(): Promise<void> {
   // 映しの FileSystemProvider（D81）。**両方の回で走らせる** ―― 登録と関門は
   // 信頼の有無に依らないはずだが、制限モードで provider が使えるかは実測する。
   mocha.addFile(path.resolve(__dirname, "./stage-mirror.test.js"));
+  // 秘匿ファイルへのハードリンク（D91）。**両方の回で走らせる** ―― 関門も観測も信頼の有無に
+  // 依らないはずだが、制限モードでも同じ答えになるかは実測する。
+  mocha.addFile(path.resolve(__dirname, "./redacted-links.test.js"));
   // 舞台を映しで開く（D84 / D85）。**両方の回で走らせる** ―― 位置は `text` で渡すので
   // 言語機能に依らない。制限モードで映しの編集器が開けるかは実測する。
   mocha.addFile(path.resolve(__dirname, "./stage-tabs.test.js"));
   // 道具の列を避ける（D90）。**両方の回で走らせる** ―― ターミナルや他の拡張の webview を
   // 編集器の領域に置けるか、制限モードでも同じ列を選ぶかは実測する。
   mocha.addFile(path.resolve(__dirname, "./stage-avoid.test.js"));
+  // 人間の列も使う配置（D93 / D94）。**両方の回で走らせる**（制限モードの回は既定の2件だけ）。
+  mocha.addFile(path.resolve(__dirname, "./stage-shared.test.js"));
   // エージェントのタブの定義・参照（D88）。**両方の回で走らせる** ―― 制限モードでは TS が動かないので
   // 「代理が何も返さず例外にならない」だけを見る。
   mocha.addFile(path.resolve(__dirname, "./stage-language.test.js"));
+  // ワークスペースの外のファイル（D101 / D102）。**両方の回で走らせる**（制限モードの回は主要な2本）。
+  mocha.addFile(path.resolve(__dirname, "./outside-workspace.test.js"));
   // 映しのタブの定義・参照が TS 自身の結果と重なるか（D88 の前提の実測）。**信頼の回だけ** ――
   // 制限モードでは TS が何も返さないので、重なりを測る対象が無い。
   if (mode === "trusted") {

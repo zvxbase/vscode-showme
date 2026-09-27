@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { t } from "./l10n.js";
 import type { StageMirror } from "./stage-mirror.js";
-import { relOfStageUri, stageMirrorUri } from "./stage-uri-vscode.js";
+import { stageKeyOfUri, stageMirrorUri } from "./stage-uri-vscode.js";
 import { STAGE_SCHEME_READONLY, type StageScheme } from "./stage-uri.js";
 
 /**
@@ -43,7 +43,7 @@ export class StageFileSystemProvider implements vscode.FileSystemProvider, vscod
    */
   notifyChanged(rel: string): void {
     const open = vscode.workspace.textDocuments.some(
-      (doc) => doc.uri.scheme === this.scheme && relOfStageUri(doc.uri) === rel,
+      (doc) => doc.uri.scheme === this.scheme && stageKeyOfUri(doc.uri) === rel,
     );
     if (!open) return;
     // URI を組むのは stageMirrorUri 1つ（stage-uri-vscode.ts。`stageUriFor` の映し側と
@@ -148,11 +148,13 @@ export class StageFileSystemProvider implements vscode.FileSystemProvider, vscod
    * 落ちたかを形で割らない）。
    *
    * **正準形の検査（`/src//a.ts`・`/src/./a.ts`・`/src\a.ts` などの別名を拒む）は
-   * ここに持たない。** `relOfStageUri`（`stage-uri-vscode.ts`）経由で `relOfStagePath`
+   * ここに持たない。** `stageKeyOfUri`（`stage-uri-vscode.ts`）経由で `keyOfStagePath`
    * （`stage-uri.ts`）1つに集約してある（不変条件14: 同じ判断を2箇所に書かない）。
    */
   private relOf(uri: vscode.Uri): string {
-    const rel = relOfStageUri(uri);
+    // 中の映しは相対パス、外の映し（D102。authority `outside`）は正規化した絶対パスの鍵。
+    // 受け入れるかは mirror の関門が毎回決める（設定がオフなら外は FileNotFound）。
+    const rel = stageKeyOfUri(uri);
     if (rel === undefined) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }

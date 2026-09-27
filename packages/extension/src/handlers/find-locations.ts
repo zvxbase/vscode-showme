@@ -1,10 +1,6 @@
-import {
-  type FoundLocation,
-  type Location,
-  type LocationSearchResult,
-  isRedactedPath,
-} from "@zvx/vscode-showme-protocol";
+import type { FoundLocation, Location, LocationSearchResult } from "@zvx/vscode-showme-protocol";
 import { foldProviderResult } from "../language-lookup.js";
+import { type RedactionPolicy, isRedactedEntity } from "../workspace-path-gate.js";
 
 /**
  * `find_definition` / `find_references`（設計 D33）。
@@ -62,8 +58,10 @@ export type AnchorResolution =
 
 export interface FindLocationsDeps {
   language: LanguageSurface;
-  /** 設定で足された除外パターン。`show_code` と同じ表を使う（不変条件14） */
-  extraRedactedPatterns: () => readonly string[];
+  /** 結果のパスの基準のルート。秘匿の判定で実体まで辿るのに使う（D91）。 */
+  workspaceRoot: string | undefined;
+  /** 秘匿の方針。`show_code` と同じ写しを使う（不変条件14） */
+  redaction: () => RedactionPolicy;
   allowCall?: () => boolean;
   log: { info: (message: string, fields?: Record<string, string>) => void };
 }
@@ -87,9 +85,11 @@ export interface FindReferencesArgs {
  */
 function withoutRedacted(
   found: readonly FoundLocation[],
-  extraPatterns: readonly string[],
+  workspaceRoot: string | undefined,
+  policy: RedactionPolicy,
 ): FoundLocation[] {
-  return found.filter((f) => !isRedactedPath(f.path, extraPatterns));
+  // 名前だけでなく実体（秘匿ファイルへのハードリンク。D91）も見る。関門と同じ判定の口。
+  return found.filter((f) => !isRedactedEntity(workspaceRoot, f.path, policy));
 }
 
 async function search(
@@ -117,7 +117,7 @@ async function search(
   }
   const found = await lookup(resolved.anchor);
   return foldProviderResult(
-    found === undefined ? undefined : withoutRedacted(found, deps.extraRedactedPatterns()),
+    found === undefined ? undefined : withoutRedacted(found, deps.workspaceRoot, deps.redaction()),
     { isTrusted: deps.language.isTrusted() },
   );
 }

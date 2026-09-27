@@ -35,7 +35,7 @@ afterEach(() => {
  * 本番の鍵が別物になる ―― 同じ量を2箇所で決める形）。
  */
 function canonicalizer(root: string, patterns: readonly string[] = []) {
-  return fileRateLimitCanonicalizer(root, patterns);
+  return fileRateLimitCanonicalizer(root, { patterns, blockLinksToRedacted: true });
 }
 
 describe("fileRateLimitKey", () => {

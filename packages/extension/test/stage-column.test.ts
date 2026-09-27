@@ -696,3 +696,348 @@ describe("placeStageColumn（設定のオン・オフで舞台の列を決める
     expect(placeStageColumn([], "single", 0, undefined, 0, new Set())).toBe("beside");
   });
 });
+
+/**
+ * 人間の列を使える配置（D93 / D94）。`useHumanColumn` は「人間の列を舞台に使ってよいか」で、
+ * 決めるのは `human-column.ts` の `humanColumnUsable`。ここは渡された値で列を選ぶだけ。
+ *
+ * 順序: 人間の列より右の既存の列（避ける列を除く）→ 人間の列（避ける列なら使わない）→ 右端の外。
+ * 左の列は使わない。選んだ列は昇順に並べて枠に割り当てる（枠0がいちばん左）。
+ */
+describe("chooseStageColumns の useHumanColumn（D93 / D94）", () => {
+  const rows: {
+    visible: number[];
+    human: number;
+    avoid?: number[];
+    layout: StageLayout;
+    expected: StageColumn[];
+    why: string;
+  }[] = [
+    { visible: [1], human: 1, layout: "single", expected: [1], why: "1列の画面は人間の列に開く" },
+    { visible: [1], human: 1, layout: "split", expected: [1, 2], why: "人間の列＋右端の外1つ" },
+    { visible: [1, 2], human: 1, layout: "single", expected: [2], why: "右に既存の列があればそこ" },
+    { visible: [1, 2], human: 1, layout: "split", expected: [1, 2], why: "右の列＋人間の列" },
+    { visible: [1, 2, 3], human: 1, layout: "split", expected: [2, 3], why: "右で足りる" },
+    { visible: [1, 2], human: 2, layout: "single", expected: [2], why: "左の列は使わない" },
+    { visible: [1, 2], human: 2, layout: "split", expected: [2, 3], why: "人間の列＋右端の外" },
+    {
+      visible: [1],
+      human: 1,
+      avoid: [1],
+      layout: "single",
+      expected: [2],
+      why: "人間の列が避ける列なら使わない",
+    },
+    {
+      visible: [1, 2, 3],
+      human: 1,
+      avoid: [2],
+      layout: "split",
+      expected: [1, 3],
+      why: "避ける列を飛ばした右の列＋人間の列",
+    },
+    {
+      visible: [1, 2, 3],
+      human: 2,
+      avoid: [3],
+      layout: "split",
+      expected: [2, 4],
+      why: "右が避ける列なら人間の列＋右端の外（左の列1は使わない）",
+    },
+  ];
+
+  it.each(rows)("$why: visible=$visible human=$human avoid=$avoid $layout", (row) => {
+    const avoid = new Set(row.avoid ?? []);
+    expect(chooseStageColumns(row.visible, row.layout, row.human, avoid, true)).toEqual(
+      row.expected,
+    );
+  });
+
+  it("useHumanColumn=false（省略）なら、どの行も以前の答え", () => {
+    for (const row of rows) {
+      const avoid = new Set(row.avoid ?? []);
+      expect(chooseStageColumns(row.visible, row.layout, row.human, avoid, false)).toEqual(
+        chooseStageColumns(row.visible, row.layout, row.human, avoid),
+      );
+      if (avoid.size === 0) {
+        expect(chooseStageColumns(row.visible, row.layout, row.human, avoid, false)).toEqual(
+          previousChooseStageColumns(row.visible, row.layout, row.human),
+        );
+      }
+    }
+  });
+
+  it("stageColumnForSlot も同じ値を受ける（枠0が左）", () => {
+    expect(stageColumnForSlot([1], "split", 0, 1, NO_AVOID, true)).toBe(1);
+    expect(stageColumnForSlot([1], "split", 1, 1, NO_AVOID, true)).toBe(2);
+    expect(stageColumnForSlot([1], "split", 2, 1, NO_AVOID, true)).toBe(2);
+    expect(stageColumnForSlot([1, 2], "split", 0, 1, NO_AVOID, true)).toBe(1);
+    expect(stageColumnForSlot([1, 2], "split", 1, 1, NO_AVOID, true)).toBe(2);
+    expect(stageColumnForSlot([1], "single", 0, 1, NO_AVOID, true)).toBe(1);
+    expect(stageColumnForSlot([1], "single", 0, 1, NO_AVOID, false)).toBe(2);
+  });
+
+  it("返す列は昇順（全組み合わせ）", () => {
+    for (const visible of NON_EMPTY) {
+      for (const human of visible) {
+        for (const avoidList of subsets(visible)) {
+          for (const layout of LAYOUTS) {
+            const got = chooseStageColumns(visible, layout, human, new Set(avoidList), true);
+            const numbers = got.filter((c): c is number => typeof c === "number");
+            expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
+          }
+        }
+      }
+    }
+  });
+});
+
+const NO_AVOID: ReadonlySet<number> = new Set();
+
+describe("resolveStageColumn / placeStageColumn の useHumanColumn（D93 / D94）", () => {
+  const rows: {
+    visible: number[];
+    existing?: number;
+    human: number;
+    avoid: number[];
+    layout: StageLayout;
+    slot: number;
+    expected: StageColumn | "none";
+    why: string;
+  }[] = [
+    {
+      visible: [1],
+      human: 1,
+      avoid: [],
+      layout: "single",
+      slot: 0,
+      expected: 1,
+      why: "1列の画面（空の列1を含む）は人間の列に開き、列を増やさない",
+    },
+    {
+      visible: [1],
+      human: 1,
+      avoid: [],
+      layout: "split",
+      slot: 0,
+      expected: 1,
+      why: "split の枠0は人間の列",
+    },
+    {
+      visible: [1],
+      human: 1,
+      avoid: [],
+      layout: "split",
+      slot: 1,
+      expected: 2,
+      why: "split の枠1は右端の外（存在する列＋1）",
+    },
+    {
+      visible: [1, 2],
+      human: 1,
+      avoid: [],
+      layout: "split",
+      slot: 0,
+      expected: 1,
+      why: "右の列が1つなら枠0は人間の列",
+    },
+    {
+      visible: [1, 2],
+      human: 1,
+      avoid: [],
+      layout: "split",
+      slot: 1,
+      expected: 2,
+      why: "枠1は右の既存の列",
+    },
+    {
+      visible: [1],
+      human: 1,
+      avoid: [1],
+      layout: "single",
+      slot: 0,
+      expected: 2,
+      why: "人間の列が避ける列なら右端の外",
+    },
+    // 飛び番（実際の VS Code には無い形）: 丸めが人間の列に落ちても、使えるなら none にしない。
+    {
+      visible: [1, 3],
+      existing: 2,
+      human: 3,
+      avoid: [],
+      layout: "single",
+      slot: 0,
+      expected: 3,
+      why: "丸め後が人間の列でも使える",
+    },
+  ];
+
+  it.each(rows)("$why: visible=$visible human=$human avoid=$avoid $layout slot=$slot", (row) => {
+    const existing = row.existing ?? row.visible.length;
+    const avoid = new Set(row.avoid);
+    expect(
+      resolveStageColumn(row.visible, row.layout, row.slot, row.human, existing, avoid, true),
+    ).toBe(row.expected);
+    // 設定オンの入口（避ける集合を渡す）も同じ答え。
+    expect(
+      placeStageColumn(row.visible, row.layout, row.slot, row.human, existing, avoid, true),
+    ).toBe(row.expected);
+    // 設定オフの入口（避ける集合を渡さない）は、避ける列が無い行で同じ答え。
+    if (row.avoid.length === 0) {
+      expect(
+        placeStageColumn(row.visible, row.layout, row.slot, row.human, existing, undefined, true),
+      ).toBe(row.expected);
+    }
+  });
+
+  it("useHumanColumn=false なら、丸め後が人間の列の行は以前どおり none", () => {
+    expect(resolveStageColumn([1, 3], "single", 0, 3, 2, NO_AVOID)).toBe("none");
+    expect(resolveStageColumn([1, 3], "single", 0, 3, 2, NO_AVOID, false)).toBe("none");
+    expect(placeStageColumn([1, 3], "single", 0, 3, 2, NO_AVOID, false)).toBe("none");
+  });
+
+  it("useHumanColumn=false（省略と同じ）なら、以前の答えと全組み合わせで等しい", () => {
+    let evaluated = 0;
+    for (const visible of NON_EMPTY) {
+      for (const human of visible) {
+        for (const avoidList of subsets(visible)) {
+          const avoid = new Set(avoidList);
+          for (const layout of LAYOUTS) {
+            for (const slot of [0, 1, 2]) {
+              const n = visible.length;
+              const label = JSON.stringify({ visible, human, avoidList, layout, slot });
+              expect(resolveStageColumn(visible, layout, slot, human, n, avoid, false), label).toBe(
+                resolveStageColumn(visible, layout, slot, human, n, avoid),
+              );
+              expect(placeStageColumn(visible, layout, slot, human, n, avoid, false), label).toBe(
+                placeStageColumn(visible, layout, slot, human, n, avoid),
+              );
+              expect(
+                placeStageColumn(visible, layout, slot, human, n, undefined, false),
+                label,
+              ).toBe(placeStageColumn(visible, layout, slot, human, n, undefined));
+              expect(stageColumnForSlot(visible, layout, slot, human, avoid, false), label).toBe(
+                stageColumnForSlot(visible, layout, slot, human, avoid),
+              );
+              evaluated += 1;
+            }
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe(810 * 2 * 3);
+  });
+
+  /** VS Code の挙動を写す（上の `openIn` と同じ）。none は開かない。 */
+  function openIn(groups: number, requested: StageColumn | "none"): number {
+    if (requested === "none") return groups;
+    if (requested === "beside") return groups + 1;
+    return Math.max(groups, Math.min(requested, groups + 1));
+  }
+  const range = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+  /** split を枠の昇順に開き、開くたびに可視列を読み直す（`Stage` と同じ順序）。 */
+  function openSplit(
+    startGroups: number,
+    human: number,
+    avoid: ReadonlySet<number> | undefined,
+    useHumanColumn: boolean,
+  ): { columns: (StageColumn | "none")[]; groups: number } {
+    let groups = startGroups;
+    const columns: (StageColumn | "none")[] = [];
+    for (const slot of [0, 1]) {
+      const column = placeStageColumn(
+        range(groups),
+        "split",
+        slot,
+        human,
+        groups,
+        avoid,
+        useHumanColumn,
+      );
+      columns.push(column);
+      groups = openIn(groups, column);
+    }
+    return { columns, groups };
+  }
+
+  it("split を昇順に開く: 1列の画面は人間の列＋列2、列は1つだけ増える", () => {
+    for (const avoid of [undefined, NO_AVOID]) {
+      expect(openSplit(1, 1, avoid, true)).toEqual({ columns: [1, 2], groups: 2 });
+      // 以前の答え（人間の列を使わない）は列2・列3。
+      expect(openSplit(1, 1, avoid, false)).toEqual({ columns: [2, 3], groups: 3 });
+    }
+  });
+
+  it("split を昇順に開く: 2列の画面は人間の列＋列2、列は増えない", () => {
+    for (const avoid of [undefined, NO_AVOID]) {
+      expect(openSplit(2, 1, avoid, true)).toEqual({ columns: [1, 2], groups: 2 });
+      expect(openSplit(2, 2, avoid, true)).toEqual({ columns: [2, 3], groups: 3 });
+      expect(openSplit(2, 1, avoid, false)).toEqual({ columns: [2, 3], groups: 3 });
+    }
+  });
+
+  it("split を何度開いても、舞台は2列で頭打ち（人間の列を含めて）", () => {
+    for (const avoid of [undefined, NO_AVOID]) {
+      let groups = 1;
+      const used = new Set<StageColumn | "none">();
+      for (let call = 0; call < 8; call += 1) {
+        const opened = openSplit(groups, 1, avoid, true);
+        for (const c of opened.columns) used.add(c);
+        groups = opened.groups;
+      }
+      expect([...used].sort()).toEqual([1, 2]);
+      expect(groups).toBe(2);
+    }
+  });
+
+  it("生成表: 列は2つまで、使えないなら人間の列を返さず、避ける列はどちらでも返さない", () => {
+    let evaluated = 0;
+    for (const useHumanColumn of [false, true]) {
+      for (let n = 1; n <= 4; n += 1) {
+        const visible = range(n);
+        for (const human of visible) {
+          for (const avoidList of subsets(visible)) {
+            const avoid = new Set(avoidList);
+            for (const layout of LAYOUTS) {
+              const label = JSON.stringify({ useHumanColumn, visible, human, avoidList, layout });
+              const chosen = chooseStageColumns(visible, layout, human, avoid, useHumanColumn);
+              // (a) 1回の呼び出しで選ぶ列は2つまで
+              expect(new Set(chosen).size, label).toBeLessThanOrEqual(MAX_STAGE_COLUMNS);
+              for (const column of chosen) {
+                // (b) 使えないなら人間の列を返さない
+                if (!useHumanColumn) expect(column, label).not.toBe(human);
+                // (c) 使えても避ける列は返さない
+                expect(typeof column === "number" && avoid.has(column), label).toBe(false);
+                // 左の列は使わない
+                if (typeof column === "number") {
+                  expect(column, label).toBeGreaterThanOrEqual(human);
+                }
+              }
+              for (const slot of [0, 1, 2]) {
+                for (const place of [avoid, undefined]) {
+                  const got = placeStageColumn(
+                    visible,
+                    layout,
+                    slot,
+                    human,
+                    n,
+                    place,
+                    useHumanColumn,
+                  );
+                  if (typeof got !== "number") continue;
+                  if (!useHumanColumn) expect(got, label).not.toBe(human);
+                  if (place !== undefined) expect(avoid.has(got), label).toBe(false);
+                  expect(got, label).toBeLessThanOrEqual(n + 1);
+                }
+              }
+              evaluated += 1;
+            }
+          }
+        }
+      }
+    }
+    // Σ_{n=1..4} n·2^n = 2+8+24+64 = 98, × 2 layouts × 2 useHumanColumn
+    expect(evaluated).toBe(98 * 2 * 2);
+  });
+});

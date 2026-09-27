@@ -9,16 +9,28 @@ name: Release
 # - Open VSX: トークン不要の Trusted Publishing。namespace に trusted publisher を登録し、
 #   repo の変数 `OPENVSX_TRUSTED_PUBLISHING` を `true` にしたときだけ動く。
 # - 手動実行（workflow_dispatch）は試し実行: VSIX を作って成果物に残すところまでで、公開はしない。
+# - main からの手動実行に `openvsx_tag`（例 `v0.1.3`）を与え、変数 `OPENVSX_TRUSTED_PUBLISHING` が
+#   `true` のときだけ、Open VSX への追いかけ公開（D103）:
+#   既にある GitHub Release からそのタグの VSIX と SHA256SUMS を取り、照合してから
+#   `ovsx publish --trusted-publishing` する。Release は作らない・変えない。試し実行（package）は走らない。
 on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      openvsx_tag:
+        description: "Publish this existing release (e.g. v0.1.3) to Open VSX. Leave empty for a dry run."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
   package:
+    # 追いかけ公開（openvsx_tag を与えた手動実行）では作らない。それ以外（タグ・試し実行）は今までどおり
+    if: github.event_name != 'workflow_dispatch' || inputs.openvsx_tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -117,3 +129,51 @@ jobs:
             cat vsix/SHA256SUMS
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Open VSX への追いかけ公開（D103）。手動実行で openvsx_tag を与えたときだけ。
+  # 権限はこのジョブだけに付ける（OIDC の id-token と、Release の資産を読むだけの contents: read）。
+  openvsx-catchup:
+    # main からの手動実行だけ・Trusted Publishing を有効にした repo だけ（タグの経路と同じ変数）
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.openvsx_tag != '' &&
+      github.ref == 'refs/heads/main' && vars.OPENVSX_TRUSTED_PUBLISHING == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # Open VSX の Trusted Publishing（OIDC）
+    steps:
+      # 入力は env で渡す（シェルに直接埋めない ―― 注入の経路にしない）。形を厳密に見る
+      - name: Validate the tag
+        env:
+          TAG: ${{ inputs.openvsx_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "openvsx_tag must look like v1.2.3" >&2; exit 1; }
+      - name: Download the release assets
+        env:
+          TAG: ${{ inputs.openvsx_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir vsix
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir vsix --pattern '*.vsix' --pattern SHA256SUMS
+      # 照合するのは VSIX の行だけ（SHA256SUMS に他の行があっても、無いファイルで落ちない）。
+      # VSIX はちょうど1つ
+      - name: Verify the checksum
+        working-directory: vsix
+        env:
+          TAG: ${{ inputs.openvsx_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*.vsix)
+          test "${#files[@]}" -eq 1 || { echo "expected exactly one VSIX, got ${#files[@]}" >&2; exit 1; }
+          # VSIX の名前の版とタグが同じ量であること（別の版の資産を公開しない）
+          test "${files[0]}" = "vscode-showme-${TAG#v}.vsix" || { echo "VSIX ${files[0]} does not match $TAG" >&2; exit 1; }
+          grep -E '  [^/]+\.vsix$' SHA256SUMS > vsix.sha256
+          test "$(wc -l < vsix.sha256)" -eq 1 || { echo "SHA256SUMS must have exactly one VSIX line" >&2; exit 1; }
+          sha256sum -c vsix.sha256
+      - name: Publish to Open VSX (trusted publishing)
+        working-directory: vsix
+        run: npx --yes ovsx@1.2.0 publish ./*.vsix --trusted-publishing

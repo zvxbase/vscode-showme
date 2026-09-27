@@ -1,6 +1,6 @@
 import type { Location, ResolutionReason } from "@zvx/vscode-showme-protocol";
 import type { LineRange } from "../line-range.js";
-import { acceptWorkspacePath } from "../workspace-path-gate.js";
+import { type RedactionPolicy, acceptWorkspacePath, verdictPath } from "../workspace-path-gate.js";
 
 /**
  * シンボル一覧を引いた結果。**「引けなかった」と「引けたが名前が無かった」を
@@ -43,7 +43,7 @@ export interface SymbolPrefetchDeps {
   /** 省略すると引かない（＝`resolveLocation` が `no-provider` を返す）。 */
   symbols?: SymbolSurface | undefined;
   workspaceRoot: string;
-  redactedPathPatterns: readonly string[];
+  redaction: RedactionPolicy;
 }
 
 /**
@@ -73,10 +73,11 @@ export async function prefetchSymbol(
   // realpath による脱出の検出、正準名への除外（`docs/notes.md -> ../.env` の
   // ようなリンク）は、すべて関門の中にある。以前はここに同じ3段を自前で
   // 並べていた（不変条件14。関門に畳んだ）。**ここで書き直さない。**
-  const verdict = acceptWorkspacePath(deps.workspaceRoot, loc.path, deps.redactedPathPatterns);
+  const verdict = acceptWorkspacePath(deps.workspaceRoot, loc.path, deps.redaction);
   if (!verdict.ok) return { kind: "skip" };
 
-  const lookup = await surface.lookup(verdict.canonical, loc.symbol);
+  // 中は正準相対パス、外（D102）は関門が確かめた実体の絶対パスで引く。
+  const lookup = await surface.lookup(verdictPath(verdict), loc.symbol);
   if (lookup.kind === "resolved") return { kind: "ranges", ranges: lookup.ranges };
   return { kind: "unavailable", reason: lookup.reason };
 }

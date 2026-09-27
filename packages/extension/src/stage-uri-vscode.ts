@@ -1,5 +1,12 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
-import { type StageScheme, isStageScheme, relOfStagePath, stageUriPath } from "./stage-uri.js";
+import {
+  type StageScheme,
+  isStageScheme,
+  keyOfStagePath,
+  relOfStagePath,
+  stageUriPartsOfKey,
+} from "./stage-uri.js";
 
 /** `relOfStageUri` / `isAgentStageUri` が読む URI の部品（`vscode.Uri` はこれを満たす）。 */
 export type StageUriParts = Pick<vscode.Uri, "scheme" | "authority" | "path">;
@@ -18,7 +25,9 @@ export type StageUriParts = Pick<vscode.Uri, "scheme" | "authority" | "path">;
  * 正規化しない ―― 呼び出し側が `normalizeWorkspaceRelative` を通した後の値を渡す。
  */
 export function stageMirrorUri(rel: string, scheme: StageScheme): vscode.Uri {
-  return vscode.Uri.from({ scheme, path: stageUriPath(rel) });
+  // 鍵が外（正規化した絶対パス。D102）なら authority `outside` の正準形。形は `stageUriPartsOfKey`
+  // 1つが決める。
+  return vscode.Uri.from({ scheme, ...stageUriPartsOfKey(rel) });
 }
 
 /**
@@ -47,7 +56,10 @@ export function stageUriFor(
   rel: string,
   scheme: "file" | StageScheme,
 ): vscode.Uri {
-  if (scheme === "file") return vscode.Uri.joinPath(root, rel);
+  if (scheme === "file") {
+    // 外の鍵（D102。正規化した絶対パス）は本物のファイルの URI そのもの（ルートに繋がない）。
+    return path.isAbsolute(rel) ? vscode.Uri.file(rel) : vscode.Uri.joinPath(root, rel);
+  }
   return stageMirrorUri(rel, scheme);
 }
 
@@ -72,5 +84,16 @@ export function relOfStageUri(uri: StageUriParts): string | undefined {
  * 判定は綴りだけで、実体の有無は見ない（`isOwnTab` のコメントと同じ）。
  */
 export function isAgentStageUri(uri: StageUriParts): boolean {
-  return isStageScheme(uri.scheme) && relOfStageUri(uri) !== undefined;
+  // 中と外（D102）の両方の正準形を認める。外の映しも所有と印は綴りだけで決まる。
+  return isStageScheme(uri.scheme) && stageKeyOfUri(uri) !== undefined;
+}
+
+/**
+ * 映しの URI → 映しの鍵（中は相対パス、外は正規化した絶対パス。D102）。別綴りは undefined。
+ * 判断は `keyOfStagePath`（`stage-uri.ts`）1つ。**FS の口・所有と印・定義の問い合わせ・
+ * 本物のファイルを開く命令**はこちらを使う。`relOfStageUri` は中だけを読む口で、外をまだ
+ * 扱わない観測（`get_editor_state`）が使う。
+ */
+export function stageKeyOfUri(uri: StageUriParts): string | undefined {
+  return keyOfStagePath(uri.scheme, uri.authority, uri.path);
 }

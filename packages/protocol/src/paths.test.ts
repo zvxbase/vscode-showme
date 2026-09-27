@@ -73,3 +73,20 @@ describe("normalizeWorkspaceRelative", () => {
     expect(normalizeWorkspaceRelative("a/..")).toBeUndefined();
   });
 });
+
+describe("normalizeAbsolutePath（D102）", () => {
+  it("posix の絶対パスを正規化し、~・..・相対は通さない", async () => {
+    const { normalizeAbsolutePath } = await import("./paths.js");
+    const nodePath = await import("node:path");
+    expect(normalizeAbsolutePath("/tmp//a.ts", nodePath.posix)).toBe("/tmp/a.ts");
+    expect(normalizeAbsolutePath("~/a.ts", nodePath.posix)).toBeUndefined();
+    expect(normalizeAbsolutePath("/tmp/../a.ts", nodePath.posix)).toBeUndefined();
+    expect(normalizeAbsolutePath("tmp/a.ts", nodePath.posix)).toBeUndefined();
+  });
+  it("win32 はドライブ文字を小文字に揃え、UNC を通さない", async () => {
+    const { normalizeAbsolutePath } = await import("./paths.js");
+    const nodePath = await import("node:path");
+    expect(normalizeAbsolutePath("D:/work/a.ts", nodePath.win32)).toBe("d:\\work\\a.ts");
+    expect(normalizeAbsolutePath("\\\\srv\\share\\a.ts", nodePath.win32)).toBeUndefined();
+  });
+});

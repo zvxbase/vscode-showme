@@ -7,6 +7,7 @@ import {
 } from "@zvx/vscode-showme-protocol";
 import type * as vscodeTypes from "vscode";
 import type { ArrangePermissions } from "./arrange-policy.js";
+import type { RedactionPolicy } from "./workspace-path-gate.js";
 
 export interface InspectResult<T> {
   defaultValue?: T | undefined;
@@ -73,8 +74,13 @@ export interface ShowMeConfig {
    * 読ませている OSS が戻す」向きである ―― 読まないので戻せない。
    */
   features: Record<Feature, boolean>;
-  /** `show_code` が開く列。鍵は `showme.stage.editorGroup`（D74 で `showme.editorGroup` から移った）。 */
-  editorGroup: "dedicated" | "active";
+  /**
+   * `show_code` / `show_note` / `show_html` が開く列。鍵は `showme.stage.editorGroup`（D74 で
+   * `showme.editorGroup` から移った。`shared` は D93）。**どの列に開くか**を決める量なので
+   * `trusted()` 以外で読まない（不変条件9）。人間の列を使うかの判断は `human-column.ts` の
+   * `useHumanColumnFor` 1つ ―― ここは値を運ぶだけ。
+   */
+  editorGroup: EditorGroup;
   /**
    * 舞台を映しの URI（`showme-ro:` / `showme-rw:`）で開くかどうか（D84・D86）。
    *
@@ -109,14 +115,25 @@ export interface ShowMeConfig {
    * （`handlers/show-html.ts` が呼ぶ）で、`list_workspaces.panels.max` は同じ値を写す。
    */
   html: { maxPanels: PanelLimit };
-  redactedPathPatterns: string[];
+  /**
+   * 秘匿の方針（`workspace-path-gate.ts` の `RedactionPolicy`）。`patterns` は既定のパターンに
+   * `showme.redactedPathPatterns` を足したもの（加算専用）、`blockLinksToRedacted` は
+   * `showme.blockLinksToRedactedFiles`（D91。既定 `true`）。**どちらも秘匿を緩める向きに
+   * 動かせる量**なので `trusted()` 以外で読まない（不変条件9）。関門と観測の側に同じ写しを渡す。
+   * `allowOutsideWorkspace` は `showme.allowOutsideWorkspace`（D101。既定 `false`）。ワークスペースの
+   * 外のファイルを開けるようにする ―― 読ませている OSS の `.vscode/settings.json` がオンにできたら、
+   * 仕込んだ指示でホームの秘密を画面に出せる。だから同じく `trusted()` だけで読む。
+   */
+  redaction: RedactionPolicy;
   maxSelectionChars: number;
   injectTerminalEnv: boolean;
   listAllWorkspaces: boolean;
   /**
    * `arrange_editors` の許可（設計 §7 / D40）。
    *
-   * **どちらも既定は false で、`trusted()` 経由で読む**（不変条件9）。
+   * **3つとも既定は false で、`trusted()` 経由で読む**（不変条件9）。
+   * `protectViewingTab`（D92）は立てると守りが増える向きだが、読み口は同じにする ――
+   * ワークスペースが false に落とせるなら、人間が global で立てた保護を外せてしまう。
    * 新しい読み口を作らない ―― 作った瞬間、ワークスペース値を読む経路が
    * 1つ増える。主敵は読ませている OSS そのもので、そこには
    * `.vscode/settings.json` があり、`closeDirtyTabs: true` を置けたら
@@ -141,14 +158,27 @@ export function stringArrayOr(value: unknown, fallback: readonly string[]): stri
     : [...fallback];
 }
 
-export function editorGroupOr(value: unknown): "dedicated" | "active" {
-  return value === "active" ? "active" : "dedicated";
+/**
+ * `showme.stage.editorGroup` の値（D74 / D93）。`shared`（既定）= 右の既存の列を先に、足りなければ
+ * 人間の列、それでも足りなければ右端の外。`dedicated` = 人間の列は使わない（D94: 人間のタブが無い
+ * 列は除く）。`active` = 常に人間の列（`layout` と枠を見ない）。
+ */
+export type EditorGroup = "shared" | "dedicated" | "active";
+
+/**
+ * 設定が読めない（`undefined`。宣言も無い）ときは宣言の既定と同じ `shared`。**知らない値は
+ * `dedicated` に倒す** ―― 既定の `shared` ではなく守る側（人間の列を避ける側）。綴りを間違えた
+ * 設定で人間の列が使われる向きにしない。
+ */
+export function editorGroupOr(value: unknown): EditorGroup {
+  if (value === undefined) return "shared";
+  return value === "shared" || value === "active" ? value : "dedicated";
 }
 
 /** `showme.stage.definitionTarget` の値（D88）。`file` = 本物のファイル、`agentTab` = エージェントのタブ。 */
 export type DefinitionTarget = "file" | "agentTab";
 
-/** 知らない値は既定の `"file"` に倒す（`editorGroupOr` と同じ形）。 */
+/** 知らない値は既定の `"file"` に倒す。 */
 export function definitionTargetOr(value: unknown): DefinitionTarget {
   return value === "agentTab" ? "agentTab" : "file";
 }
@@ -189,14 +219,21 @@ export function readConfig(): ShowMeConfig {
     html: {
       maxPanels: panelLimitOr(trusted<unknown>("showme.html.maxPanels"), DEFAULT_PANEL_LIMIT),
     },
-    // 加算専用: 既定リストは設定から取り除けない
-    redactedPathPatterns: mergeRedactedPatterns(extra),
+    redaction: {
+      // 加算専用: 既定リストは設定から取り除けない
+      patterns: mergeRedactedPatterns(extra),
+      blockLinksToRedacted: trusted<boolean>("showme.blockLinksToRedactedFiles") ?? true,
+      // D101: 関門が外の絶対パスを受け入れるか。秘匿の方針と同じ値に載せ、関門の全ての口に
+      // 同じ1つを渡す。**真のときだけ**開く（壊れた値・ワークスペースの値では開かない）。
+      allowOutsideWorkspace: trusted<unknown>("showme.allowOutsideWorkspace") === true,
+    },
     maxSelectionChars: trusted<number>("showme.maxSelectionChars") ?? 4000,
     injectTerminalEnv: trusted<boolean>("showme.injectTerminalEnv") ?? true,
     listAllWorkspaces: trusted<boolean>("showme.listAllWorkspaces") ?? false,
     layout: {
       closeHumanTabs: trusted<boolean>("showme.layout.closeHumanTabs") ?? false,
       closeDirtyTabs: trusted<boolean>("showme.layout.closeDirtyTabs") ?? false,
+      protectViewingTab: trusted<boolean>("showme.layout.protectViewingTab") ?? false,
     },
   };
 }

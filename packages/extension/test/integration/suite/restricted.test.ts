@@ -23,6 +23,7 @@ import {
   layoutTabs,
   lendWindow,
   listWorkspaces,
+  pinDedicatedStage,
   showCode,
   showOne,
   stageUri,
@@ -232,12 +233,13 @@ suite("実 VS Code / 制限モード", () => {
    * `editorGroup` は設定を写すだけで、信頼とは無関係である。制限モードで
    * 欄が消える（あるいは全部 false に倒れる）実装を通さない。
    */
-  test("制限モードでも permissions / features / disabledTools / editorGroup が返る（D56 / D74）", async () => {
+  test("制限モードでも permissions / features / disabledTools / editorGroup が返る（D56 / D74 / D93）", async () => {
     await lendWindow();
     // **既定のままであることを主張する。** 立っていたら「既定の」値を見ていない。
     for (const key of [
       "layout.closeHumanTabs",
       "layout.closeDirtyTabs",
+      "layout.protectViewingTab",
       "stage.enabled",
       "html.enabled",
       "layout.enabled",
@@ -251,10 +253,15 @@ suite("実 VS Code / 制限モード", () => {
     }
     const result = await listWorkspaces();
     assert.strictEqual(result.isTrusted, false, "制限モードで走っていない（前提が崩れている）");
-    assert.deepStrictEqual(result.permissions, { closeHumanTabs: false, closeDirtyTabs: false });
+    assert.deepStrictEqual(result.permissions, {
+      closeHumanTabs: false,
+      closeDirtyTabs: false,
+      protectViewingTab: false,
+    });
     assert.deepStrictEqual(result.features, { stage: true, html: true, layout: true });
     assert.deepStrictEqual(result.disabledTools, []);
-    assert.strictEqual(result.editorGroup, "dedicated");
+    // 既定は shared（D93）。
+    assert.strictEqual(result.editorGroup, "shared");
 
     // 制限モードでもグローバル値は写る（信頼の有無で読み口が変わらない）。
     await vscode.workspace
@@ -712,6 +719,8 @@ suite("実 VS Code / 制限モード / get_editor_state のレイアウト", () 
  * 機能なので、両方の回で言う。**
  */
 suite("実 VS Code / 制限モード / arrange_editors は人間のタブを閉じない", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -725,7 +734,7 @@ suite("実 VS Code / 制限モード / arrange_editors は人間のタブを閉�
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     // **既定のままであることを主張する。** グローバル値が立っていたら、
     // この検査は「既定の」振る舞いを見ていない。
-    for (const key of ["closeHumanTabs", "closeDirtyTabs"]) {
+    for (const key of ["closeHumanTabs", "closeDirtyTabs", "protectViewingTab"]) {
       assert.strictEqual(
         vscode.workspace.getConfiguration().inspect<boolean>(`showme.layout.${key}`)?.globalValue,
         undefined,
@@ -786,7 +795,8 @@ suite("実 VS Code / 制限モード / arrange_editors は人間のタブを閉�
     const sampleName = path.basename(SAMPLE_REL);
     const humanName = path.basename(JSON_REL);
     assert.deepStrictEqual(labels(), [humanName, sampleName].sort(), "前提が崩れている");
-    // 人間が見ているのは自分の1枚（ここが sample なら床1 で残る）。
+    // 人間が見ているのは自分の1枚。結果を所有だけで決まるものにする（床1 は既定で外れているが、
+    // protectViewingTab がオンなら sample を見ていると床1 で残り、理由が混ざる）。
     assert.strictEqual(
       vscode.window.tabGroups.activeTabGroup.activeTab?.label,
       humanName,

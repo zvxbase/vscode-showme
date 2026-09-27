@@ -1,0 +1,35 @@
+{
+  "showme.toggle": {
+    "en": "Lend this window to the agent, or take it back. The same as clicking ShowMe in the status bar.",
+    "ja": "この窓をエージェントに預ける、または預けるのをやめる。ステータスバーの ShowMe をクリックするのと同じ。"
+  },
+  "showme.disableExtension": {
+    "en": "Stop ShowMe in every window, or resume it. It stays stopped until you resume it (saved as showme.enabled in your user settings).",
+    "ja": "すべての窓で ShowMe を止める、または再開する。再開するまで止まったまま（ユーザー設定の showme.enabled に保存される）。"
+  },
+  "showme.showAgentConfig": {
+    "en": "Open ready-to-paste configuration for Claude Code, Codex CLI and Copilot CLI, filled in with the real install path.",
+    "ja": "Claude Code / Codex CLI / Copilot CLI にそのまま貼れる設定を、実際のインストール先入りで開く。"
+  },
+  "showme.showLog": {
+    "en": "Open the log of every tool call (selected text is not recorded).",
+    "ja": "ツール呼び出しの記録を開く（選択テキストは記録しない）。"
+  },
+  "showme.teardown": {
+    "en": "Open the steps to remove ShowMe from your agent and uninstall it.",
+    "ja": "エージェントから ShowMe の登録を消し、拡張を撤去する手順を開く。"
+  },
+  "showme.clearHighlights": {
+    "en": "Remove the agent's highlight.",
+    "ja": "エージェントのハイライトを消す。"
+  },
+  "showme.clearAnnotations": {
+    "en": "Remove all of the agent's annotations.",
+    "ja": "エージェントの注釈をすべて消す。"
+  },
+  "showme.openRealFile": {
+    "en": "Open the file of the agent's tab at the same line, as your own tab. Listed only while one of the agent's tabs is active.",
+    "ja": "エージェントのタブのファイルを、同じ行で、あなたのタブとして開く。エージェントのタブが前面にあるときだけ出る。",
+    "paletteWhen": "resourceScheme =~ /^showme-(ro|rw)$/"
+  }
+}

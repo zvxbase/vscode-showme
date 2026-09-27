@@ -9,6 +9,7 @@ import {
   assertGlobal,
   lendWindow,
   listWorkspaces,
+  pinDedicatedStage,
   showOne,
   stageUri,
   waitFor,
@@ -151,6 +152,8 @@ async function terminalBetweenThreeColumns(): Promise<void> {
 }
 
 suite("道具の列を避ける（D90）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();

@@ -1,13 +1,17 @@
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  OUTSIDE_STAGE_AUTHORITY,
   STAGE_SCHEME_EDITABLE,
   STAGE_SCHEME_READONLY,
   effectiveStageScheme,
   isLegacyOwnershipUri,
   isStageScheme,
+  keyOfStagePath,
   relOfStagePath,
   stageOpenTarget,
   stageSchemeFor,
+  stageUriPartsOfKey,
   stageUriPath,
 } from "../src/stage-uri.js";
 
@@ -271,5 +275,74 @@ describe("stageOpenTarget（show_code 1回の開き方と記録を決める唯�
     expect(
       stageOpenTarget({ stageFeature: true, agentTabs: true, editable: true, realFile: false }),
     ).toEqual({ scheme: STAGE_SCHEME_EDITABLE, record: false });
+  });
+});
+
+/**
+ * ワークスペースの外の映し（D102）。正準形は1つ: authority `outside`、path は絶対パス
+ * （Windows は `/c:/Users/…` ―― ドライブ文字は小文字、区切りは `/`）。中の映し（authority 空）と
+ * 綴りが混ざらず、別綴りは受けない（中の `relOfStagePath` と同じく往復の等値で決める）。
+ */
+describe("外の映しの URI（D102）", () => {
+  const p = path.posix;
+  const w = path.win32;
+
+  it("posix: 鍵（正規化した絶対パス）と URI の path が往復で一致する", () => {
+    const parts = stageUriPartsOfKey("/tmp/x/a b%#.ts", p);
+    expect(parts).toEqual({ authority: OUTSIDE_STAGE_AUTHORITY, path: "/tmp/x/a b%#.ts" });
+    expect(keyOfStagePath(STAGE_SCHEME_READONLY, parts.authority, parts.path, p)).toBe(
+      "/tmp/x/a b%#.ts",
+    );
+    expect(keyOfStagePath(STAGE_SCHEME_EDITABLE, parts.authority, parts.path, p)).toBe(
+      "/tmp/x/a b%#.ts",
+    );
+  });
+
+  it("中の鍵は今までどおり authority 空・先頭に / を1つ", () => {
+    expect(stageUriPartsOfKey("src/a.ts", p)).toEqual({ authority: "", path: "/src/a.ts" });
+    expect(keyOfStagePath(STAGE_SCHEME_READONLY, "", "/src/a.ts", p)).toBe("src/a.ts");
+  });
+
+  it.each([
+    ["別の authority", "x", "/tmp/a.ts"],
+    ["authority の大文字", "OUTSIDE", "/tmp/a.ts"],
+    ["// の重なり", "outside", "/tmp//a.ts"],
+    ["..", "outside", "/tmp/../a.ts"],
+    [".", "outside", "/tmp/./a.ts"],
+    ["末尾の /", "outside", "/tmp/a/"],
+    ["根そのもの", "outside", "/"],
+    ["相対", "outside", "tmp/a.ts"],
+    ["バックスラッシュ", "outside", "/tmp\\a.ts"],
+  ])("posix: %s は受けない", (_label, authority, uriPath) => {
+    expect(keyOfStagePath(STAGE_SCHEME_READONLY, authority, uriPath, p)).toBeUndefined();
+  });
+
+  it("中の authority 空で絶対パスの綴りは、外として読まない（中の規則で拒む）", () => {
+    expect(keyOfStagePath(STAGE_SCHEME_READONLY, "", "//tmp/a.ts", p)).toBeUndefined();
+  });
+
+  it("映しでないスキームは受けない", () => {
+    expect(keyOfStagePath("file", OUTSIDE_STAGE_AUTHORITY, "/tmp/a.ts", p)).toBeUndefined();
+  });
+
+  it("win32: ドライブのパスは /c:/… の1つの綴りで往復する", () => {
+    const parts = stageUriPartsOfKey("c:\\Users\\me\\a.ts", w);
+    expect(parts).toEqual({ authority: OUTSIDE_STAGE_AUTHORITY, path: "/c:/Users/me/a.ts" });
+    expect(keyOfStagePath(STAGE_SCHEME_READONLY, parts.authority, parts.path, w)).toBe(
+      "c:\\Users\\me\\a.ts",
+    );
+  });
+
+  it.each([
+    ["ドライブ文字の大文字", "/C:/Users/a.ts"],
+    ["ドライブの無い根", "/Users/a.ts"],
+    ["バックスラッシュ", "/c:\\Users\\a.ts"],
+    ["UNC", "//server/share/a.ts"],
+    ["..", "/c:/Users/../a.ts"],
+    ["8.3", "/c:/PROGRA~1/a.ts"],
+  ])("win32: %s は受けない", (_label, uriPath) => {
+    expect(
+      keyOfStagePath(STAGE_SCHEME_READONLY, OUTSIDE_STAGE_AUTHORITY, uriPath, w),
+    ).toBeUndefined();
   });
 });

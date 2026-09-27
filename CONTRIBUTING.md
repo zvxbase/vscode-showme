@@ -43,6 +43,7 @@ commit here. Small, focused PRs with tests are the easiest to carry across.
 - One topic per PR. Tests first where the change is behavioral.
 - No commit trailers that reference private tooling sessions. `Co-Authored-By:` lines for AI tools are fine — see README "How this was built".
 - Strings read by agents (tool descriptions, errors) are English only. Strings read by humans go through `vscode.l10n` with `package.nls.ja.json`.
+- `README.md` and `README.ja.md` keep the same structure, and their command and settings tables are generated from `package.json`. `npm run docs:check` (also part of `npm run test`) says what to run: `npm run docs:write` for the tables, `npm run docs:stamp` once the Japanese translation matches the English one.
 - Never type bidi-override or zero-width characters; write them as `U+202E`. `test/source-hygiene.test.ts` checks the whole repository including Markdown.
 
 ## Reporting a security issue

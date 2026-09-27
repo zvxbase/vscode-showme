@@ -6,16 +6,18 @@ import {
   type MarkerLocation,
   type Resolution,
   type ResolutionReason,
-  isRedactedPath,
-  normalizeWorkspaceRelative,
   resolveLocation,
   sanitizeDisplayText,
 } from "@zvx/vscode-showme-protocol";
 import type { ShowMeConfig } from "../config.js";
 import type { LineRange } from "../line-range.js";
 import { type RateLimiter, fileRateLimitKey, sharedFileLimiter } from "../rate-limit.js";
-import { readWorkspaceFile } from "../read-workspace-file.js";
-import { fileRateLimitCanonicalizer } from "../workspace-path-gate.js";
+import { readAgentFile } from "../read-workspace-file.js";
+import {
+  agentPathKey,
+  fileRateLimitCanonicalizer,
+  isExcludedSpelling,
+} from "../workspace-path-gate.js";
 import type { ShowCodeLog, ShowCodeStatus } from "./show-code.js";
 import { type SymbolSurface, prefetchSymbol } from "./symbol-prefetch.js";
 
@@ -161,11 +163,11 @@ export async function handleAnnotate(
 
   // 予算の鍵は関門の口をそのまま注入する（`show_code` と同じもの。
   // 秘匿の綴りに realpath を当てない理由もそちらに書いてある）。
-  const canonicalize = fileRateLimitCanonicalizer(root, config.redactedPathPatterns);
+  const canonicalize = fileRateLimitCanonicalizer(root, config.redaction);
 
   for (const item of args.items) {
     const loc = item.location;
-    const normalizedPath = normalizeWorkspaceRelative(loc.path);
+    const normalizedPath = agentPathKey(root, loc.path, config.redaction);
 
     if (!limiter.allow(fileRateLimitKey(loc.path, canonicalize))) {
       deps.log.info("annotate rate limited", { path: loc.path });
@@ -178,7 +180,7 @@ export async function handleAnnotate(
     const prefetched = await prefetchSymbol(loc, {
       symbols: deps.symbols,
       workspaceRoot: root,
-      redactedPathPatterns: config.redactedPathPatterns,
+      redaction: config.redaction,
     });
     if (prefetched.kind === "unavailable") {
       deps.log.info("annotate", {
@@ -198,8 +200,10 @@ export async function handleAnnotate(
     }
 
     const resolution = resolveLocation(loc, {
-      isRedacted: (rel) => isRedactedPath(rel, config.redactedPathPatterns),
-      readText: (rel) => readWorkspaceFile(root, rel, config.redactedPathPatterns),
+      // 綴りの読み方（中の相対パス・外の絶対パス。D102）と、綴りだけで決まる秘匿は関門と同じ関数。
+      normalizePath: (raw) => agentPathKey(root, raw, config.redaction),
+      isRedacted: (key) => isExcludedSpelling(root, key, config.redaction),
+      readText: (rel) => readAgentFile(root, rel, config.redaction),
       findSymbol: () => (prefetched.kind === "ranges" ? prefetched.ranges : undefined),
     });
 

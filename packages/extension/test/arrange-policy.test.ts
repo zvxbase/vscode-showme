@@ -19,7 +19,7 @@ import {
   ownedUrisToRestore,
 } from "../src/arrange-policy.js";
 import type { ArrangeLayoutAction } from "../src/handlers/arrange-editors.js";
-import { NO_AVOIDED_COLUMNS, stageColumnForSlot } from "../src/stage-column.js";
+import { NO_AVOIDED_COLUMNS, placeStageColumn, stageColumnForSlot } from "../src/stage-column.js";
 
 /**
  * **画面に触ってよいかの判断は、ここ1箇所にしかない**（設計 §C1 / D53' / 不変条件14）。
@@ -29,12 +29,14 @@ import { NO_AVOIDED_COLUMNS, stageColumnForSlot } from "../src/stage-column.js";
  *
  * 検査は**真理値表そのもの**にする ―― own × dirty × 2設定 の16通りを、
  * close と move のそれぞれについて1行ずつ書き出す。「だいたいこうなる」で畳まない。
- * 畳んでよいのは「`viewing` なら全部 false」だけで、それは有限集合の全称なので
+ * 畳んでよいのは「`protectViewingTab` がオンで `viewing` なら全部 false」と、式そのものを
+ * 全組み合わせで確かめる生成表だけで、どちらも有限集合の全称なので
  * **評価した件数を主張したうえで**ループしている。
  */
 const perms = (over: Partial<ArrangePermissions> = {}): ArrangePermissions => ({
   closeHumanTabs: false,
   closeDirtyTabs: false,
+  protectViewingTab: false,
   ...over,
 });
 const tab = (over: Partial<TouchCandidate> = {}): TouchCandidate => ({
@@ -116,8 +118,8 @@ describe("mayTouch — move の真理値表（viewing=false の16通り。未保
   });
 });
 
-describe("床1: 人間が見ているタブは、どの設定でも触らない（C1）", () => {
-  it("viewing=true の全32通り（own×dirty×2設定×2op）が false", () => {
+describe("床1: protectViewingTab がオンなら、人間が見ているタブは触らない（C1 / D92）", () => {
+  it("protectViewingTab=true かつ viewing=true の全32通り（own×dirty×2設定×2op）が false", () => {
     let evaluated = 0;
     for (const own of [false, true]) {
       for (const isDirty of [false, true]) {
@@ -128,7 +130,7 @@ describe("床1: 人間が見ているタブは、どの設定でも触らない�
                 mayTouch(
                   tab({ own, isDirty, viewing: true }),
                   op,
-                  perms({ closeHumanTabs, closeDirtyTabs }),
+                  perms({ closeHumanTabs, closeDirtyTabs, protectViewingTab: true }),
                 ),
                 `own=${own} dirty=${isDirty} cHT=${closeHumanTabs} cDT=${closeDirtyTabs} op=${op}`,
               ).toBe(false);
@@ -144,11 +146,71 @@ describe("床1: 人間が見ているタブは、どの設定でも触らない�
   it("対照: 同じ候補も viewing=false なら閉じる（床1 だけで落ちている）", () => {
     // 上の32通りが「候補の作り方が壊れていて全部 false」でも緑になるのを防ぐ。
     // 設定を全部立てた own のタブは、viewing でさえなければ close も move も通る。
-    const open = perms({ closeHumanTabs: true, closeDirtyTabs: true });
+    const open = perms({ closeHumanTabs: true, closeDirtyTabs: true, protectViewingTab: true });
     expect(mayTouch(tab({ own: true, isDirty: true, viewing: false }), "close", open)).toBe(true);
     expect(mayTouch(tab({ own: true, isDirty: true, viewing: false }), "move", open)).toBe(true);
     expect(mayTouch(tab({ own: true, isDirty: true, viewing: true }), "close", open)).toBe(false);
     expect(mayTouch(tab({ own: true, isDirty: true, viewing: true }), "move", open)).toBe(false);
+  });
+});
+
+describe("床1 は既定で外れている: protectViewingTab=false なら viewing は判断を変えない（D92）", () => {
+  // 既定はオフ。エージェントは自分が開いたタブを、人間が見ている最中でも片づけられる。
+  // 人間のタブは reach（closeHumanTabs）が、未保存は床2（closeDirtyTabs）が守り続ける。
+  it("自分の・見ている・保存済みのタブは閉じられ、動かせる", () => {
+    const candidate = tab({ own: true, isDirty: false, viewing: true });
+    expect(mayTouch(candidate, "close", perms())).toBe(true);
+    expect(mayTouch(candidate, "move", perms())).toBe(true);
+  });
+
+  it("人間の・見ているタブは closeHumanTabs 次第", () => {
+    const candidate = tab({ own: false, isDirty: false, viewing: true });
+    expect(mayTouch(candidate, "close", perms())).toBe(false);
+    expect(mayTouch(candidate, "move", perms())).toBe(false);
+    expect(mayTouch(candidate, "close", perms({ closeHumanTabs: true }))).toBe(true);
+    expect(mayTouch(candidate, "move", perms({ closeHumanTabs: true }))).toBe(true);
+  });
+
+  it("自分の・見ている・未保存のタブは、閉じるのは closeDirtyTabs 次第（動かすのは通る）", () => {
+    const candidate = tab({ own: true, isDirty: true, viewing: true });
+    expect(mayTouch(candidate, "close", perms())).toBe(false);
+    expect(mayTouch(candidate, "close", perms({ closeDirtyTabs: true }))).toBe(true);
+    expect(mayTouch(candidate, "move", perms())).toBe(true);
+  });
+});
+
+describe("mayTouch — 全組み合わせの生成表（own×dirty×viewing×3設定×2op = 128通り）", () => {
+  // 手書きの行と別に、式そのものを全称で確かめる。3つの設定は互いに直交する:
+  // reach は closeHumanTabs だけ、床1 は protectViewingTab だけ、床2 は closeDirtyTabs だけで外れる。
+  it("mayTouch === reach && !(protectViewingTab && viewing) && floor2", () => {
+    let evaluated = 0;
+    for (const own of [false, true]) {
+      for (const isDirty of [false, true]) {
+        for (const viewing of [false, true]) {
+          for (const closeHumanTabs of [false, true]) {
+            for (const closeDirtyTabs of [false, true]) {
+              for (const protectViewingTab of [false, true]) {
+                for (const op of ["close", "move"] as const) {
+                  const reach = own || closeHumanTabs;
+                  const floor2 = op !== "close" || !isDirty || closeDirtyTabs;
+                  const expected = reach && !(protectViewingTab && viewing) && floor2;
+                  expect(
+                    mayTouch(
+                      tab({ own, isDirty, viewing }),
+                      op,
+                      perms({ closeHumanTabs, closeDirtyTabs, protectViewingTab }),
+                    ),
+                    `own=${own} dirty=${isDirty} viewing=${viewing} cHT=${closeHumanTabs} cDT=${closeDirtyTabs} pVT=${protectViewingTab} op=${op}`,
+                  ).toBe(expected);
+                  evaluated += 1;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe(128);
   });
 });
 
@@ -161,8 +223,20 @@ describe("設定の意味", () => {
   it("closeDirtyTabs は床2 だけを外す。床1 は外さない", () => {
     expect(mayClose(tab({ own: true, isDirty: true }), perms({ closeDirtyTabs: true }))).toBe(true);
     expect(
-      mayClose(tab({ own: true, isDirty: true, viewing: true }), perms({ closeDirtyTabs: true })),
+      mayClose(
+        tab({ own: true, isDirty: true, viewing: true }),
+        perms({ closeDirtyTabs: true, protectViewingTab: true }),
+      ),
     ).toBe(false);
+  });
+
+  it("closeHumanTabs は床1 を外さない。protectViewingTab は reach を広げない（直交。D92）", () => {
+    // 人間のタブに届く許可を立てても、見ているタブの保護がオンなら触らない。
+    expect(
+      mayClose(tab({ viewing: true }), perms({ closeHumanTabs: true, protectViewingTab: true })),
+    ).toBe(false);
+    // 保護をオフにしても（既定）、人間のタブへは closeHumanTabs が無ければ届かない。
+    expect(mayClose(tab({ viewing: true }), perms({ protectViewingTab: false }))).toBe(false);
   });
 });
 
@@ -550,6 +624,80 @@ describe("moveTargetVerdict（D59）", () => {
     expect(AVOID_CASES.length).toBe(7);
   });
 
+  // [toColumn, groupCount, humanColumn, closeHumanTabs, 避ける列, useHumanColumn] → verdict（D93 / D94）
+  // 人間の列に自分のタブを開けるなら、動かすのも通す（開けるのに動かせないのは一貫しない）。
+  const HUMAN_COLUMN_CASES: ReadonlyArray<
+    readonly [
+      number,
+      number,
+      number | undefined,
+      boolean,
+      readonly number[],
+      boolean,
+      ReturnType<typeof moveTargetVerdict>,
+    ]
+  > = [
+    [1, 3, 1, false, [], true, { ok: true }], // 人間の列を使えるなら通す
+    [1, 3, 1, false, [], false, { ok: false, reason: "human-column-target" }], // 使えないなら以前どおり
+    [2, 3, 2, false, [], true, { ok: true }],
+    [1, 1, 1, false, [], true, { ok: true }], // 1列だけの画面
+    [1, 3, 1, true, [], true, { ok: true }], // closeHumanTabs と重ねても通る
+    [2, 3, undefined, false, [], true, { ok: false, reason: "human-column-target" }], // 観測できなければ断る
+    [2, 3, undefined, true, [], true, { ok: false, reason: "human-column-target" }],
+    [1, 3, 1, false, [1], true, { ok: false, reason: "tool-column-target" }], // 道具の列は守る
+    [5, 3, 1, false, [], true, { ok: false, reason: "invalid-request" }], // 範囲外は先に落ちる
+  ];
+  let humanColumnEvaluated = 0;
+  for (const [
+    toColumn,
+    groupCount,
+    humanColumn,
+    closeHumanTabs,
+    tools,
+    useHumanColumn,
+    expected,
+  ] of HUMAN_COLUMN_CASES) {
+    it(`to=${toColumn} groups=${groupCount} human=${String(humanColumn)} cHT=${closeHumanTabs} tools=[${tools.join(",")}] useHuman=${useHumanColumn} → ${JSON.stringify(expected)}`, () => {
+      humanColumnEvaluated += 1;
+      expect(
+        moveTargetVerdict(
+          toColumn,
+          groupCount,
+          humanColumn,
+          perms({ closeHumanTabs }),
+          new Set(tools),
+          useHumanColumn,
+        ),
+      ).toEqual(expected);
+    });
+  }
+  it("人間の列を使えるときの表の全行を評価した", () => {
+    expect(humanColumnEvaluated).toBe(HUMAN_COLUMN_CASES.length);
+    expect(HUMAN_COLUMN_CASES.length).toBe(9);
+  });
+
+  it("useHumanColumn=false なら、全組み合わせで以前の答えと同じ（D93 / D94）", () => {
+    let evaluated = 0;
+    for (const groupCount of [1, 2, 3, 4]) {
+      for (const human of [...Array.from({ length: groupCount }, (_, i) => i + 1), undefined]) {
+        for (const toColumn of [0, 1, 2, 3, 4, 5, 6, 1.5]) {
+          for (const closeHumanTabs of [false, true]) {
+            for (const tools of [[], [1], [2]]) {
+              const p = perms({ closeHumanTabs });
+              const avoid = new Set(tools);
+              expect(
+                moveTargetVerdict(toColumn, groupCount, human, p, avoid, false),
+                `to=${toColumn} groups=${groupCount} human=${String(human)} cHT=${closeHumanTabs} tools=[${tools.join(",")}]`,
+              ).toEqual(moveTargetVerdict(toColumn, groupCount, human, p, avoid));
+              evaluated += 1;
+            }
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe((2 + 3 + 4 + 5) * 8 * 2 * 3);
+  });
+
   it("closeDirtyTabs は移動先の判定に関係しない（未保存の床は move に掛からない）", () => {
     expect(moveTargetVerdict(1, 3, 1, perms({ closeDirtyTabs: true }))).toEqual({
       ok: false,
@@ -560,7 +708,8 @@ describe("moveTargetVerdict（D59）", () => {
 
 /**
  * **`gather-own` の集め先**（設計 D55-1）: 人間の列より右で最小の列。無ければ人間の隣
- * （新しい列）。人間の列そのものは**決して**返さない ―― 返せば `single-column` の再来。
+ * （新しい列）。人間の列を使えないとき（既定）、人間の列そのものは**決して**返さない ――
+ * 返せば `single-column` の再来。使えるとき（D93 / D94）は、右に無ければ人間の列。
  */
 describe("firstStageColumn（gather-own の集め先）", () => {
   it("人間の列より右で最小の列", () => {
@@ -633,7 +782,73 @@ describe("firstStageColumn（gather-own の集め先）", () => {
     expect(firstStageColumn([1, 2, 3], 1, new Set())).toBe(2);
   });
 
-  it("人間の列そのものは決して返さない（全組み合わせ）", () => {
+  it("人間の列を使えるなら、右に使える列が無いとき人間の列（D93 / D94）", () => {
+    expect(firstStageColumn([1], 1, NO_AVOIDED_COLUMNS, true)).toBe(1);
+    expect(firstStageColumn([1, 2], 2, NO_AVOIDED_COLUMNS, true)).toBe(2);
+    expect(firstStageColumn([1, 2], 1, NO_AVOIDED_COLUMNS, true)).toBe(2); // 右が先
+    expect(firstStageColumn([1, 2], 1, new Set([2]), true)).toBe(1);
+    expect(firstStageColumn([1], 1, new Set([1]), true)).toBe(2); // 道具の人間の列は使わない
+    expect(firstStageColumn([1, 2, 3], undefined, NO_AVOIDED_COLUMNS, true)).toBeUndefined();
+    expect(firstStageColumn([], 1, NO_AVOIDED_COLUMNS, true)).toBeUndefined();
+  });
+
+  it("useHumanColumn を受けても、show_code が single で開く列と全組み合わせで等しい（D93 / D94）", () => {
+    let evaluated = 0;
+    for (const useHumanColumn of [false, true]) {
+      for (let mask = 1; mask < 1 << 5; mask += 1) {
+        const columns = [1, 2, 3, 4, 5].filter((c) => mask & (1 << (c - 1)));
+        for (const human of columns) {
+          for (let avoidMask = 0; avoidMask < 1 << columns.length; avoidMask += 1) {
+            const avoid = new Set(columns.filter((_, i) => avoidMask & (1 << i)));
+            const label = `useHuman=${useHumanColumn} columns=[${columns.join(",")}] human=${human} avoid=[${[...avoid].join(",")}]`;
+            const expected = stageColumnForSlot(columns, "single", 0, human, avoid, useHumanColumn);
+            const target = firstStageColumn(columns, human, avoid, useHumanColumn);
+            expect(target, label).toBe(expected);
+            expect(
+              firstStageColumn([...columns].reverse(), human, avoid, useHumanColumn),
+              label,
+            ).toBe(expected);
+            if (!useHumanColumn) expect(target, label).not.toBe(human);
+            expect(target !== undefined && avoid.has(target), label).toBe(false);
+            evaluated += 1;
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe(810 * 2);
+  });
+
+  it("詰まった列では、集め先と show_code の入口（placeStageColumn の single・枠0）が等しい（D93 / D94）", () => {
+    // 集め先の決め方は Stage が開く列と同じ1箇所（不変条件14）。設定オン（避ける集合）・
+    // オフ（undefined）の両方の入口で、人間の列を使える・使えないの両方を突き合わせる。
+    let evaluated = 0;
+    for (const useHumanColumn of [false, true]) {
+      for (let n = 1; n <= 4; n += 1) {
+        const columns = Array.from({ length: n }, (_, i) => i + 1);
+        for (const human of columns) {
+          for (let avoidMask = 0; avoidMask < 1 << n; avoidMask += 1) {
+            const avoid = new Set(columns.filter((_, i) => avoidMask & (1 << i)));
+            const label = `useHuman=${useHumanColumn} n=${n} human=${human} avoid=[${[...avoid].join(",")}]`;
+            const target = firstStageColumn(columns, human, avoid, useHumanColumn);
+            expect(
+              placeStageColumn(columns, "single", 0, human, n, avoid, useHumanColumn),
+              label,
+            ).toBe(target);
+            if (avoid.size === 0) {
+              expect(
+                placeStageColumn(columns, "single", 0, human, n, undefined, useHumanColumn),
+                label,
+              ).toBe(target);
+            }
+            evaluated += 1;
+          }
+        }
+      }
+    }
+    expect(evaluated).toBe(98 * 2); // Σ_{n=1..4} n·2^n
+  });
+
+  it("人間の列を使えないなら、人間の列そのものは決して返さない（全組み合わせ）", () => {
     let evaluated = 0;
     for (const groupCount of [1, 2, 3, 4]) {
       const columns = Array.from({ length: groupCount }, (_, i) => i + 1);

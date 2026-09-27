@@ -1,8 +1,16 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { acceptWorkspacePath } from "../src/workspace-path-gate.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { RedactedLinkIndex } from "../src/redacted-links.js";
+import {
+  type RedactionPolicy,
+  acceptWorkspacePath,
+  createGateRedactedLinkIndex,
+  isRedactedEntity,
+  onRedactedLinkWalkIncomplete,
+  replaceRedactedLinkIndex,
+} from "../src/workspace-path-gate.js";
 
 /**
  * パスの関門。**この repo が4回別々に書いた境界**を1つにしたもの。
@@ -10,6 +18,11 @@ import { acceptWorkspacePath } from "../src/workspace-path-gate.js";
  * 実ファイルシステムの上で検査する ―― シンボリックリンクは実体が無いと作れないし、
  * 「綴りは通るが実体は外」を偽物で作ると、検査したいことが検査できない。
  */
+
+/** 秘匿の方針。既定はハードリンクも見る（設定の既定と同じ）。 */
+function policy(patterns: readonly string[] = [], blockLinksToRedacted = true): RedactionPolicy {
+  return { patterns, blockLinksToRedacted };
+}
 
 const made: string[] = [];
 function tmpWorkspace(): { root: string; outside: string } {
@@ -31,7 +44,7 @@ afterEach(() => {
 describe("acceptWorkspacePath", () => {
   it("普通のパスは通り、正準名と実体を返す", () => {
     const { root } = tmpWorkspace();
-    const verdict = acceptWorkspacePath(root, "docs/notes.md", []);
+    const verdict = acceptWorkspacePath(root, "docs/notes.md", policy());
     expect(verdict.ok).toBe(true);
     if (!verdict.ok) return;
     expect(verdict.canonical).toBe("docs/notes.md");
@@ -41,7 +54,10 @@ describe("acceptWorkspacePath", () => {
   it("綴りで外に出るものは落ちる", () => {
     const { root } = tmpWorkspace();
     for (const p of ["../outside/target.txt", "/etc/passwd", "a/../../b", "docs/../../x"]) {
-      expect(acceptWorkspacePath(root, p, []), p).toEqual({ ok: false, reason: "invalid-path" });
+      expect(acceptWorkspacePath(root, p, policy()), p).toEqual({
+        ok: false,
+        reason: "invalid-path",
+      });
     }
   });
 
@@ -49,7 +65,7 @@ describe("acceptWorkspacePath", () => {
     const { root, outside } = tmpWorkspace();
     fs.symlinkSync(path.join(outside, "target.txt"), path.join(root, "docs", "innocent.txt"));
     // 名前に `..` は無く、除外パターンにも当たらない。realpath だけが止められる。
-    expect(acceptWorkspacePath(root, "docs/innocent.txt", [])).toEqual({
+    expect(acceptWorkspacePath(root, "docs/innocent.txt", policy())).toEqual({
       ok: false,
       reason: "invalid-path",
     });
@@ -58,7 +74,7 @@ describe("acceptWorkspacePath", () => {
   it("**除外は綴りではなく実体で効く**", () => {
     const { root } = tmpWorkspace();
     fs.symlinkSync(path.join(root, ".env"), path.join(root, "docs", "harmless.txt"));
-    expect(acceptWorkspacePath(root, "docs/harmless.txt", [])).toEqual({
+    expect(acceptWorkspacePath(root, "docs/harmless.txt", policy())).toEqual({
       ok: false,
       reason: "excluded-path",
     });
@@ -66,12 +82,15 @@ describe("acceptWorkspacePath", () => {
 
   it("除外パスを直に指しても落ちる", () => {
     const { root } = tmpWorkspace();
-    expect(acceptWorkspacePath(root, ".env", [])).toEqual({ ok: false, reason: "excluded-path" });
+    expect(acceptWorkspacePath(root, ".env", policy())).toEqual({
+      ok: false,
+      reason: "excluded-path",
+    });
   });
 
   it("設定で足したパターンも効く", () => {
     const { root } = tmpWorkspace();
-    expect(acceptWorkspacePath(root, "docs/notes.md", ["docs/**"])).toEqual({
+    expect(acceptWorkspacePath(root, "docs/notes.md", policy(["docs/**"]))).toEqual({
       ok: false,
       reason: "excluded-path",
     });
@@ -80,14 +99,14 @@ describe("acceptWorkspacePath", () => {
   it("存在しないものと外にあるものは、同じ答えになる", () => {
     // **分けると、そこから存在を読める**（S1 と同じ形の無音のオラクル）。
     const { root } = tmpWorkspace();
-    const missing = acceptWorkspacePath(root, "docs/no-such-file.md", []);
-    const outsideOne = acceptWorkspacePath(root, "../outside/target.txt", []);
+    const missing = acceptWorkspacePath(root, "docs/no-such-file.md", policy());
+    const outsideOne = acceptWorkspacePath(root, "../outside/target.txt", policy());
     expect(missing).toEqual(outsideOne);
     expect(missing).toEqual({ ok: false, reason: "invalid-path" });
   });
 
   it("ルートが無ければ落ちる", () => {
-    expect(acceptWorkspacePath(undefined, "docs/notes.md", [])).toEqual({
+    expect(acceptWorkspacePath(undefined, "docs/notes.md", policy())).toEqual({
       ok: false,
       reason: "invalid-path",
     });
@@ -96,10 +115,187 @@ describe("acceptWorkspacePath", () => {
   it("中間ディレクトリのリンクも辿る", () => {
     const { root, outside } = tmpWorkspace();
     fs.symlinkSync(outside, path.join(root, "docs", "linked-dir"));
-    expect(acceptWorkspacePath(root, "docs/linked-dir/target.txt", [])).toEqual({
+    expect(acceptWorkspacePath(root, "docs/linked-dir/target.txt", policy())).toEqual({
       ok: false,
       reason: "invalid-path",
     });
+  });
+});
+
+describe("秘匿ファイルへのハードリンク（D91）", () => {
+  // 検査ごとに新しい索引にする（前の検査が覚えた集合を持ち越さない）。
+  let index: RedactedLinkIndex;
+  let previous: RedactedLinkIndex;
+  beforeEach(() => {
+    index = new RedactedLinkIndex();
+    previous = replaceRedactedLinkIndex(index);
+  });
+  afterEach(() => {
+    replaceRedactedLinkIndex(previous);
+  });
+
+  it("秘匿でない名前でも .env と同じ実体なら excluded-path", () => {
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+    expect(acceptWorkspacePath(root, "docs/env-alias.txt", policy())).toEqual({
+      ok: false,
+      reason: "excluded-path",
+    });
+  });
+
+  it("設定を切れば名前だけで判定する（今までどおり通る）", () => {
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+    const verdict = acceptWorkspacePath(root, "docs/env-alias.txt", policy([], false));
+    expect(verdict.ok).toBe(true);
+    expect(index.walkCount).toBe(0);
+  });
+
+  it("普通のファイル同士のハードリンクは通る（全部落とす実装が緑にならない）", () => {
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, "docs", "notes.md"), path.join(root, "docs", "copy.md"));
+    for (const rel of ["docs/notes.md", "docs/copy.md"]) {
+      const verdict = acceptWorkspacePath(root, rel, policy());
+      expect(verdict.ok, rel).toBe(true);
+    }
+  });
+
+  it("リンク数1の普通のファイルでは歩かない", () => {
+    const { root } = tmpWorkspace();
+    expect(acceptWorkspacePath(root, "docs/notes.md", policy()).ok).toBe(true);
+    expect(index.walkCount).toBe(0);
+  });
+
+  it("ディレクトリは歩かずに通す（ハードリンクはファイルにしか張れない）", () => {
+    const { root } = tmpWorkspace();
+    expect(acceptWorkspacePath(root, "docs", policy()).ok).toBe(true);
+    expect(index.walkCount).toBe(0);
+  });
+
+  it("設定で足したパターンのファイルへのリンクも落ちる", () => {
+    const { root } = tmpWorkspace();
+    fs.writeFileSync(path.join(root, "docs", "private.md"), "p\n", "utf8");
+    fs.linkSync(path.join(root, "docs", "private.md"), path.join(root, "docs", "public.md"));
+    expect(acceptWorkspacePath(root, "docs/public.md", policy(["private.md"]))).toEqual({
+      ok: false,
+      reason: "excluded-path",
+    });
+    // パターンが無ければ、同じリンクは普通のファイル同士のリンクである。
+    expect(acceptWorkspacePath(root, "docs/public.md", policy()).ok).toBe(true);
+  });
+
+  it("ルートがシンボリックリンクでも実体のルートで歩いて見分ける", () => {
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+    const linkedRoot = path.join(path.dirname(root), "root-link");
+    fs.symlinkSync(root, linkedRoot);
+    expect(acceptWorkspacePath(linkedRoot, "docs/env-alias.txt", policy())).toEqual({
+      ok: false,
+      reason: "excluded-path",
+    });
+  });
+
+  it("シンボリックリンクの先がハードリンクでも落ちる", () => {
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+    fs.symlinkSync(path.join(root, "docs", "env-alias.txt"), path.join(root, "docs", "sym.txt"));
+    expect(acceptWorkspacePath(root, "docs/sym.txt", policy())).toEqual({
+      ok: false,
+      reason: "excluded-path",
+    });
+  });
+});
+
+describe("不完全な走査の知らせ（onRedactedLinkWalkIncomplete。D91）", () => {
+  let previous: RedactedLinkIndex;
+  afterEach(() => {
+    onRedactedLinkWalkIncomplete(undefined);
+    replaceRedactedLinkIndex(previous);
+  });
+
+  it("関門の索引が上限で打ち切ると、実体のルートで1回だけ知らせる", () => {
+    // 本体と同じ配線（`createGateRedactedLinkIndex`）で、上限だけ小さくした索引。
+    previous = replaceRedactedLinkIndex(createGateRedactedLinkIndex({ maxEntries: 2 }));
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, "docs", "notes.md"), path.join(root, "docs", "copy.md"));
+    const seen: string[] = [];
+    onRedactedLinkWalkIncomplete((r) => seen.push(r));
+    // 上限で打ち切ると、普通のファイル同士のリンクも閉じる側に倒れる。
+    expect(acceptWorkspacePath(root, "docs/copy.md", policy())).toEqual({
+      ok: false,
+      reason: "excluded-path",
+    });
+    expect(seen).toEqual([fs.realpathSync(root)]);
+    // 覚えている間は歩かないので、知らせも増えない。観測の側も同じ索引を通る。
+    expect(isRedactedEntity(root, "docs/copy.md", policy())).toBe(true);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("最後まで歩けたときは知らせない", () => {
+    previous = replaceRedactedLinkIndex(createGateRedactedLinkIndex());
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, "docs", "notes.md"), path.join(root, "docs", "copy.md"));
+    const seen: string[] = [];
+    onRedactedLinkWalkIncomplete((r) => seen.push(r));
+    expect(acceptWorkspacePath(root, "docs/copy.md", policy()).ok).toBe(true);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe("isRedactedEntity（観測した名前の秘匿判定。関門と同じ判定）", () => {
+  let previous: RedactedLinkIndex;
+  beforeEach(() => {
+    previous = replaceRedactedLinkIndex(new RedactedLinkIndex());
+  });
+  afterEach(() => {
+    replaceRedactedLinkIndex(previous);
+  });
+
+  it("秘匿の名前は、存在を問わず秘匿", () => {
+    const { root } = tmpWorkspace();
+    expect(isRedactedEntity(root, ".env", policy())).toBe(true);
+    expect(isRedactedEntity(root, ".env.missing", policy())).toBe(true);
+    expect(isRedactedEntity(undefined, ".env", policy())).toBe(true);
+  });
+
+  it("普通のファイルは秘匿でない", () => {
+    const { root } = tmpWorkspace();
+    expect(isRedactedEntity(root, "docs/notes.md", policy())).toBe(false);
+  });
+
+  it("秘匿ファイルへのハードリンクは秘匿。設定を切れば名前だけ", () => {
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+    expect(isRedactedEntity(root, "docs/env-alias.txt", policy())).toBe(true);
+    expect(isRedactedEntity(root, "docs/env-alias.txt", policy([], false))).toBe(false);
+  });
+
+  it("秘匿ファイルを指すシンボリックリンクの名前も秘匿（実体の名前で見る）", () => {
+    const { root } = tmpWorkspace();
+    fs.symlinkSync(path.join(root, ".env"), path.join(root, "docs", "harmless.txt"));
+    expect(isRedactedEntity(root, "docs/harmless.txt", policy())).toBe(true);
+  });
+
+  it("無いファイル・ルートが無いときは名前だけで判定する", () => {
+    const { root } = tmpWorkspace();
+    expect(isRedactedEntity(root, "docs/no-such-file.md", policy())).toBe(false);
+    expect(isRedactedEntity(undefined, "docs/notes.md", policy())).toBe(false);
+    expect(isRedactedEntity(root, "docs/no-such.md", policy(["docs/**"]))).toBe(true);
+  });
+
+  it("関門と同じ答え（通らないものは秘匿、通るものは秘匿でない）", () => {
+    const { root } = tmpWorkspace();
+    fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+    fs.linkSync(path.join(root, "docs", "notes.md"), path.join(root, "docs", "copy.md"));
+    for (const blockLinksToRedacted of [true, false]) {
+      const p = policy([], blockLinksToRedacted);
+      for (const rel of [".env", "docs/env-alias.txt", "docs/notes.md", "docs/copy.md"]) {
+        const excluded = acceptWorkspacePath(root, rel, p);
+        expect(isRedactedEntity(root, rel, p), `${rel} ${blockLinksToRedacted}`).toBe(
+          !excluded.ok && excluded.reason === "excluded-path",
+        );
+      }
+    }
   });
 });
 
@@ -113,8 +309,8 @@ describe("秘匿の綴りは、存在を問わず同じ答え（無音のオラ�
     const { root } = tmpWorkspace();
     expect(fs.existsSync(path.join(root, ".env"))).toBe(true);
     expect(fs.existsSync(path.join(root, ".env.missing"))).toBe(false);
-    const exists = acceptWorkspacePath(root, ".env", []);
-    const missing = acceptWorkspacePath(root, ".env.missing", []); // `.env.*` も既定で秘匿
+    const exists = acceptWorkspacePath(root, ".env", policy());
+    const missing = acceptWorkspacePath(root, ".env.missing", policy()); // `.env.*` も既定で秘匿
     expect(exists.ok).toBe(false);
     expect(missing.ok).toBe(false);
     expect(missing).toEqual(exists);
@@ -125,14 +321,16 @@ describe("秘匿の綴りは、存在を問わず同じ答え（無音のオラ�
     // `canonicalizeWorkspacePath` は差し替えられないので、存在しないディレクトリを
     // root にして「realpath が投げても excluded-path で返る」ことで代替する。
     // realpath を先に当てていれば、ここは invalid-path になる。
-    const r = acceptWorkspacePath("/nonexistent-root-showme-issue-17", ".env", []);
+    const r = acceptWorkspacePath("/nonexistent-root-showme-issue-17", ".env", policy());
     expect(r).toEqual({ ok: false, reason: "excluded-path" });
   });
 
   it("設定で足したパターンの綴りにも realpath を当てない", () => {
-    const r = acceptWorkspacePath("/nonexistent-root-showme-issue-17", "docs/secret.md", [
-      "docs/**",
-    ]);
+    const r = acceptWorkspacePath(
+      "/nonexistent-root-showme-issue-17",
+      "docs/secret.md",
+      policy(["docs/**"]),
+    );
     expect(r).toEqual({ ok: false, reason: "excluded-path" });
   });
 });
@@ -229,6 +427,65 @@ describe("関門の外で canonicalizeWorkspacePath を import していない�
       IMPORTS_CANONICALIZER.test('import { acceptWorkspacePath } from "./workspace-path-gate.js";'),
     ).toBe(false);
   });
+});
+
+/**
+ * **索引の差し替え口（`replaceRedactedLinkIndex`）を本体から使っていない**ことの検出（D91）。
+ *
+ * 差し替え口は検査のためだけにある。本体のどこかが索引を差し替えると、キャッシュが捨てられる
+ * だけでなく、操作ログへの知らせ（`onIncomplete`）を持たない索引に替わりうる。使ってよいのは
+ * 定義のある `workspace-path-gate.ts` だけ。`src/` の中の `*.test.ts`（`src/handlers/` にある）も
+ * 走査に入る ―― そこでも使わない（`test/` のテストは走査に入らない）。
+ */
+describe("索引の差し替え口・索引・リンクの判定を関門の外で使っていない（D91）", () => {
+  const SRC_ROOT = path.resolve(__dirname, "../src");
+  const walk = (dir: string, into: string[]): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, into);
+      else if (full.endsWith(".ts")) into.push(full);
+    }
+  };
+
+  it("src/ の他のファイルに名前が現れない", () => {
+    const files: string[] = [];
+    walk(SRC_ROOT, files);
+    // 空振りの緑を見分ける: 定義のあるファイルを実際に読み、そこには名前がある。
+    const gate = files.find((f) => path.basename(f) === "workspace-path-gate.ts");
+    expect(gate, "workspace-path-gate.ts が走査に無い").toBeDefined();
+    expect(fs.readFileSync(gate as string, "utf8")).toContain("replaceRedactedLinkIndex");
+    expect(files.length).toBeGreaterThan(10);
+    const offenders = files.filter(
+      (f) =>
+        path.basename(f) !== "workspace-path-gate.ts" &&
+        fs.readFileSync(f, "utf8").includes("replaceRedactedLinkIndex"),
+    );
+    expect(offenders, offenders.join("\n")).toEqual([]);
+  });
+
+  // 「リンクか」を決める場所は関門1つ（不変条件14）。索引を作る・リンクを判定する口を
+  // 関門と実装の外で使うと、判定がもう1箇所に増える（配線の違う索引も生まれる）。
+  for (const needle of ["isLinkToRedacted", "new RedactedLinkIndex"]) {
+    it(`${needle} は関門と実装の外に現れない`, () => {
+      const allowed = new Set(["workspace-path-gate.ts", "redacted-links.ts"]);
+      const files: string[] = [];
+      walk(SRC_ROOT, files);
+      for (const name of allowed) {
+        const f = files.find((x) => path.basename(x) === name);
+        expect(f, `${name} が走査に無い`).toBeDefined();
+      }
+      // 空振りの緑を見分ける: 許した側には実際に現れる。
+      expect(
+        files
+          .filter((f) => allowed.has(path.basename(f)))
+          .some((f) => fs.readFileSync(f, "utf8").includes(needle)),
+      ).toBe(true);
+      const offenders = files.filter(
+        (f) => !allowed.has(path.basename(f)) && fs.readFileSync(f, "utf8").includes(needle),
+      );
+      expect(offenders, offenders.join("\n")).toEqual([]);
+    });
+  }
 });
 
 /**

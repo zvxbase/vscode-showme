@@ -227,12 +227,22 @@ describe("placeOfResult（結果の URI がワークスペースのどこか。�
   });
 
   it("ワークスペースの中で関門を通るものは綴りの rel と正準名を返す", () => {
-    expect(placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/a.ts")), [])).toEqual({
+    expect(
+      placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/a.ts")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "inside",
       rel: "src/a.ts",
       canonical: "src/a.ts",
     });
-    expect(placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/a-link.ts")), [])).toEqual({
+    expect(
+      placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/a-link.ts")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "inside",
       rel: "src/a-link.ts",
       canonical: "src/a.ts",
@@ -240,13 +250,26 @@ describe("placeOfResult（結果の URI がワークスペースのどこか。�
   });
 
   it("秘匿（既定・追加・リンクの先）は rejected", () => {
-    expect(placeOfResult(rootUri, vscode.Uri.file(path.join(ws, ".env")), [])).toEqual({
+    expect(
+      placeOfResult(rootUri, vscode.Uri.file(path.join(ws, ".env")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "rejected",
     });
     expect(
-      placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/private.ts")), ["src/private.ts"]),
+      placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/private.ts")), {
+        patterns: ["src/private.ts"],
+        blockLinksToRedacted: true,
+      }),
     ).toEqual({ kind: "rejected" });
-    expect(placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/env-link.ts")), [])).toEqual({
+    expect(
+      placeOfResult(rootUri, vscode.Uri.file(path.join(ws, "src/env-link.ts")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "rejected",
     });
   });
@@ -256,35 +279,123 @@ describe("placeOfResult（結果の URI がワークスペースのどこか。�
     const linkRoot = path.join(dir, "ws-link");
     if (!fs.existsSync(linkRoot)) fs.symlinkSync(ws, linkRoot);
     const viaLink = vscode.Uri.file(linkRoot);
-    expect(placeOfResult(viaLink, vscode.Uri.file(path.join(ws, ".env")), [])).toEqual({
+    expect(
+      placeOfResult(viaLink, vscode.Uri.file(path.join(ws, ".env")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "rejected",
     });
     expect(
-      placeOfResult(viaLink, vscode.Uri.file(path.join(ws, "src/private.ts")), ["src/private.ts"]),
+      placeOfResult(viaLink, vscode.Uri.file(path.join(ws, "src/private.ts")), {
+        patterns: ["src/private.ts"],
+        blockLinksToRedacted: true,
+      }),
     ).toEqual({ kind: "rejected" });
-    expect(placeOfResult(viaLink, vscode.Uri.file(path.join(ws, "src/a.ts")), [])).toEqual({
+    expect(
+      placeOfResult(viaLink, vscode.Uri.file(path.join(ws, "src/a.ts")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "inside",
       rel: "src/a.ts",
       canonical: "src/a.ts",
     });
     // リンクの綴りの結果も今までどおり。
-    expect(placeOfResult(viaLink, vscode.Uri.file(path.join(linkRoot, "src/a.ts")), [])).toEqual({
+    expect(
+      placeOfResult(viaLink, vscode.Uri.file(path.join(linkRoot, "src/a.ts")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "inside",
       rel: "src/a.ts",
       canonical: "src/a.ts",
     });
     // 本当の外は外のまま。
-    expect(placeOfResult(viaLink, vscode.Uri.file(path.join(dir, "outside.ts")), [])).toEqual({
+    expect(
+      placeOfResult(viaLink, vscode.Uri.file(path.join(dir, "outside.ts")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "outside",
     });
   });
 
   it("ワークスペースの外と file: でない URI は outside", () => {
-    expect(placeOfResult(rootUri, vscode.Uri.file(path.join(dir, "outside.ts")), [])).toEqual({
+    expect(
+      placeOfResult(rootUri, vscode.Uri.file(path.join(dir, "outside.ts")), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
+    ).toEqual({
       kind: "outside",
     });
     expect(
-      placeOfResult(rootUri, vscode.Uri.from({ scheme: "untitled", path: "Untitled-1" }), []),
+      placeOfResult(rootUri, vscode.Uri.from({ scheme: "untitled", path: "Untitled-1" }), {
+        patterns: [],
+        blockLinksToRedacted: true,
+      }),
     ).toEqual({ kind: "outside" });
+  });
+});
+
+describe("外の結果（D102）", () => {
+  let dir: string;
+  let ws: string;
+  let rootUri: vscode.Uri;
+  beforeAll(() => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-lang-out-")));
+    ws = path.join(dir, "ws");
+    fs.mkdirSync(ws, { recursive: true });
+    fs.writeFileSync(path.join(dir, "lib.ts"), "export const o = 1;\n");
+    fs.writeFileSync(path.join(dir, ".env"), "X=1\n");
+    rootUri = vscode.Uri.file(ws);
+  });
+  afterAll(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const on = { patterns: [], blockLinksToRedacted: true, allowOutsideWorkspace: true };
+  const off = { patterns: [], blockLinksToRedacted: true };
+
+  it("設定がオンで関門を通る外の結果は outside-accepted、オフなら今までどおり outside", () => {
+    const lib = vscode.Uri.file(path.join(dir, "lib.ts"));
+    expect(placeOfResult(rootUri, lib, on)).toEqual({
+      kind: "outside-accepted",
+      rel: path.join(dir, "lib.ts"),
+      canonical: path.join(dir, "lib.ts"),
+    });
+    expect(placeOfResult(rootUri, lib, off)).toEqual({ kind: "outside" });
+    // 関門に落ちる外の結果は、今までどおり file: のまま（写さない）
+    expect(placeOfResult(rootUri, vscode.Uri.file(path.join(dir, ".env")), on)).toEqual({
+      kind: "outside",
+    });
+  });
+
+  it("agentTab なら、外の結果は外の映しに写す。聞いた映しと同じ実体は返さない", () => {
+    const lib = vscode.Uri.file(path.join(dir, "lib.ts"));
+    const range = { start: 0 };
+    const mapped = mapMirrorLocations([new vscode.Location(lib, range as never)], {
+      sourceCanonical: "src/other.ts",
+      target: "agentTab",
+      agentTabScheme: STAGE_SCHEME_READONLY,
+      root: rootUri,
+      place: (u) => placeOfResult(rootUri, u, on),
+    }) as vscode.Location[];
+    expect(mapped.map((l) => [l.uri.scheme, l.uri.authority, l.uri.path])).toEqual([
+      [STAGE_SCHEME_READONLY, "outside", path.join(dir, "lib.ts")],
+    ]);
+    expect(
+      mapMirrorLocations([new vscode.Location(lib, range as never)], {
+        sourceCanonical: path.join(dir, "lib.ts"),
+        target: "agentTab",
+        agentTabScheme: STAGE_SCHEME_READONLY,
+        root: rootUri,
+        place: (u) => placeOfResult(rootUri, u, on),
+      }),
+    ).toEqual([]);
   });
 });

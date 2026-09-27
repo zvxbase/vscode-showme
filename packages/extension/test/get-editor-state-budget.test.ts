@@ -31,7 +31,7 @@ const config = (): ShowMeConfig => ({
   editorGroup: "dedicated",
   html: { maxPanels: 2 },
   disabledTools: [],
-  redactedPathPatterns: [...DEFAULT_REDACTED_PATTERNS],
+  redaction: { patterns: [...DEFAULT_REDACTED_PATTERNS], blockLinksToRedacted: true },
   maxSelectionChars: 4000,
   injectTerminalEnv: true,
   listAllWorkspaces: false,
@@ -80,7 +80,13 @@ function fakeStatus(): { statusBar: EditorStateStatus; flashes: () => number } {
 }
 
 function run(overrides: Partial<GetEditorStateDeps> = {}): Record<string, unknown> {
-  return handleGetEditorState({ config, surface, statusBar: noopStatusBar, ...overrides });
+  return handleGetEditorState({
+    config,
+    workspaceRoot: undefined,
+    surface,
+    statusBar: noopStatusBar,
+    ...overrides,
+  });
 }
 
 describe("get_editor_state の呼び出し予算", () => {

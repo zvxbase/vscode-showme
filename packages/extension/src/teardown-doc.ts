@@ -35,7 +35,7 @@ export function buildTeardownDocument(facts: TeardownFacts, lang: UiLanguage): s
 }
 
 function english(facts: TeardownFacts, dirs: string): string {
-  return `# ShowMe — teardown (display only; there is no need to save this file)
+  return `# ShowMe — teardown (read-only; copy from here)
 
 ShowMe never edits other tools' configuration files and persists nothing but its
 settings. So teardown splits in two: what the extension removes by itself, and
@@ -63,9 +63,13 @@ Remove the fragment you copied via \`ShowMe: Show agent configuration\` from whe
 claude mcp remove showme
 \`\`\`
 
+  If \`showme\` exists in more than one scope, it asks you to choose one with -s:
+  \`claude mcp remove showme -s local\`, \`claude mcp remove showme -s user\` or \`claude mcp remove showme -s project\`.
   Also remove the \`mcp__showme__*\` lines you added to \`permissions.allow\` in \`.claude/settings.json\`.
-- Codex CLI: delete the \`[mcp_servers.showme]\` section in \`~/.codex/config.toml\`
+- Codex CLI: delete the \`[mcp_servers.showme]\` section in \`~/.codex/config.toml\`, and in a
+  repository's \`.codex/config.toml\` if you put it there
 - Copilot CLI: delete the \`"showme"\` entry in \`~/.copilot/mcp-config.json\`
+- In a repository: delete the \`"showme"\` entry from \`.mcp.json\` or \`.github/mcp.json\`
 
 ### 2b. The extension itself
 

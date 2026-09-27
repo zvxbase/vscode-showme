@@ -85,13 +85,24 @@ describe("tool annotations", () => {
     // 「パネル」だけと書いてあると、エージェントは自分が開いたファイルを
     // 片づけられないと思い込む（実際に「片づけて」で起きた。所見 2026-09-12）。
     expect(TOOL_DESCRIPTIONS.arrange_editors).toContain("it opened via show_code");
-    // 床は設定で外れない ―― 書いていないと、viewing-tab を見たエージェントが
-    // 人間に設定を頼み、立ててもまた断られる。
+    // D92: 見ているタブの床は設定次第 ―― 書いていないと、エージェントは
+    // 自分のタブが既定でも守られると思い込む（既定は false で own なら動く）。
     expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
-      "The tab the human is viewing and unsaved tabs are never closed, under any setting",
+      "only when the human's setting showme.layout.protectViewingTab is true",
+    );
+    expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
+      "by default your own tab can be closed or moved even while the human is viewing it",
     );
     expect(TOOL_DESCRIPTIONS.arrange_editors).toContain("viewing-tab");
     expect(TOOL_DESCRIPTIONS.arrange_editors).not.toContain("close-own-panels");
+    // 古い文言（見ているタブは設定で外れない）は残さない ―― D92 で緩んだ。
+    expect(TOOL_DESCRIPTIONS.arrange_editors).not.toContain("never closed, under any setting");
+    // viewing-tab の文だけを見ていると、未保存タブの床も一緒に緩んだと誤読する
+    // ―― closeDirtyTabs が別の条件のまま残っていることを名指しで書く。
+    expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
+      "unsaved tabs are never closed without closeDirtyTabs",
+    );
+    expect(TOOL_DESCRIPTIONS.arrange_editors).toContain("dirty-tabs-not-allowed");
   });
 
   it("arrange_editors の説明が close-tabs の規則（パスで指す・同じ床・notOpen）を言っている", () => {
@@ -128,11 +139,34 @@ describe("tool annotations", () => {
     expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
       "gather-own collects your own tabs and panels",
     );
-    // 人間の列への移動は既定で断る。理由を書いていないと呼び直す。
+    // 人間の列への移動は断る条件がある。理由を書いていないと呼び直す。
     expect(TOOL_DESCRIPTIONS.arrange_editors).toContain("human-column-target");
     // 「done: true は意図した列に入ったではない」―― 呼んだあと読み直す（D59 観測できないこと）。
     expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
       "Re-read with get_editor_state after calling",
+    );
+  });
+
+  it("arrange_editors の説明が、人間の列への移動を断るのは dedicated でその列に人間のタブがあるときだけだと言う（D93 / D94）", () => {
+    // D93 より前は「既定で断る」だった。既定が shared に変わったので、断る条件を名指しで書く
+    // ―― 書いていないと、エージェントは shared でも断られると誤解する。
+    expect(TOOL_DESCRIPTIONS.arrange_editors).toContain(
+      "refused only when editorGroup is dedicated and that column shows the human's own tabs",
+    );
+  });
+
+  it("list_workspaces の説明が protectViewingTab と editorGroup の3値を言う（D92 / D93）", () => {
+    // 書いていないと、エージェントは permissions.protectViewingTab の意味を線上の形からしか
+    // 読めず、shared が既定であることも editorGroup の値からは分からない。
+    expect(TOOL_DESCRIPTIONS.list_workspaces).toContain("protectViewingTab");
+    expect(TOOL_DESCRIPTIONS.list_workspaces).toContain(
+      "shared (the default) reuses the human's column when no other column is already open",
+    );
+    expect(TOOL_DESCRIPTIONS.list_workspaces).toContain(
+      "dedicated never uses the column the human is in while it holds any of the human's tabs",
+    );
+    expect(TOOL_DESCRIPTIONS.list_workspaces).toContain(
+      "active always opens in the human's column",
     );
   });
 

@@ -47,6 +47,11 @@ export interface SelectionObservation {
   isActiveEditor: boolean;
   /** 直前の自ツール呼び出しからの経過ミリ秒。呼んでいなければ Infinity。 */
   msSinceOwnToolCall: number;
+  /**
+   * この選択が「ツールが見せた選択」か（D95）。ツールの呼び出しで前面の編集器が変わり、その
+   * 編集器がそのとき持っていた選択（使い回し・表示状態の復元で戻ったもの）と同じ鍵である。
+   */
+  shownByTool: boolean;
   /** この範囲を既に返したか。 */
   alreadyReturned: boolean;
 }
@@ -84,6 +89,9 @@ const CHECKS: ReadonlyArray<
   ["not-active", (o) => !o.isActiveEditor],
   // 時間: 待てば変わる
   ["too-soon-after-tool", (o) => o.msSinceOwnToolCall < MIN_MS_SINCE_OWN_TOOL_CALL],
+  // ツールが見せた選択: 人間が選び直せば変わる。待っても変わらないので時間より後に置く ――
+  // 前に置くと、待ちの間にエージェントが「待てば取れる」と読んで呼び続ける（D95）
+  ["shown-by-tool", (o) => o.shownByTool],
   // 重複: 人間が動かせば変わる
   ["already-returned", (o) => o.alreadyReturned],
 ];

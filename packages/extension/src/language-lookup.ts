@@ -48,3 +48,21 @@ export function foldProviderResult(
     locations: found.slice(0, MAX_FOUND_LOCATIONS).map((f) => ({ ...f })),
   };
 }
+
+/**
+ * 外の結果（D102）の名前。結果が**錨（エージェントが指したファイル）の実体**と同じなら、エージェントが
+ * 渡した綴りで返す ―― 錨を `/x/alias.ts -> /x/real/b.ts` のリンクの綴りで指したとき、同じファイルの
+ * 定義・参照を実体の綴り（`/x/real/b.ts`）で返すと、リンクの指す先が結果から読める
+ * （`show_code` の `normalizedPath` が realpath を返さないのと同じ理由）。
+ *
+ * - `realPath`: 関門が受け入れた結果の実体
+ * - `spelled`: 結果の URI の綴り（言語サーバが返したもの）を正規化した名前
+ * - `anchors`: 錨の実体 → エージェントの綴り
+ */
+export function outsideResultName(
+  realPath: string,
+  spelled: string,
+  anchors: ReadonlyMap<string, string>,
+): string {
+  return anchors.get(realPath) ?? spelled;
+}

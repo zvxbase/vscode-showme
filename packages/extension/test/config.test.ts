@@ -173,7 +173,11 @@ describe("readConfig の既定（package.json の宣言と一致すること）"
       };
     };
   };
-  const keys = ["showme.layout.closeHumanTabs", "showme.layout.closeDirtyTabs"] as const;
+  const keys = [
+    "showme.layout.closeHumanTabs",
+    "showme.layout.closeDirtyTabs",
+    "showme.layout.protectViewingTab",
+  ] as const;
 
   for (const key of keys) {
     it(`${key} は boolean / 既定 false / scope: machine で宣言されている`, () => {
@@ -188,6 +192,30 @@ describe("readConfig の既定（package.json の宣言と一致すること）"
       expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).toContain(key);
     });
   }
+
+  /**
+   * D101: `showme.allowOutsideWorkspace`。ワークスペースの外のファイルを開ける。**既定 false**
+   * （オンにするのは人間の自己責任）、machine、restrictedConfigurations 入り ―― 読ませている OSS の
+   * `.vscode/settings.json` からオンにできたら、仕込んだ指示でホームの秘密を画面に出せる。
+   */
+  it("showme.allowOutsideWorkspace は boolean / 既定 false / scope: machine / restricted（D101）", () => {
+    const key = "showme.allowOutsideWorkspace";
+    const prop = manifest.contributes.configuration.properties[key];
+    expect(prop).toBeDefined();
+    expect(prop?.type).toBe("boolean");
+    expect(prop?.default).toBe(false);
+    expect(prop?.scope).toBe("machine");
+    expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).toContain(key);
+  });
+
+  it("showme.allowOutsideWorkspace は global が無ければワークスペースからオンにできない", () => {
+    expect(pickTrustedValue<boolean>(inspect({ defaultValue: false, workspaceValue: true }))).toBe(
+      false,
+    );
+    expect(
+      pickTrustedValue<boolean>(inspect({ defaultValue: false, workspaceFolderValue: true })),
+    ).toBe(false);
+  });
 
   /** 増分6 D74: 3機能の `enabled`。既定 true、machine。 */
   const featureKeys = ["showme.stage.enabled", "showme.html.enabled", "showme.layout.enabled"];
@@ -204,14 +232,47 @@ describe("readConfig の既定（package.json の宣言と一致すること）"
     });
   }
 
-  it("showme.stage.editorGroup が dedicated / active の enum で宣言され、showme.editorGroup は無い（D74）", () => {
+  /**
+   * `showme.stage.editorGroup`（D74 / D93）。`shared`（既定。右の既存の列が先、足りなければ人間の列）/
+   * `dedicated`（人間の列は使わない。D94 を除く）/ `active`（常に人間の列）。選択肢ごとの説明は
+   * `enumDescriptions` で、英日の nls に置く。
+   */
+  it("showme.stage.editorGroup が shared / dedicated / active の enum・既定 shared で宣言され、showme.editorGroup は無い（D74 / D93）", () => {
     const prop = manifest.contributes.configuration.properties["showme.stage.editorGroup"] as
-      | { enum?: unknown; default?: unknown; scope?: unknown }
+      | {
+          enum?: unknown;
+          enumDescriptions?: unknown;
+          default?: unknown;
+          scope?: unknown;
+          description?: unknown;
+        }
       | undefined;
     expect(prop).toBeDefined();
-    expect(prop?.enum).toEqual(["dedicated", "active"]);
-    expect(prop?.default).toBe("dedicated");
+    expect(prop?.enum).toEqual(["shared", "dedicated", "active"]);
+    expect(prop?.default).toBe("shared");
     expect(prop?.scope).toBe("machine");
+    expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).toContain(
+      "showme.stage.editorGroup",
+    );
+    expect(prop?.description).toBe("%showme.config.stage.editorGroup%");
+    expect(prop?.enumDescriptions).toEqual([
+      "%showme.config.stage.editorGroup.shared%",
+      "%showme.config.stage.editorGroup.dedicated%",
+      "%showme.config.stage.editorGroup.active%",
+    ]);
+    for (const file of ["package.nls.json", "package.nls.ja.json"]) {
+      const table = JSON.parse(
+        readFileSync(new URL(`../${file}`, import.meta.url), "utf8"),
+      ) as Record<string, string>;
+      for (const key of [
+        "showme.config.stage.editorGroup",
+        "showme.config.stage.editorGroup.shared",
+        "showme.config.stage.editorGroup.dedicated",
+        "showme.config.stage.editorGroup.active",
+      ]) {
+        expect(table[key], `${file} ${key}`).toBeTruthy();
+      }
+    }
     expect(manifest.contributes.configuration.properties["showme.editorGroup"]).toBeUndefined();
   });
 
@@ -350,6 +411,35 @@ describe("readConfig の既定（package.json の宣言と一致すること）"
     expect(prop?.enum).toBeUndefined();
   });
 
+  /**
+   * `showme.blockLinksToRedactedFiles`（D91）。既定 `true`（秘匿ファイルへのハードリンクも秘匿）。
+   * 秘匿の判定を緩める向きの設定なので、読ませている OSS の `.vscode/settings.json` から
+   * 切れてはいけない ―― `trusted()` 以外で読まない（不変条件9）。
+   */
+  it("showme.blockLinksToRedactedFiles は boolean / 既定 true / scope: machine / restrictedConfigurations 入り / 説明は nls（D91）", () => {
+    const key = "showme.blockLinksToRedactedFiles";
+    const prop = manifest.contributes.configuration.properties[key] as
+      | { type: string; default: unknown; scope: string; description?: string }
+      | undefined;
+    expect(prop).toBeDefined();
+    expect(prop?.type).toBe("boolean");
+    expect(prop?.default).toBe(true);
+    expect(prop?.scope).toBe("machine");
+    expect(prop?.description).toBe("%showme.config.blockLinksToRedactedFiles%");
+    expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).toContain(key);
+    for (const file of ["package.nls.json", "package.nls.ja.json"]) {
+      const table = JSON.parse(
+        readFileSync(new URL(`../${file}`, import.meta.url), "utf8"),
+      ) as Record<string, string>;
+      expect(table["showme.config.blockLinksToRedactedFiles"], file).toBeTruthy();
+    }
+    const source = readFileSync(new URL("../src/config.ts", import.meta.url), "utf8");
+    const m = source.match(
+      /trusted<boolean>\("showme\.blockLinksToRedactedFiles"\) \?\? (true|false)/,
+    );
+    expect(m?.[1]).toBe("true");
+  });
+
   it("showme.tools.disabled は宣言から消えている（D74: 同じ量を2つの設定で決めない）", () => {
     expect(manifest.contributes.configuration.properties["showme.tools.disabled"]).toBeUndefined();
     expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations).not.toContain(
@@ -406,10 +496,18 @@ describe("設定の値を型で守る（読む場所で型を揃える）", () =
     expect(definitionTargetOr(undefined)).toBe("file");
     expect(definitionTargetOr(1)).toBe("file");
   });
-  it("editorGroup は dedicated / active 以外を dedicated に倒す（既定は安全側）", () => {
-    expect(editorGroupOr("Active")).toBe("dedicated");
-    expect(editorGroupOr(undefined)).toBe("dedicated");
+  it("editorGroup は知らない値を dedicated に倒す（守る側。既定の shared ではない）", () => {
+    expect(editorGroupOr("shared")).toBe("shared");
+    expect(editorGroupOr("dedicated")).toBe("dedicated");
     expect(editorGroupOr("active")).toBe("active");
+    expect(editorGroupOr("Active")).toBe("dedicated");
+    expect(editorGroupOr("Shared")).toBe("dedicated");
+    expect(editorGroupOr(1)).toBe("dedicated");
+    expect(editorGroupOr(null)).toBe("dedicated");
+  });
+  it("editorGroup が読めない（undefined）ときは既定の shared（宣言の既定と同じ）", () => {
+    // 宣言の既定（`shared`）と同じ値であることは上の宣言の検査が持つ。
+    expect(editorGroupOr(undefined)).toBe("shared");
   });
 
   /**

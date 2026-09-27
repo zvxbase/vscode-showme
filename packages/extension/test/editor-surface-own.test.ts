@@ -219,3 +219,60 @@ describe("isOwnTab（D82: テキストは映しのスキームなら own。file:
     expect(isOwnTab(tab, recorded(), counts([]))).toBe(false);
   });
 });
+
+/**
+ * 観測した外のタブ（D102）。**設定がオンで、関門を通るときだけ**正規化した絶対パス（綴り）で名指す。
+ * 関門に落ちる外（秘匿の名前・資格情報の置き場所・無い）は今までどおり名指さない（`undefined`
+ * ＝ `(outside workspace)`）。中の秘匿のタブと違って名前を出さないのは、ホームのファイル名を
+ * 列挙する口にしないため（D37'）。
+ */
+describe("observedRelPath と外のタブ（D102）", () => {
+  let base: string;
+  let root: FakeUri;
+  let outside: string;
+  const on = { patterns: [], blockLinksToRedacted: true, allowOutsideWorkspace: true };
+  const off = { patterns: [], blockLinksToRedacted: true };
+
+  beforeAll(() => {
+    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-observed-o-")));
+    outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-o-")));
+    fs.mkdirSync(path.join(base, "src"));
+    fs.writeFileSync(path.join(base, "src", "a.ts"), "a\n");
+    fs.writeFileSync(path.join(outside, "b.ts"), "b\n");
+    fs.writeFileSync(path.join(outside, ".env"), "S=1\n");
+    fs.symlinkSync(path.join(base, "src", "a.ts"), path.join(outside, "to-inside.ts"));
+    root = fileUri(base);
+  });
+  afterAll(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("file: の外のタブは、オンなら絶対パス、オフ（既定）なら undefined", () => {
+    const b = asUri(fileUri(path.join(outside, "b.ts")));
+    expect(observedRelPath(asUri(root), b, on)).toBe(path.join(outside, "b.ts"));
+    expect(observedRelPath(asUri(root), b, off)).toBeUndefined();
+    expect(observedRelPath(asUri(root), b)).toBeUndefined();
+  });
+
+  it("外の映しは、オンなら絶対パス、オフなら undefined", () => {
+    const m = asUri(mirrorUri(STAGE_SCHEME_READONLY, path.join(outside, "b.ts"), "outside"));
+    expect(observedRelPath(asUri(root), m, on)).toBe(path.join(outside, "b.ts"));
+    expect(observedRelPath(asUri(root), m, off)).toBeUndefined();
+  });
+
+  it("関門に落ちる外（秘匿の名前・無いファイル）は、オンでも undefined", () => {
+    expect(
+      observedRelPath(asUri(root), asUri(fileUri(path.join(outside, ".env"))), on),
+    ).toBeUndefined();
+    expect(
+      observedRelPath(asUri(root), asUri(fileUri(path.join(outside, "missing.ts"))), on),
+    ).toBeUndefined();
+  });
+
+  it("外から中へのリンクは中の正準名", () => {
+    expect(
+      observedRelPath(asUri(root), asUri(fileUri(path.join(outside, "to-inside.ts"))), on),
+    ).toBe("src/a.ts");
+  });
+});

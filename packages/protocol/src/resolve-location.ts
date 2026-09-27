@@ -16,6 +16,15 @@ export interface ResolveDeps {
   findSymbol(relPath: string, name: string): { startLine: number; endLine: number }[] | undefined;
   /** 秘匿対象のパスか。 */
   isRedacted(relPath: string): boolean;
+  /**
+   * `Location.path` を正準キー（`normalizedPath`）に正規化する。受け入れない綴りは `undefined`
+   * （`invalid-path`）。省略すると `normalizeWorkspaceRelative`（ワークスペース相対パスだけ）。
+   *
+   * 拡張は人間の設定 `showme.allowOutsideWorkspace` がオンのときだけ、絶対パスも受ける正規化を
+   * 渡す（D102。中を指す絶対パスは相対パスに、外は正規化した絶対パスに）。以降の `readText` /
+   * `findSymbol` / `isRedacted` にはこの結果が渡る。
+   */
+  normalizePath?(rawPath: string): string | undefined;
 }
 
 /**
@@ -62,7 +71,10 @@ function countLines(content: string): number {
  * どちらも無音のオラクルになる（設計書 §4.1 / S1・D8'）。
  */
 export function resolveLocation(loc: Location, deps: ResolveDeps): Resolution {
-  const rel = normalizeWorkspaceRelative(loc.path);
+  const rel =
+    deps.normalizePath === undefined
+      ? normalizeWorkspaceRelative(loc.path)
+      : deps.normalizePath(loc.path);
   // 正規化が失敗したときだけ normalizedPath を載せられない。正準キーが無いので、
   // 呼び出し側はこの経路をレート制限の対象にできない（そもそも何も読んでいない）。
   if (rel === undefined) return { resolvedBy: "none", match: "none", reason: "invalid-path" };

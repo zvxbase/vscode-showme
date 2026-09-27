@@ -54,6 +54,22 @@ export const OUTSIDE_ONLY_NEEDLE = "outside-only-needle-4f21";
 export const ENV_REL = ".env";
 
 /**
+ * `.env` への**ハードリンク**（D91）。名前は秘匿のパターンに当たらず、realpath も何も変えない
+ * （ハードリンクはどちらの名前も「本物」）。止められるのは実体（dev:ino）を見る側だけである。
+ */
+export const HARDLINK_TO_ENV_REL = "docs/env-alias.txt";
+
+/**
+ * 普通のファイル同士のハードリンク（D91 の良性の側）。リンク数が2以上というだけで落とす
+ * 実装が緑にならないように置く。`HARDLINK_PLAIN_REL` は `HARDLINK_PLAIN_ORIGINAL_REL` と同じ実体。
+ */
+export const HARDLINK_PLAIN_ORIGINAL_REL = "docs/plain-original.md";
+export const HARDLINK_PLAIN_REL = "docs/plain-link.md";
+
+/** `HARDLINK_PLAIN_REL` の中にちょうど1回だけ現れる目印。 */
+export const HARDLINK_PLAIN_MARKER = "HARDLINK_PLAIN_TARGET";
+
+/**
  * 制限モードでシンボル解決が言語ごとにどうなるかを測るためのファイル（設計書 §3.4）。
  *
  * `.ts` と `.json` の**両方**が要る。設計レビューは「制限モードで無効になるのは
@@ -174,6 +190,22 @@ export const COLUMN_STAGE_MARKER = "COLUMN_STAGE_TARGET";
 
 /** 人間が先に選んでおくファイル。エージェントが後から舞台に開こうとする。 */
 export const COLUMN_BAIT_REL = "docs/column-bait.md";
+
+/**
+ * ツールが見せた選択（D95）の検査だけに使うファイル。`bait` は人間が先に選ぶファイル（エージェントが
+ * 後から開く）、`stage` はエージェントが舞台を作らせるもの、`human` は人間の手元のファイル。
+ * どれも3行目に `SHOWN_MARKER` がちょうど1回。人間は毎回**違う長さ**で選ぶ（直前に返した範囲と
+ * 重ならないように。`already-returned` が別の理由を覆わない）。
+ */
+export const SHOWN_RELS = {
+  bait: "d95/bait.md",
+  stage: "d95/stage.md",
+  human: "d95/human.md",
+  other: "d95/other.md",
+} as const;
+
+/** `SHOWN_RELS` の各ファイルの3行目にちょうど1回だけ現れる目印。 */
+export const SHOWN_MARKER = "D95_SHOWN_SELECTION_TARGET_WORD";
 
 /** `COLUMN_BAIT_REL` にちょうど1回だけ現れる目印。人間はこの語を選ぶ。 */
 export const COLUMN_BAIT_MARKER = "COLUMN_BAIT_TARGET";
@@ -411,6 +443,19 @@ export function createFixtureWorkspace(label: string): FixtureWorkspace {
   // 共有する ―― 同じ問い合わせが「実ファイルなら当たり、リンク経由なら当たらない」
   // ことを見せるため。
   fs.writeFileSync(path.join(root, ENV_REL), `SECRET=do-not-read\n${CANARY}=1\n`, "utf8");
+  // ハードリンクは実体が要るので `.env` を書いた後に張る。張れない環境では、テスト側が
+  // リンク数を確かめて落とす（黙って飛ばさない）。
+  fs.writeFileSync(
+    path.join(root, HARDLINK_PLAIN_ORIGINAL_REL),
+    `# plain\n\n${HARDLINK_PLAIN_MARKER}\n`,
+    "utf8",
+  );
+  try {
+    fs.linkSync(path.join(root, ENV_REL), path.join(root, HARDLINK_TO_ENV_REL));
+    fs.linkSync(path.join(root, HARDLINK_PLAIN_ORIGINAL_REL), path.join(root, HARDLINK_PLAIN_REL));
+  } catch {
+    // 上の注記のとおり。
+  }
   // 除外リストに当たらない普通のファイル。第一の関門がこのパスを通すことの証拠に使う。
   fs.writeFileSync(
     path.join(root, NOTES_REL),
@@ -453,6 +498,10 @@ export function createFixtureWorkspace(label: string): FixtureWorkspace {
     `# column stage\n\nエージェントがここを見せる: ${COLUMN_STAGE_MARKER}\n`,
     "utf8",
   );
+  fs.mkdirSync(path.join(root, "d95"), { recursive: true });
+  for (const rel of Object.values(SHOWN_RELS)) {
+    fs.writeFileSync(path.join(root, rel), `# d95\n\n${SHOWN_MARKER}\n`, "utf8");
+  }
   fs.writeFileSync(
     path.join(root, COLUMN_BAIT_REL),
     `# column bait\n\n人間がこの行を選ぶ: ${COLUMN_BAIT_MARKER}\n`,

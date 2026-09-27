@@ -24,6 +24,7 @@
  * | 選択の形 | `empty` / `whole-document` | 人間が選び直せば変わる |
  * | 人間の居場所 | `not-focused` / `not-active` | 人間が戻れば変わる |
  * | 時間 | `too-soon-after-tool` | 待てば変わる |
+ * | ツールが見せた選択 | `shown-by-tool` | 人間が選び直せば変わる（待っても変わらない。D95） |
  * | 重複 | `already-returned` | 人間が動かせば変わる |
  *
  * **永続的な理由を一時的な理由で覆い隠さない。** 覆うと、エージェントは
@@ -38,6 +39,7 @@ export const SELECTION_WITHHELD_REASONS = [
   "not-focused",
   "not-active",
   "too-soon-after-tool",
+  "shown-by-tool",
   "already-returned",
 ] as const;
 

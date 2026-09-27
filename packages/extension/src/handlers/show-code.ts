@@ -2,18 +2,20 @@ import {
   type Location,
   type Resolution,
   type ResolutionReason,
-  isRedactedPath,
-  normalizeWorkspaceRelative,
   resolveLocation,
 } from "@zvx/vscode-showme-protocol";
 import type { ShowMeConfig } from "../config.js";
 import { type OwnToolCallClock, sharedOwnToolClock } from "../human-selection.js";
 import type { LineRange } from "../line-range.js";
 import { type RateLimiter, fileRateLimitKey, sharedFileLimiter } from "../rate-limit.js";
-import { readWorkspaceFile } from "../read-workspace-file.js";
+import { readAgentFile } from "../read-workspace-file.js";
 import type { StageLayout } from "../stage-column.js";
 import { ToolError } from "../tool-error.js";
-import { fileRateLimitCanonicalizer } from "../workspace-path-gate.js";
+import {
+  agentPathKey,
+  fileRateLimitCanonicalizer,
+  isExcludedSpelling,
+} from "../workspace-path-gate.js";
 import { type SymbolSurface, prefetchSymbol } from "./symbol-prefetch.js";
 
 export type { LineRange } from "../line-range.js";
@@ -190,12 +192,12 @@ export async function handleShowCode(
    * realpath を当てない・秘匿へのリンクに専用の鍵を与えない、はそちらにある）。
    * 以前はここと `annotate.ts` が同じ3段の閉包を別々に持っていた（不変条件14）。
    */
-  const canonicalize = fileRateLimitCanonicalizer(root, config.redactedPathPatterns);
+  const canonicalize = fileRateLimitCanonicalizer(root, config.redaction);
 
   for (const loc of args.locations) {
     // エージェントに返す normalizedPath は**綴りの正規化まで**。正準パスを
     // 返すと、シンボリックリンクの指す先が返り値から読めてしまう。
-    const normalizedPath = normalizeWorkspaceRelative(loc.path);
+    const normalizedPath = agentPathKey(root, loc.path, config.redaction);
 
     if (!limiter.allow(fileRateLimitKey(loc.path, canonicalize))) {
       // 落とされた試行も画面に出す。攻撃が進行しているときこそ人間に見えている
@@ -212,7 +214,7 @@ export async function handleShowCode(
     const prefetched = await prefetchSymbol(loc, {
       symbols: deps.symbols,
       workspaceRoot: root,
-      redactedPathPatterns: config.redactedPathPatterns,
+      redaction: config.redaction,
     });
     if (prefetched.kind === "unavailable") {
       // **`not-found` はここからは返らない**（設計書 §3.4）。一覧が取れなかった
@@ -234,9 +236,11 @@ export async function handleShowCode(
     }
 
     const resolution = resolveLocation(loc, {
-      isRedacted: (rel) => isRedactedPath(rel, config.redactedPathPatterns),
+      // 綴りの読み方（中の相対パス・外の絶対パス。D102）と、綴りだけで決まる秘匿は関門と同じ関数。
+      normalizePath: (raw) => agentPathKey(root, raw, config.redaction),
+      isRedacted: (key) => isExcludedSpelling(root, key, config.redaction),
       // 読み出しは realpath 後のパスにもう一度除外判定を当てる（設計書 §4.1 ⑤）。
-      readText: (rel) => readWorkspaceFile(root, rel, config.redactedPathPatterns),
+      readText: (rel) => readAgentFile(root, rel, config.redaction),
       findSymbol: () => (prefetched.kind === "ranges" ? prefetched.ranges : undefined),
     });
 

@@ -131,3 +131,42 @@ describe("statusView", () => {
     });
   });
 });
+
+/**
+ * ワークスペースの外を開ける設定がオンの間（D101）。預けている窓（オン・接続中）は警告色にし、
+ * 文字に印（`$(warning)`）を付け、tooltip に1行足す。預けていない窓（オフ）は tooltip の1行だけ
+ * （エージェントは何もできないので色は付けない）。停止中・起動失敗はそちらが優先。
+ */
+describe("statusView と allowOutsideWorkspace（D101）", () => {
+  const LINE = "Files outside the workspace can be opened (showme.allowOutsideWorkspace is on)";
+  it("オンの窓: 印と警告色と tooltip の1行", () => {
+    const view = statusView(model({ outsideWorkspace: true }));
+    expect(view.text).toBe("$(eye) ShowMe: On $(warning)");
+    expect(view.warning).toBe(true);
+    expect(view.tooltip).toContain(LINE);
+  });
+  it("接続中も同じ", () => {
+    const view = statusView(model({ outsideWorkspace: true, connection: { pid: undefined } }));
+    expect(view.text).toBe("$(plug) ShowMe: Connected $(warning)");
+    expect(view.warning).toBe(true);
+    expect(view.tooltip).toContain(LINE);
+  });
+  it("オフの窓は tooltip の1行だけ", () => {
+    const view = statusView(model({ outsideWorkspace: true, role: "idle" }));
+    expect(view.text).toBe("$(shield) ShowMe: Off");
+    expect(view.warning).toBe(false);
+    expect(view.tooltip).toContain(LINE);
+  });
+  it("設定がオフ（既定）なら今と同じ", () => {
+    const view = statusView(model({ outsideWorkspace: false }));
+    expect(view.text).toBe("$(eye) ShowMe: On");
+    expect(view.warning).toBe(false);
+    expect(view.tooltip).not.toContain(LINE);
+    expect(statusView(model()).warning).toBe(false);
+  });
+  it("停止中は停止中のまま（印を付けない）", () => {
+    const view = statusView(model({ outsideWorkspace: true, enabled: false }));
+    expect(view.text).not.toContain("$(warning)");
+    expect(view.warning).toBe(false);
+  });
+});

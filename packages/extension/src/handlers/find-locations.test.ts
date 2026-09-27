@@ -1,5 +1,8 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { FoundLocation, Location } from "@zvx/vscode-showme-protocol";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type LanguageSurface,
   handleFindDefinition,
@@ -25,8 +28,18 @@ function fakeLanguage(overrides: Partial<LanguageSurface> = {}): LanguageSurface
   };
 }
 
-function deps(language: LanguageSurface, extra: readonly string[] = []) {
-  return { language, extraRedactedPatterns: () => extra, log };
+function deps(
+  language: LanguageSurface,
+  extra: readonly string[] = [],
+  workspaceRoot: string | undefined = undefined,
+  blockLinksToRedacted = true,
+) {
+  return {
+    language,
+    workspaceRoot,
+    redaction: () => ({ patterns: extra, blockLinksToRedacted }),
+    log,
+  };
 }
 
 describe("find_definition", () => {
@@ -119,6 +132,49 @@ describe("find_references", () => {
       deps(fakeLanguage({ references: async () => found }), ["private/**"]),
     );
     expect(result.locations.map((l) => l.path)).toEqual(["src/c.ts"]);
+  });
+
+  describe("秘匿ファイルへのハードリンク（D91）", () => {
+    let base: string;
+    let root: string;
+    beforeEach(() => {
+      base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-find-links-")));
+      root = path.join(base, "workspace");
+      fs.mkdirSync(path.join(root, "src"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".env"), "SECRET=1\n");
+      fs.writeFileSync(path.join(root, "src", "c.ts"), "c\n");
+      fs.linkSync(path.join(root, ".env"), path.join(root, "src", "env-alias.ts"));
+      fs.linkSync(path.join(root, "src", "c.ts"), path.join(root, "src", "copy.ts"));
+    });
+    afterEach(() => {
+      fs.rmSync(base, { recursive: true, force: true });
+    });
+
+    const found: FoundLocation[] = [
+      { path: "src/c.ts", line: 1, column: 0 },
+      { path: "src/env-alias.ts", line: 1, column: 0 },
+      { path: "src/copy.ts", line: 1, column: 0 },
+    ];
+
+    it("名前が秘匿でなくても、実体が .env の位置は返らない", async () => {
+      const result = await handleFindReferences(
+        { location: LOCATION },
+        deps(fakeLanguage({ references: async () => found }), [], root),
+      );
+      expect(result.locations.map((l) => l.path)).toEqual(["src/c.ts", "src/copy.ts"]);
+    });
+
+    it("設定を切れば名前だけで判定する", async () => {
+      const result = await handleFindReferences(
+        { location: LOCATION },
+        deps(fakeLanguage({ references: async () => found }), [], root, false),
+      );
+      expect(result.locations.map((l) => l.path)).toEqual([
+        "src/c.ts",
+        "src/env-alias.ts",
+        "src/copy.ts",
+      ]);
+    });
   });
 
   // **VS Code の `vscode.executeReferenceProvider` は宣言をいつも含めて返す。** 3つ目の引数

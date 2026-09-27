@@ -3,7 +3,7 @@
   "private": true,
   "displayName": "ShowMe",
   "description": "Give AI agents hands in VS Code: show, annotate and diagram code alongside a human reader.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "preview": true,
   "license": "MIT",
   "publisher": "zvxbase",
@@ -40,7 +40,10 @@
         "showme.layout.enabled",
         "showme.layout.closeHumanTabs",
         "showme.layout.closeDirtyTabs",
+        "showme.layout.protectViewingTab",
         "showme.redactedPathPatterns",
+        "showme.blockLinksToRedactedFiles",
+        "showme.allowOutsideWorkspace",
         "showme.maxSelectionChars",
         "showme.injectTerminalEnv",
         "showme.listAllWorkspaces"
@@ -185,8 +188,13 @@
         },
         "showme.stage.editorGroup": {
           "type": "string",
-          "enum": ["dedicated", "active"],
-          "default": "dedicated",
+          "enum": ["shared", "dedicated", "active"],
+          "enumDescriptions": [
+            "%showme.config.stage.editorGroup.shared%",
+            "%showme.config.stage.editorGroup.dedicated%",
+            "%showme.config.stage.editorGroup.active%"
+          ],
+          "default": "shared",
           "description": "%showme.config.stage.editorGroup%",
           "scope": "machine"
         },
@@ -251,6 +259,12 @@
           "scope": "machine",
           "description": "%showme.config.layout.closeDirtyTabs%"
         },
+        "showme.layout.protectViewingTab": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "%showme.config.layout.protectViewingTab%"
+        },
         "showme.redactedPathPatterns": {
           "type": "array",
           "items": {
@@ -258,6 +272,18 @@
           },
           "default": [],
           "description": "%showme.config.redactedPathPatterns%",
+          "scope": "machine"
+        },
+        "showme.blockLinksToRedactedFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "%showme.config.blockLinksToRedactedFiles%",
+          "scope": "machine"
+        },
+        "showme.allowOutsideWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "%showme.config.allowOutsideWorkspace%",
           "scope": "machine"
         },
         "showme.maxSelectionChars": {

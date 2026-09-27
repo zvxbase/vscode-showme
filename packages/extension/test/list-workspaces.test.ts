@@ -26,11 +26,11 @@ function config(over: Partial<ShowMeConfig> = {}): ShowMeConfig {
     editorGroup: "dedicated",
     avoidToolColumns: false,
     html: { maxPanels: DEFAULT_PANEL_LIMIT },
-    redactedPathPatterns: [],
+    redaction: { patterns: [], blockLinksToRedacted: true },
     maxSelectionChars: 4000,
     injectTerminalEnv: true,
     listAllWorkspaces: false,
-    layout: { closeHumanTabs: false, closeDirtyTabs: false },
+    layout: { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false },
     ...over,
   };
 }
@@ -64,8 +64,46 @@ describe("handleListWorkspaces", () => {
     });
   }
 
+  /** `showme.stage.editorGroup`（D93。3値）もそのまま写す。 */
+  for (const editorGroup of ["shared", "dedicated", "active"] as const) {
+    it(`showme.stage.editorGroup = ${editorGroup} → editorGroup = ${editorGroup}`, () => {
+      const result = handleListWorkspaces(config({ editorGroup }));
+      const parsed = listWorkspacesResultSchema.safeParse(result);
+      expect(parsed.success, JSON.stringify(result)).toBe(true);
+      if (parsed.success) expect(parsed.data.editorGroup).toBe(editorGroup);
+    });
+  }
+
+  /**
+   * `showme.layout.*` の3つの許可もそのまま写す（D56 / D92）。`arrange_editors` が判断に使うのと
+   * 同じ `config.layout` から写すので、申告と実際の判断がずれない。1つずつ立てて、
+   * 他の2つに漏れないことも見る（写し間違いで別の欄に載るのを捕まえる）。
+   */
+  for (const key of ["closeHumanTabs", "closeDirtyTabs", "protectViewingTab"] as const) {
+    it(`showme.layout.${key} = true → permissions.${key} = true（他は false のまま）`, () => {
+      const layout = { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false };
+      const result = handleListWorkspaces(config({ layout: { ...layout, [key]: true } }));
+      const parsed = listWorkspacesResultSchema.safeParse(result);
+      expect(parsed.success, JSON.stringify(result)).toBe(true);
+      if (parsed.success) expect(parsed.data.permissions).toEqual({ ...layout, [key]: true });
+    });
+  }
+
   it("panels は max だけを持つ（開いている枚数などの観測は載せない ―― 観測は get_editor_state の仕事）", () => {
     const result = handleListWorkspaces(config());
     expect(Object.keys(result.panels as object)).toEqual(["max"]);
+  });
+});
+
+describe("outsideWorkspace（D101）", () => {
+  it("関門が見るのと同じ config.redaction.allowOutsideWorkspace を写す（省略は false）", () => {
+    expect(handleListWorkspaces(config()).outsideWorkspace).toBe(false);
+    const on = handleListWorkspaces(
+      config({
+        redaction: { patterns: [], blockLinksToRedacted: true, allowOutsideWorkspace: true },
+      }),
+    );
+    expect(on.outsideWorkspace).toBe(true);
+    expect(listWorkspacesResultSchema.safeParse(on).success).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
   DEFAULT_REDACTED_PATTERNS,
@@ -9,7 +10,7 @@ import {
   type SelectionWithheldReason,
   getEditorStateResultSchema,
 } from "@zvx/vscode-showme-protocol";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ShowMeConfig } from "../src/config.js";
 import type { EditorGroupState, ObservedGroup, ObservedTab } from "../src/editor-observation.js";
 import {
@@ -24,8 +25,10 @@ import {
   MIN_MS_SINCE_OWN_TOOL_CALL,
   OwnToolCallClock,
   SelectionMemory,
+  selectionKey,
 } from "../src/human-selection.js";
 import { RateLimiter } from "../src/rate-limit.js";
+import { ToolCallWindow, ToolShownSelection } from "../src/tool-shown-selection.js";
 
 /**
  * `handleGetEditorState` の単体テスト。
@@ -46,7 +49,7 @@ function config(overrides: Partial<ShowMeConfig> = {}): ShowMeConfig {
     editorGroup: "dedicated",
     html: { maxPanels: 2 },
     disabledTools: [],
-    redactedPathPatterns: [...DEFAULT_REDACTED_PATTERNS],
+    redaction: { patterns: [...DEFAULT_REDACTED_PATTERNS], blockLinksToRedacted: true },
     maxSelectionChars: 4000,
     injectTerminalEnv: true,
     listAllWorkspaces: false,
@@ -145,9 +148,14 @@ const noopStatusBar: EditorStateStatus = { flashEditorStateRateLimited: () => {}
 function run(fake: Fake, overrides: Partial<GetEditorStateDeps> = {}): Record<string, unknown> {
   return handleGetEditorState({
     config,
+    // 既定はルートの無い窓（名前だけで判定する）。実体を見る検査はルートを渡す。
+    workspaceRoot: undefined,
     surface: fake.surface,
     memory: new SelectionMemory(),
     clock: new OwnToolCallClock(),
+    // ツールが見せた選択の記憶も検査ごとに新しくする（共有の記憶を持ち越さない。D95）。
+    toolShown: new ToolShownSelection(),
+    toolWindow: new ToolCallWindow(),
     // **予算も検査ごとに新しくする。** 共有の器を使うと、このファイルの検査を
     // 何本か走らせただけで上限に当たり、見たかったものが `rate-limited` に
     // 覆われる（実際に12件がそう落ちた）。共有の器を使うことそのものは
@@ -189,7 +197,7 @@ describe("handleGetEditorState", () => {
   });
 });
 
-describe("選択テキストを返さない8つの理由", () => {
+describe("選択テキストを返さない9つの理由", () => {
   /** 理由ごとに「その条件だけを外した」呼び出しを作る。 */
   const CASES: Record<
     SelectionWithheldReason,
@@ -220,6 +228,12 @@ describe("選択テキストを返さない8つの理由", () => {
       fake: fakeSurface({}),
       deps: { clock: justTouched(), now: () => MIN_MS_SINCE_OWN_TOOL_CALL - 1 },
     }),
+    "shown-by-tool": () => {
+      // ツールが前面に出した編集器の選択と同じ鍵を覚えている（D95）。
+      const toolShown = new ToolShownSelection();
+      toolShown.remember("src/app.ts", selectionKey("src/app.ts", activeEditor().selection));
+      return { fake: fakeSurface({}), deps: { toolShown } };
+    },
     "already-returned": () => {
       const memory = new SelectionMemory();
       const fake = fakeSurface({});
@@ -248,8 +262,62 @@ describe("選択テキストを返さない8つの理由", () => {
     });
   }
 
-  it("8つすべてに検査がある（語彙が増えたら落ちる）", () => {
+  it("9つすべてに検査がある（語彙が増えたら落ちる）", () => {
     expect(Object.keys(CASES).sort()).toEqual([...SELECTION_WITHHELD_REASONS].sort());
+  });
+});
+
+describe("ツールが見せた選択（D95）", () => {
+  it("人間が選び直せば（鍵が変われば）返る", () => {
+    const toolShown = new ToolShownSelection();
+    toolShown.remember(
+      selectionKey("src/app.ts", {
+        startLine: 12,
+        startCharacter: 4,
+        endLine: 12,
+        endCharacter: 20,
+      }),
+    );
+    const result = run(fakeSurface({}), { toolShown });
+    expect(result.selectedText).toBe(SELECTED);
+  });
+
+  it("別のパスの同じ範囲は当たらない", () => {
+    const toolShown = new ToolShownSelection();
+    toolShown.remember("README.md", selectionKey("README.md", activeEditor().selection));
+    expect(run(fakeSurface({}), { toolShown }).selectedText).toBe(SELECTED);
+  });
+
+  it("返さないと決めたら、テキストを読みにも行かない", () => {
+    const toolShown = new ToolShownSelection();
+    toolShown.remember("src/app.ts", selectionKey("src/app.ts", activeEditor().selection));
+    const fake = fakeSurface({});
+    const result = run(fake, { toolShown });
+    expect(result.selectionWithheld).toBe("shown-by-tool");
+    expect(fake.reads()).toBe(0);
+  });
+});
+
+describe("窓の間は返さない（D95）", () => {
+  it("前面を変えうるツールの呼び出しの最中は too-soon-after-tool（show_code の時計に印が無くても）", () => {
+    const toolWindow = new ToolCallWindow();
+    toolWindow.begin(0);
+    const result = run(fakeSurface({}), { toolWindow, now: () => 60_000 });
+    expect(result.selectionWithheld).toBe("too-soon-after-tool");
+  });
+
+  it("終わってから1秒未満は too-soon-after-tool、経てば返る", () => {
+    const toolWindow = new ToolCallWindow();
+    toolWindow.begin(0);
+    toolWindow.end(100);
+    expect(
+      run(fakeSurface({}), { toolWindow, now: () => 100 + MIN_MS_SINCE_OWN_TOOL_CALL - 1 })
+        .selectionWithheld,
+    ).toBe("too-soon-after-tool");
+    expect(
+      run(fakeSurface({}), { toolWindow, now: () => 100 + MIN_MS_SINCE_OWN_TOOL_CALL })
+        .selectedText,
+    ).toBe(SELECTED);
   });
 });
 
@@ -278,9 +346,79 @@ describe("除外パス", () => {
 
   it("設定で足したパターンも効く（加算専用）", () => {
     const result = run(fakeSurface({ active: activeEditor({ relPath: "notes/private.md" }) }), {
-      config: () => config({ redactedPathPatterns: [...DEFAULT_REDACTED_PATTERNS, "private.md"] }),
+      config: () =>
+        config({
+          redaction: {
+            patterns: [...DEFAULT_REDACTED_PATTERNS, "private.md"],
+            blockLinksToRedacted: true,
+          },
+        }),
     });
     expect(result.selectionWithheld).toBe("redacted");
+  });
+});
+
+describe("秘匿ファイルへのハードリンク（D91）", () => {
+  let base: string;
+  let root: string;
+  beforeEach(() => {
+    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-state-links-")));
+    root = path.join(base, "workspace");
+    fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".env"), "SECRET=1\n");
+    fs.writeFileSync(path.join(root, "docs", "notes.md"), "notes\n");
+    fs.linkSync(path.join(root, ".env"), path.join(root, "docs", "env-alias.txt"));
+    fs.linkSync(path.join(root, "docs", "notes.md"), path.join(root, "docs", "copy.md"));
+  });
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  const aliasTab = () =>
+    groupsFromPaths(["docs/env-alias.txt"]).map((g) => ({
+      ...g,
+      tabs: g.tabs.map((t) => ({ ...t, visibleLines: { start: 1, end: 3 } })),
+    }));
+
+  it("名前が秘匿でなくても、実体が .env なら選択も位置も見えている行も返さない", () => {
+    const fake = fakeSurface({
+      active: activeEditor({ relPath: "docs/env-alias.txt" }),
+      groups: aliasTab(),
+    });
+    const result = run(fake, { workspaceRoot: root });
+    expect(result.selectionWithheld).toBe("redacted");
+    expect(result).not.toHaveProperty("selectedText");
+    expect(result).not.toHaveProperty("selection");
+    expect(result).not.toHaveProperty("cursor");
+    expect(result).not.toHaveProperty("visibleLines");
+    expect(fake.reads()).toBe(0);
+    // 開いていることまでは伝える（秘匿の名前と同じ規則）。
+    expect(result.activePath).toBe("docs/env-alias.txt");
+    const tab = (result.groups as EditorGroupState[])[0]?.tabs[0];
+    expect(tab?.visibleLines).toBeUndefined();
+  });
+
+  it("設定を切れば名前だけで判定する（今までどおり返る）", () => {
+    const fake = fakeSurface({
+      active: activeEditor({ relPath: "docs/env-alias.txt" }),
+      groups: aliasTab(),
+    });
+    const result = run(fake, {
+      workspaceRoot: root,
+      config: () =>
+        config({
+          redaction: { patterns: [...DEFAULT_REDACTED_PATTERNS], blockLinksToRedacted: false },
+        }),
+    });
+    expect(result.selectedText).toBe(SELECTED);
+    const tab = (result.groups as EditorGroupState[])[0]?.tabs[0];
+    expect(tab?.visibleLines).toEqual({ start: 1, end: 3 });
+  });
+
+  it("普通のファイル同士のハードリンクは既定でも返る", () => {
+    const fake = fakeSurface({ active: activeEditor({ relPath: "docs/copy.md" }) });
+    const result = run(fake, { workspaceRoot: root });
+    expect(result.selectedText).toBe(SELECTED);
   });
 });
 
@@ -523,7 +661,7 @@ describe("レイアウトを返す（設計 D37/D37'/D38）", () => {
     expect(groupsOf(withoutExtra)[0].tabs[0].visibleLines).toEqual({ start: 2, end: 8 });
 
     const withExtra = run(surface, {
-      config: () => config({ redactedPathPatterns: ["secrets/*"] }),
+      config: () => config({ redaction: { patterns: ["secrets/*"], blockLinksToRedacted: true } }),
     });
     expect(groupsOf(withExtra)[0].tabs[0].visibleLines).toBeUndefined();
     // 名前は伏せない（D37）。
@@ -732,5 +870,53 @@ describe("annotations（D72）", () => {
   it("予算で断られたときは annotations も返らない（投げる）", () => {
     const limiter = new RateLimiter({ limit: 0, windowMs: 60_000 });
     expect(() => run(fakeSurface({ annotations: [observed()] }), { limiter })).toThrow();
+  });
+});
+
+/**
+ * 外のファイルのタブ（D102）。面は、設定がオンで関門を通る外のタブだけを絶対パスで名指す
+ * （`observedRelPath`）。ハンドラは同じ関門（`isRedactedEntity`）で秘匿を決めるので、通る外の
+ * ファイルは中と同じ規則（`judgeSelection`）で選択を返し、通らないもの・設定がオフのものは
+ * 秘匿として扱う（名前は出ても中身は返さない）。
+ */
+describe("外のファイルの選択（D102）", () => {
+  let base: string;
+  beforeEach(() => {
+    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-ges-out-")));
+    fs.mkdirSync(path.join(base, "ws"));
+    fs.writeFileSync(path.join(base, "b.ts"), "const secret = compute();\n");
+  });
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+  const redaction = (allowOutsideWorkspace: boolean) => ({
+    patterns: [...DEFAULT_REDACTED_PATTERNS],
+    blockLinksToRedacted: true,
+    allowOutsideWorkspace,
+  });
+
+  it("設定がオンで関門を通る外のファイルは、中と同じ規則で選択を返す", () => {
+    const abs = path.join(base, "b.ts");
+    const fake = fakeSurface({ active: activeEditor({ relPath: abs }), openPaths: [abs] });
+    const result = run(fake, {
+      config: () => config({ redaction: redaction(true) }),
+      workspaceRoot: path.join(base, "ws"),
+    });
+    expect(result.activePath).toBe(abs);
+    expect(result.selectedText).toBe(SELECTED);
+    expect(result.openPaths).toEqual([abs]);
+  });
+
+  it("設定がオフなら、外の鍵が来ても秘匿として扱う（中身を返さない）", () => {
+    const abs = path.join(base, "b.ts");
+    const fake = fakeSurface({ active: activeEditor({ relPath: abs }) });
+    const result = run(fake, {
+      config: () => config({ redaction: redaction(false) }),
+      workspaceRoot: path.join(base, "ws"),
+    });
+    expect(result.selectedText).toBeUndefined();
+    expect(result.cursor).toBeUndefined();
+    expect(result.selectionWithheld).toBe("redacted");
+    expect(fake.reads()).toBe(0);
   });
 });

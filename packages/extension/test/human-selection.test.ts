@@ -47,6 +47,7 @@ function shareable(): SelectionObservation {
     windowFocused: true,
     isActiveEditor: true,
     msSinceOwnToolCall: Number.POSITIVE_INFINITY,
+    shownByTool: false,
     alreadyReturned: false,
   };
 }
@@ -61,6 +62,7 @@ function allWithheld(): SelectionObservation {
     windowFocused: false,
     isActiveEditor: false,
     msSinceOwnToolCall: 0,
+    shownByTool: true,
     alreadyReturned: true,
   };
 }
@@ -87,6 +89,9 @@ const SATISFY: Record<SelectionWithheldReason, (o: SelectionObservation) => void
   },
   "too-soon-after-tool": (o) => {
     o.msSinceOwnToolCall = Number.POSITIVE_INFINITY;
+  },
+  "shown-by-tool": (o) => {
+    o.shownByTool = false;
   },
   "already-returned": (o) => {
     o.alreadyReturned = false;
@@ -140,6 +145,19 @@ describe("judgeSelection", () => {
     expect(judgeSelection(o)).toEqual({ share: false, reason: "too-soon-after-tool" });
   });
 
+  it("ツールが前面に出した編集器の選択は返さない（D95）", () => {
+    const o = shareable();
+    o.shownByTool = true;
+    expect(judgeSelection(o)).toEqual({ share: false, reason: "shown-by-tool" });
+  });
+
+  it("待ちが明けても、ツールが見せた選択は返さない（待っても変わらない理由が残る。D95）", () => {
+    const o = shareable();
+    o.shownByTool = true;
+    o.msSinceOwnToolCall = MIN_MS_SINCE_OWN_TOOL_CALL * 10;
+    expect(judgeSelection(o)).toEqual({ share: false, reason: "shown-by-tool" });
+  });
+
   it("同じ範囲を二度返さない", () => {
     const o = shareable();
     o.alreadyReturned = true;
@@ -185,7 +203,7 @@ describe("拒否の順序", () => {
     expect(SELECTION_CHECK_ORDER).toEqual([...SELECTION_WITHHELD_REASONS]);
   });
 
-  it("8つの理由すべてが実際に返りうる（語彙に死んだ値が無い）", () => {
+  it("9つの理由すべてが実際に返りうる（語彙に死んだ値が無い）", () => {
     const seen = new Set<SelectionWithheldReason>();
     const o = allWithheld();
     for (const _ of SELECTION_CHECK_ORDER) {
@@ -214,6 +232,7 @@ describe("判定は変更の出所（VS Code が名乗る種別）に依存し�
       "msSinceOwnToolCall",
       "outsideWorkspace",
       "redacted",
+      "shownByTool",
       "windowFocused",
     ]);
   });

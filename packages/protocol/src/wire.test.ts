@@ -181,13 +181,14 @@ describe("応答の結果スキーマ", () => {
     const ok = {
       isTrusted: true,
       capabilities: { symbolResolution: true, terminalEnvInjection: false },
-      permissions: { closeHumanTabs: false, closeDirtyTabs: false },
+      permissions: { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false },
       features: { stage: true, html: true, layout: true },
       disabledTools: [],
       editorGroup: "dedicated",
       avoidToolColumns: false,
       panels: { max: 2 },
       otherWindowsListed: false,
+      outsideWorkspace: false,
     };
     expect(listWorkspacesResultSchema.safeParse(ok).success).toBe(true);
     expect(
@@ -204,10 +205,11 @@ describe("応答の結果スキーマ", () => {
       isTrusted: true,
       capabilities: { symbolResolution: true, terminalEnvInjection: true },
       otherWindowsListed: false,
+      outsideWorkspace: false,
     };
     const full = {
       ...base,
-      permissions: { closeHumanTabs: false, closeDirtyTabs: false },
+      permissions: { closeHumanTabs: false, closeDirtyTabs: false, protectViewingTab: false },
       features: { stage: true, html: true, layout: false },
       disabledTools: ["show_view"],
       editorGroup: "dedicated",
@@ -220,7 +222,11 @@ describe("応答の結果スキーマ", () => {
       expect(r.success, JSON.stringify(r)).toBe(true);
       if (!r.success) return;
       // 名前ではなく値を主張する。通っただけでは「落とされて空になった」と区別できない。
-      expect(r.data.permissions).toEqual({ closeHumanTabs: false, closeDirtyTabs: false });
+      expect(r.data.permissions).toEqual({
+        closeHumanTabs: false,
+        closeDirtyTabs: false,
+        protectViewingTab: false,
+      });
       expect(r.data.features).toEqual({ stage: true, html: true, layout: false });
       expect(r.data.disabledTools).toEqual(["show_view"]);
       expect(r.data.editorGroup).toBe("dedicated");
@@ -305,11 +311,39 @@ describe("応答の結果スキーマ", () => {
     it("permissions は両方の真理値を通す（false しか通らない検査では緩みを見逃す）", () => {
       const r = listWorkspacesResultSchema.safeParse({
         ...full,
-        permissions: { closeHumanTabs: true, closeDirtyTabs: true },
+        permissions: { closeHumanTabs: true, closeDirtyTabs: true, protectViewingTab: true },
       });
       expect(r.success).toBe(true);
       if (!r.success) return;
-      expect(r.data.permissions).toEqual({ closeHumanTabs: true, closeDirtyTabs: true });
+      expect(r.data.permissions).toEqual({
+        closeHumanTabs: true,
+        closeDirtyTabs: true,
+        protectViewingTab: true,
+      });
+    });
+
+    /**
+     * `protectViewingTab` は D92。**必須**（他の2欄と同じ理由）。
+     * 未知の鍵の拒否は `.strict()` から来るので、既存の「未知の鍵を拒否する」検査と
+     * 別に、この鍵自体の要否を主張する。
+     */
+    it("permissions は protectViewingTab も必須で、未知キーも拒否する（D92）", () => {
+      const { protectViewingTab: _v, ...noProtect } = full.permissions;
+      expect(
+        listWorkspacesResultSchema.safeParse({ ...full, permissions: noProtect }).success,
+      ).toBe(false);
+      expect(
+        listWorkspacesResultSchema.safeParse({
+          ...full,
+          permissions: { ...full.permissions, extra: true },
+        }).success,
+      ).toBe(false);
+      const r = listWorkspacesResultSchema.safeParse({
+        ...full,
+        permissions: { ...full.permissions, protectViewingTab: true },
+      });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.permissions.protectViewingTab).toBe(true);
     });
 
     it("4欄は必須（無ければ落ちる。古い拡張と新しいブリッジの組み合わせを黙って通さない）", () => {
@@ -365,7 +399,10 @@ describe("応答の結果スキーマ", () => {
       ).toBe(false);
     });
 
-    it("editorGroup は dedicated / active だけ", () => {
+    it("editorGroup は shared / dedicated / active だけ（D93。shared が既定になる値）", () => {
+      const shared = listWorkspacesResultSchema.safeParse({ ...full, editorGroup: "shared" });
+      expect(shared.success).toBe(true);
+      if (shared.success) expect(shared.data.editorGroup).toBe("shared");
       const active = listWorkspacesResultSchema.safeParse({ ...full, editorGroup: "active" });
       expect(active.success).toBe(true);
       if (active.success) expect(active.data.editorGroup).toBe("active");

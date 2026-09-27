@@ -65,6 +65,7 @@ export function handleListWorkspaces(config: ShowMeConfig): Record<string, unkno
     permissions: {
       closeHumanTabs: config.layout.closeHumanTabs,
       closeDirtyTabs: config.layout.closeDirtyTabs,
+      protectViewingTab: config.layout.protectViewingTab,
     },
     // 3機能の `enabled`（増分6 D74）。`disabledTools` は**ここから導出**する（D75）。
     // 関門（`checkToolGate`）が同じ `FEATURE_OF_TOOL` で可否を決めるので、
@@ -84,5 +85,8 @@ export function handleListWorkspaces(config: ShowMeConfig): Record<string, unkno
     // 返すと「他の窓も返した」という嘘になる。この鍵はこの応答の中身を
     // 述べるものなので、常に false を返す。
     otherWindowsListed: false,
+    // ワークスペースの外を開けるか（D101）。関門が見るのと同じ `config.redaction` の値を写すだけ
+    // （申告と実際の判断がずれない。不変条件14）。
+    outsideWorkspace: config.redaction.allowOutsideWorkspace === true,
   };
 }

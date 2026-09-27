@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { readConfig } from "./config.js";
 import { revealForHuman } from "./human-reveal.js";
 import { lineToCarry } from "./real-file-line.js";
-import { relOfStageUri, stageUriFor } from "./stage-uri-vscode.js";
+import { stageKeyOfUri, stageUriFor } from "./stage-uri-vscode.js";
 import { acceptWorkspacePath } from "./workspace-path-gate.js";
 
 /**
@@ -29,7 +29,8 @@ import { acceptWorkspacePath } from "./workspace-path-gate.js";
 export async function openRealFile(arg: unknown): Promise<void> {
   const source = arg instanceof vscode.Uri ? arg : vscode.window.activeTextEditor?.document.uri;
   if (source === undefined) return;
-  const rel = relOfStageUri(source);
+  // 中は相対パス、外（D102）は正規化した絶対パスの鍵。
+  const rel = stageKeyOfUri(source);
   if (rel === undefined) return;
   const root = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (root === undefined) return;
@@ -37,7 +38,7 @@ export async function openRealFile(arg: unknown): Promise<void> {
   // 映しの読み出しと同じ1つの関門（`acceptWorkspacePath`。秘匿・外への脱出・不在）を通す。
   // 落ちたら理由を問わず何もしない。開くのは綴りの rel のまま（映しと同じ綴り。canonical に
   // 直さない ―― 人間が映しで見ていたのと同じ URI の file: を開く）。
-  if (!acceptWorkspacePath(root.fsPath, rel, readConfig().redactedPathPatterns).ok) return;
+  if (!acceptWorkspacePath(root.fsPath, rel, readConfig().redaction).ok) return;
 
   const key = source.toString();
   const active = vscode.window.activeTextEditor;

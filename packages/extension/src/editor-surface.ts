@@ -21,10 +21,11 @@ import type {
 } from "./handlers/get-editor-state.js";
 import type { EditorSurface, LineRange, StagePlacement } from "./handlers/show-code.js";
 import type { SymbolLookup, SymbolSurface } from "./handlers/symbol-prefetch.js";
+import type { SelectionRange } from "./human-selection.js";
 import { toHighlightRange, toRange } from "./line-range-vscode.js";
 import type { OpenedByAgent } from "./opened-by-agent.js";
 import { slotOfViewType } from "./own-view-type.js";
-import { isAgentStageUri, relOfStageUri, stageUriFor } from "./stage-uri-vscode.js";
+import { isAgentStageUri, stageKeyOfUri, stageUriFor } from "./stage-uri-vscode.js";
 import { type StageOpenTarget, type StageScheme, isStageScheme } from "./stage-uri.js";
 import type { Stage, StageColumnSettings } from "./stage.js";
 import {
@@ -32,7 +33,8 @@ import {
   probeDocumentSymbols,
   symbolUnavailableReason,
 } from "./symbol-lookup.js";
-import { canonicalWorkspaceName } from "./workspace-path-gate.js";
+import { type FrontEditor, frontIdentity } from "./tool-shown-selection.js";
+import { type RedactionPolicy, agentPathKey, observedPathName } from "./workspace-path-gate.js";
 
 /**
  * `handleShowCode` に渡す、vscode に触る薄い層。
@@ -71,7 +73,13 @@ import { canonicalWorkspaceName } from "./workspace-path-gate.js";
  * （`move-tab`）。`get_editor_state` が返す `path` と `move-tab` が突き合わせる `path` が
  * 別の関数から出ると、エージェントが読んだ名前で指せないタブができる（不変条件14）。
  */
-export function observedRelPath(root: vscode.Uri | undefined, uri: vscode.Uri): string | undefined {
+export function observedRelPath(
+  root: vscode.Uri | undefined,
+  uri: vscode.Uri,
+  // 秘匿の方針（`readConfig().redaction`）。外のタブ（D102）を名指すかは `allowOutsideWorkspace` と
+  // 関門が決める。**省略は設定がオフと同じ**（外を名指さない。閉じる側）。
+  policy: RedactionPolicy = OUTSIDE_OFF,
+): string | undefined {
   // **綴りを読む枝は2つ、正準化する尾は1つ**（D83）。映し（`showme-ro:` / `showme-rw:`）は
   // `relOfStageUri`（`stageUriFor` の映し側の唯一の逆。別綴りは拒む）で rel を取り、`file:` は
   // `relativizeToRoot` で取る。どちらも下の `canonicalWorkspaceName` を通す ―― 映しの rel を
@@ -80,13 +88,22 @@ export function observedRelPath(root: vscode.Uri | undefined, uri: vscode.Uri): 
   //
   // **照合はこの関数の出力だけで行うこと。** 映しの URI の path から rel を剥がして直接
   // 比べると、綴り・大文字小文字・リンクの差で `get_editor_state` の `path` と食い違う。
-  const spelled = isStageScheme(uri.scheme) ? relOfStageUri(uri) : relativizeToRoot(root, uri);
+  // 外（D102）: 映しは `stageKeyOfUri` が外の鍵（絶対パス）も返す。`file:` のワークスペースの外の
+  // タブは、エージェントの綴りと同じ読み方（`agentPathKey`。設定がオフなら作らない）で鍵にする。
+  const spelled = isStageScheme(uri.scheme)
+    ? stageKeyOfUri(uri)
+    : (relativizeToRoot(root, uri) ??
+      (uri.scheme === "file" ? agentPathKey(root?.fsPath, uri.fsPath, policy) : undefined));
   if (spelled === undefined) return undefined;
-  // **除外判定はここでしない。** 除外かどうかは下流が決める（そこには設定の
+  // **中の除外判定はここでしない。** 除外かどうかは下流が決める（そこには設定の
   // パターンがあり、`activePath` は除外でも返すという規則もある。設計書 §3.1）。
-  // ここがするのは「実体の名前に直す」ことだけである。
-  return canonicalWorkspaceName(root?.fsPath, spelled);
+  // ここがするのは「実体の名前に直す」ことだけである。外は関門を通るものだけを名指す
+  // （`observedPathName`。判断は関門の1つ）。
+  return observedPathName(root?.fsPath, spelled, policy);
 }
+
+/** `observedRelPath` の方針を省いたとき（外を名指さない）。 */
+const OUTSIDE_OFF: RedactionPolicy = Object.freeze({ patterns: [], blockLinksToRedacted: true });
 
 /**
  * `target` は `show_code` 1回の開き方（`stageOpenTarget` の結果: スキームと記録するか）。
@@ -149,7 +166,8 @@ export function createSymbolSurface(root: vscode.Uri | undefined): SymbolSurface
   return {
     async lookup(relPath: string, name: string): Promise<SymbolLookup> {
       if (root === undefined) return { kind: "unavailable", reason: "no-provider" };
-      const uri = vscode.Uri.joinPath(root, relPath);
+      // 外（D102）は関門が確かめた実体の絶対パスが来る。ルートに繋がない。
+      const uri = stageUriFor(root, relPath, "file");
 
       let languageId: string | undefined;
       try {
@@ -313,7 +331,7 @@ export function isOwnTab(
     // だけで、スキームは人間の移動でもプリセットの合流でも残る ―― だから記録も枚数も見ない。
     // **設定（`agentTabs`）も見ない**（設計 B2）: 途中で切り替えても、開いている映しは own のまま。
     // 人間が同じファイルを `file:` で開いたタブは別の URI なので、下の D53 の枝に落ちて own に
-    // ならない（同じファイルの2枚の衝突は起きない）。床（見ている・未保存）は `arrange-policy.ts`
+    // ならない（同じファイルの2枚の衝突は起きない）。床（未保存。protectViewingTab がオンなら見ているものも）は `arrange-policy.ts`
     // が式を変えずに当てる。
     //
     // **own になるのは正準の綴りの映しだけ**（`isAgentStageUri`。タブの印も同じ述語を読む ―― D89）。`stageUriFor` は
@@ -362,6 +380,67 @@ export function countTextTabs(groups: readonly vscode.TabGroup[]): ReadonlyMap<s
 }
 
 /**
+ * 人間の列（`group`）に own でないタブ（人間のタブ）が1枚でもあるか（D94。`useHumanColumnFor` の
+ * 第2引数）。タブが1枚も無ければ偽 ―― 空の列は使ってよい。
+ *
+ * own の判定は `isOwnTab` をそのまま使う（別の述語を書かない。不変条件14）。`textTabCount` は
+ * `group` を含む**同じ観測**（`tabGroups.all`）から `countTextTabs` で作ったものを渡すこと。
+ * 判定の向き: own でないと読めたタブは人間のタブに数える ―― 型の分からない入力（端末・設定・
+ * 他の拡張のパネル）も人間の側に倒れ、その列は `dedicated` では使わない（以前どおり）。
+ */
+export function humanColumnHasHumanTabs(
+  group: vscode.TabGroup,
+  opened: OpenedByAgent,
+  textTabCount: ReadonlyMap<string, number>,
+): boolean {
+  return group.tabs.some((tab) => !isOwnTab(tab, opened, textTabCount));
+}
+
+/**
+ * 線上の選択範囲（1始まりの行・0始まりの桁）。`get_editor_state` の `selection` と、ツールが見せた
+ * 選択の鍵（D95）の**両方がこれを通る** ―― 覚える鍵と照らす鍵の数え方を2箇所に書かない。
+ */
+function selectionRangeOf(selection: vscode.Selection): SelectionRange {
+  return {
+    startLine: selection.start.line + 1,
+    startCharacter: selection.start.character,
+    endLine: selection.end.line + 1,
+    endCharacter: selection.end.character,
+  };
+}
+
+/**
+ * 人間の前面の編集器（`activeTextEditor`）の観測（D95 の記録点が呼び出しの前後に読む）。
+ *
+ * **観測するだけ。** 何を覚えるかは `human-selection.ts` の `toolShownSelectionKey` が決める。
+ * `relPath` は `get_editor_state` の `activeEditor()` と同じ `observedRelPath`（映しも rel に戻る）、
+ * 範囲も同じ `selectionRangeOf` ―― 覚えた鍵と `get_editor_state` が照らす鍵が同じ綴りになる。
+ * 同一性は文書の URI と列（同じ文書でも列が違えば別の編集器）。
+ */
+export function observeFrontEditor(
+  root: vscode.Uri | undefined,
+  policy: RedactionPolicy,
+): FrontEditor | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (editor === undefined) return undefined;
+  return {
+    identity: frontIdentity(editor.viewColumn, editor.document.uri.toString()),
+    relPath: observedRelPath(root, editor.document.uri, policy),
+    selection: selectionRangeOf(editor.selection),
+  };
+}
+
+/** 人間の列の表示中のタブ（`frontSettled` の第2引数）。テキストでなければ `textUri` は無い。 */
+export function observeActiveTab(): { column: number | undefined; textUri: string | undefined } {
+  const group = vscode.window.tabGroups.activeTabGroup;
+  const input = group.activeTab?.input;
+  return {
+    column: group.viewColumn,
+    textUri: input instanceof vscode.TabInputText ? input.uri.toString() : undefined,
+  };
+}
+
+/**
  * `handleGetEditorState` に渡す、vscode に触る薄い層。
  *
  * ルートは `createEditorSurface` と同じ理由で呼び出しのたびに渡し直す
@@ -371,6 +450,8 @@ export function createEditorStateSurface(
   root: vscode.Uri | undefined,
   opened: OpenedByAgent,
   annotations: Annotations,
+  // 外のタブ（D102）を名指すかの方針。ハンドラの秘匿の判定と同じ `readConfig().redaction` の写し。
+  policy: RedactionPolicy,
 ): EditorStateSurface {
   return {
     windowFocused(): boolean {
@@ -382,7 +463,7 @@ export function createEditorStateSurface(
       // （`observedRelPath`）で作る ―― `get_editor_state` が返す `path` は全部同じ
       // 関数から出る（不変条件14）。
       return annotations.list().map(({ id, index, uri, line, color, resolved }) => {
-        const base = { id, index, relPath: observedRelPath(root, uri), line, resolved };
+        const base = { id, index, relPath: observedRelPath(root, uri, policy), line, resolved };
         return color === undefined ? base : { ...base, color };
       });
     },
@@ -408,7 +489,7 @@ export function createEditorStateSurface(
       };
 
       return {
-        relPath: observedRelPath(root, document.uri),
+        relPath: observedRelPath(root, document.uri, policy),
         // **`activeTextEditor` であることだけでは足りない。** VS Code の
         // `activeTextEditor` は「フォーカスを持つエディタ、**無ければ最後に
         // 入力が変わったエディタ**」である。人間が端末に居るあいだに
@@ -419,12 +500,7 @@ export function createEditorStateSurface(
           editor.viewColumn !== undefined &&
           editor.viewColumn === vscode.window.tabGroups.activeTabGroup.viewColumn,
         cursor: { line: selection.active.line + 1, character: selection.active.character },
-        selection: {
-          startLine: selection.start.line + 1,
-          startCharacter: selection.start.character,
-          endLine: selection.end.line + 1,
-          endCharacter: selection.end.character,
-        },
+        selection: selectionRangeOf(selection),
         empty: selection.isEmpty,
         coversWholeDocument: coversWholeDocument(zeroBased, lastLine, documentEnd.character),
         visibleLines: visibleLineRange(
@@ -475,7 +551,7 @@ export function createEditorStateSurface(
           // **観測した値も同じ関門を通す**（不変条件14 の5件目）。VS Code は
           // ドキュメントの URI にシンボリックリンクを解決しないまま入れるので、
           // 綴りだけを見るとワークスペースの中に見えるものが外を指しうる。
-          const relPath = uri === undefined ? undefined : observedRelPath(root, uri);
+          const relPath = uri === undefined ? undefined : observedRelPath(root, uri, policy);
           // 枠は own の webview にだけ付く（`ownPanelSlot`。`isOwnTab` の webview の枝と同じ関数）。
           const slot = ownPanelSlot(tab);
           tabs.push({

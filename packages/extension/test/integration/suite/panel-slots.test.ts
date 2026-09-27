@@ -17,6 +17,7 @@ import {
   panelColumn,
   panelTab,
   panelTabs,
+  pinDedicatedStage,
   setGlobal,
   waitFor,
   workspaceRoot,
@@ -106,7 +107,7 @@ async function keepColumnOpenWithNotes(column: number): Promise<void> {
   );
 }
 
-/** 人間が列1で `SAMPLE_REL` を見ている状態にする（パネルを人間が見ていると床1 で残る）。 */
+/** 人間が列1で `SAMPLE_REL` を見ている状態にする（パネルを人間が見ていると、protectViewingTab がオンなら床1 で残る。設定に依らず「閉じる」を言えるよう、人間には別のタブを見せておく）。 */
 async function humanLooksAtSample(): Promise<vscode.TextEditor> {
   const doc = await vscode.workspace.openTextDocument(
     vscode.Uri.joinPath(workspaceRoot(), SAMPLE_REL),
@@ -115,6 +116,8 @@ async function humanLooksAtSample(): Promise<vscode.TextEditor> {
 }
 
 suite("show_html の slot（D61 / C5）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
@@ -237,7 +240,7 @@ suite("show_html の slot（D61 / C5）", () => {
     await showHtml({ html: "<p>a</p>", title: "片づけ1", slot: 1 });
     await showHtml({ html: "<p>b</p>", title: "片づけ2", slot: 2 });
     await waitFor("2枚になる", () => panelTabCount() === 2);
-    // **前提: 人間はパネルを見ていない**（見ていると床1 で残り、「閉じる」を言えない）。
+    // **前提: 人間はパネルを見ていない**（見ていると、protectViewingTab がオンなら床1 で残る。この検査が閉じた理由を所有だけにするための前提）。
     const viewing = vscode.window.tabGroups.activeTabGroup.activeTab;
     assert.ok(viewing !== panelTab(1) && viewing !== panelTab(2), "人間がパネルを見ている（前提）");
 
@@ -528,6 +531,8 @@ suite("show_html の slot（D61 / C5）", () => {
  * 分からない。設定は global に書き、`finally` で必ず戻す（次の検査に漏らさない）。
  */
 suite("show_html の上限は人間の設定（D80）", () => {
+  // 「人間は列1、舞台はその右」の配置を前提にする（D93 の既定 shared は右に列が無ければ人間の列を使う）。
+  pinDedicatedStage();
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
