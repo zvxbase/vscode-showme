@@ -42,8 +42,11 @@ export function canonicalizeWorkspacePath(
   rel: string,
 ): CanonicalTarget | undefined {
   try {
-    const rootReal = fs.realpathSync(rootPath);
-    const targetReal = fs.realpathSync(path.join(rootReal, rel));
+    // `.native`（D106）。JS の realpathSync は Windows で 8.3 の短い名前（`ENV~1`）を展開せず、
+    // 大小もディスクに揃えない ―― 同じ実体が綴りごとに別の正準名になり、秘匿の判定が綴りに
+    // 騙される。関門の外の判断・ホームの実体と同じ関数で求める（同じ量を2つの方法で決めない）。
+    const rootReal = fs.realpathSync.native(rootPath);
+    const targetReal = fs.realpathSync.native(path.join(rootReal, rel));
 
     const relFromRoot = path.relative(rootReal, targetReal);
     // 空文字列はルート自身。".." そのものと ".." で始まる**セグメント**だけを弾く
@@ -52,7 +55,14 @@ export function canonicalizeWorkspacePath(
     if (path.isAbsolute(relFromRoot)) return undefined;
     if (relFromRoot === ".." || relFromRoot.startsWith(`..${path.sep}`)) return undefined;
 
+    // posix ではバックスラッシュは名前の1文字であって区切りではない。下の正規化はエージェントの
+    // 綴り（Windows の流儀）のためにそれを `/` に読み替えるので、実体の名前に当てると正準名が
+    // 別の実体を名指す（`credentials\old` が `credentials/old` になって秘匿の規則を外れる・
+    // `a\b.txt` が別のファイル `a/b.txt` の名前になる）。**実体の名前は読み替えない。断る。**
+    if (path.sep === "/" && relFromRoot.includes("\\")) return undefined;
     // 正準化した相対パスで正規化し直す。正規化そのものが通らない綴りも拒否する。
+    // 8.3 の短い名前の形（`~` の後に数字）が実体の名前に残っていれば、ここで落ちる（D106。
+    // `.native` は展開するので、残るのは展開できなかったか、本当にそういう名前のもの。閉じる側）。
     const canonical = normalizeWorkspaceRelative(relFromRoot);
     if (canonical === undefined) return undefined;
     return { canonical, realPath: targetReal, rootRealPath: rootReal };

@@ -90,10 +90,10 @@ jobs:
       # SHOWME_SOCK は制限モードと tmux で死ぬ経路なので、CI では必ず外して走らせる
       - run: env -u SHOWME_SOCK npm run -w packages/extension ${{ matrix.suite }}:xvfb
 
-  # Windows の単体も門である（2026-09-28 から）。ネイティブの Windows では拡張がソケットサーバを
-  # 立てない（Node が ACL を読めず、実行時ディレクトリを誰が読めるかを確かめられない）ので、
-  # POSIX の権限とソケットサーバの検査は Windows では飛ばし、代わりに「立たない」ことを検査する。
-  # それ以外（パスの関門・ワークスペースの外・映し・起動の1行など）は Windows でも同じ検査が走る。
+  # Windows の単体も門である（2026-09-28 から）。ネイティブの Windows では実行時ディレクトリを
+  # DACL で確かめて（icacls）ソケットサーバを立てる。ソケットサーバ・登録・ハンドシェイクの検査は
+  # Windows でも走り、POSIX の権限（0700 / 0600）の検査だけを飛ばす。本物の icacls / whoami を
+  # 使う検査は Windows でだけ走る。
   unit-windows:
     if: github.event_name != 'push'
     needs: check
@@ -114,9 +114,8 @@ jobs:
       - run: npm run test
 
   integration-windows:
-    # ネイティブの Windows では拡張が起動を断る（上の unit-windows と同じ理由）。実 VS Code の上で
-    # 「拡張は有効になるが、実行時ディレクトリも名前付きパイプも作らない」ことを確かめる回だけを
-    # 走らせる（runTest.ts）。Windows に対応するときは、信頼・制限の回に戻す。
+    # 信頼・制限の2回を Linux と同じく走らせる（runTest.ts）。信頼の回では、それに加えて
+    # 「実行時ディレクトリの DACL が本人と trusted だけ」を確かめる（suite/windows.test.ts）。
     if: github.event_name != 'push'
     needs: check
     runs-on: windows-latest
@@ -130,11 +129,71 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      # 拡張は TEMP の DACL を確かめ、他の利用者が中に作れる TEMP では立たない（D104）。
+      # runner.temp（D:\a\_temp）はドライブの根の既定を継いで Users に作成（AD / WD）を許しているので
+      # （実測）、拡張は断る。自分だけが書けるフォルダを作り、拡張と同じ lockPrivateDir で締めて
+      # （所有者を本人にし、継承を切って本人と SYSTEM だけ）、TMP / TEMP をそこへ向ける。
+      # 締める前の runner.temp の DACL と、締めた後の SDDL はログに残す。
+      - name: 自分だけが書ける TEMP を用意する
+        shell: bash
+        run: |
+          icacls "$RUNNER_TEMP"
+          npx tsc --build packages/protocol
+          node -e '
+            const p = require("./packages/protocol/dist/index.js");
+            const dir = require("node:path").join(process.env.RUNNER_TEMP, "showme-tmp");
+            require("node:fs").mkdirSync(dir);
+            (async () => {
+              const sid = await p.currentUserSid();
+              await p.lockPrivateDir(dir, sid);
+              const sddl = await p.readSddl(dir);
+              const v = p.privateDirVerdict(sddl, sid);
+              console.log(dir, sddl, JSON.stringify(v));
+              if (!v.ok) process.exit(1);
+            })().catch((e) => { console.error(e); process.exit(1); });
+          '
       - run: npm run -w packages/extension test:integration
         shell: bash
         env:
           # RUNNER~1 の 8.3 短縮名を避ける（realpath と綴りの比較がこの repo の設計の要）。
           # runner コンテキストはステップ階層でしか使えない ―― ジョブ階層の env に書くと
           # ワークフロー自体が不正になり、ジョブが1つも作られないまま run が failure になる（実測）。
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}\showme-tmp
+          TEMP: ${{ runner.temp }}\showme-tmp
+
+  # macOS は private の repo では分を10倍に数えるので、手動実行（workflow_dispatch）のときだけ走らせる。
+  # 公開 repo ではリリースの前に必ず手動実行し、この2つも緑であることを確かめる（D110）。
+  unit-macos:
+    if: github.event_name == 'workflow_dispatch'
+    needs: check
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # typecheck が packages/*/dist を作る（飛ばすとテストファイルが「0 test」で落ちる）
+      - run: npm run typecheck
+      - run: npm run test
+
+  integration-macos:
+    if: github.event_name == 'workflow_dispatch'
+    needs: check
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # macOS は画面があるので xvfb は要らない。SHOWME_SOCK は Linux と同じ理由で外す
+      - run: env -u SHOWME_SOCK npm run -w packages/extension test:integration

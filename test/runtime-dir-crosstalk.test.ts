@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  nodeRegistryFileSystem,
+  posixRegistryFileSystem,
   readRegistryEntries,
   selectWindow,
 } from "../packages/bridge/src/discover.js";
@@ -17,7 +17,7 @@ import { processUid, runtimeDirCandidates } from "../packages/protocol/src/runti
  * 「その `dirs` をどう作るか」という食い違いそのものを一度も通っていなかった。
  * ここでは両端が `runtimeDirCandidates` に**別々の env** を渡すところから始め、
  * 本物のファイルシステムに本物の `ShowMeSocketServer` を立て、本物の
- * `nodeRegistryFileSystem` で走査する。
+ * `posixRegistryFileSystem` で走査する。
  *
  * この束は増分2A のレビューで実測された欠陥を捕まえるためにある:
  *
@@ -39,8 +39,13 @@ import { processUid, runtimeDirCandidates } from "../packages/protocol/src/runti
  */
 
 const made: string[] = [];
+/**
+ * macOS では `/tmp` の下に短い名前で作る。`$TMPDIR`（`/var/folders/…`）の下では、ソケットの
+ * パスが `sun_path` の上限（104 バイト）を超える（D108。拡張はその候補を断る）。
+ */
 function tmpRoot(): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), "showme-xdg-"));
+  const base = process.platform === "darwin" ? "/tmp" : os.tmpdir();
+  const d = fs.mkdtempSync(path.join(base, process.platform === "darwin" ? "sx-" : "showme-xdg-"));
   made.push(d);
   return d;
 }
@@ -76,9 +81,9 @@ function twoSides(): {
 
 const stageIdentity = { windowId: "window-under-test", role: () => "stage" as const };
 
-// Windows では拡張がソケットサーバを立てず、ブリッジも登録を信じない（`prepareRuntimeDir` と
-// `ownedAndPrivate` が閉じる側に倒す。それぞれの単体の検査が Windows でそれを確かめている）。
-// 両端が疎通することを確かめるこの検査は、疎通させない OS では走らせない。
+// Windows では走らせない。この検査は候補を POSIX の権限（0700）で組んでいて、Windows の候補の衛生
+// （DACL。D104）はここでは確かめていない（Windows の拡張とブリッジの疎通は統合テストが見る）。
+// なお `$XDG_RUNTIME_DIR` は Windows でも、絶対パスなら候補に効く（`runtimeDirPath` は OS を見ない）。
 describe.skipIf(process.platform === "win32")(
   "実行時ディレクトリ: $XDG_RUNTIME_DIR が食い違っても見つかる（実ファイルシステム）",
   () => {
@@ -95,7 +100,7 @@ describe.skipIf(process.platform === "win32")(
       });
       const info = await server.start();
       try {
-        const read = readRegistryEntries(withoutXdg, nodeRegistryFileSystem);
+        const read = readRegistryEntries(withoutXdg, posixRegistryFileSystem);
         expect(read.entries.map((e) => e.windowId)).toEqual(["window-under-test"]);
 
         // 見つけた登録から、**実在するソケット**へ辿れること。ソケットは1本で、
@@ -126,7 +131,7 @@ describe.skipIf(process.platform === "win32")(
       });
       const info = await server.start();
       try {
-        const read = readRegistryEntries(withXdg, nodeRegistryFileSystem);
+        const read = readRegistryEntries(withXdg, posixRegistryFileSystem);
         expect(read.entries.map((e) => e.socketPath)).toEqual([info.socketPath]);
       } finally {
         await server.stop();
@@ -140,7 +145,7 @@ describe.skipIf(process.platform === "win32")(
       });
       await server.start();
       try {
-        const read = readRegistryEntries(withXdg, nodeRegistryFileSystem);
+        const read = readRegistryEntries(withXdg, posixRegistryFileSystem);
         // 両候補に同じ内容が置いてあるので、畳めないと候補が2つに見え、
         // 「預けられた窓が複数あります」になる（実際には1窓しかないのに）。
         expect(read.entries).toHaveLength(1);
@@ -180,7 +185,7 @@ describe.skipIf(process.platform === "win32")(
         role = "stage";
         server.refreshRegistration();
         // 後退先しか見られないブリッジから、預けたことが見えること。
-        const read = readRegistryEntries(withoutXdg, nodeRegistryFileSystem);
+        const read = readRegistryEntries(withoutXdg, posixRegistryFileSystem);
         expect(read.entries.map((e) => e.role)).toEqual(["stage"]);
       } finally {
         await server.stop();
@@ -197,7 +202,7 @@ describe.skipIf(process.platform === "win32")(
 
       for (const p of info.registryPaths) expect(fs.existsSync(p), p).toBe(false);
       expect(fs.existsSync(info.socketPath)).toBe(false);
-      expect(readRegistryEntries(withoutXdg, nodeRegistryFileSystem).entries).toEqual([]);
+      expect(readRegistryEntries(withoutXdg, posixRegistryFileSystem).entries).toEqual([]);
     });
 
     it("start は両候補の、死んだ窓の登録を掃除する", async () => {
@@ -221,7 +226,7 @@ describe.skipIf(process.platform === "win32")(
       try {
         // 片方しか掃除しないと、生きた窓が1つでもブリッジには2候補に見える。
         for (const file of stale) expect(fs.existsSync(file), file).toBe(false);
-        expect(readRegistryEntries(withXdg, nodeRegistryFileSystem).entries).toHaveLength(1);
+        expect(readRegistryEntries(withXdg, posixRegistryFileSystem).entries).toHaveLength(1);
       } finally {
         await server.stop();
       }
@@ -241,7 +246,7 @@ describe.skipIf(process.platform === "win32")(
       const info = await server.start();
       try {
         expect(info.registryPaths).toHaveLength(1);
-        expect(readRegistryEntries(withXdg, nodeRegistryFileSystem).entries).toHaveLength(1);
+        expect(readRegistryEntries(withXdg, posixRegistryFileSystem).entries).toHaveLength(1);
       } finally {
         await server.stop();
       }

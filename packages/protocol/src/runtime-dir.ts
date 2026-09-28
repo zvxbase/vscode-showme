@@ -55,7 +55,24 @@ export function runtimeDirPath(env: RuntimeDirEnv, tmpdir: string, uid: number):
   if (xdg && path.isAbsolute(xdg)) {
     return path.join(xdg, RUNTIME_DIR_BASENAME);
   }
-  return path.join(tmpdir, `${RUNTIME_DIR_BASENAME}-${uid}`);
+  return path.join(tmpdir, fallbackRuntimeDirName(uid));
+}
+
+/** 後退先（tmpdir の下）の実行時ディレクトリの名前。uid を埋めて利用者ごとに分ける。 */
+function fallbackRuntimeDirName(uid: number): string {
+  return `${RUNTIME_DIR_BASENAME}-${uid}`;
+}
+
+/** `runtimeDirPath` が作りうる名前の形（XDG の下なら基底名そのもの、tmpdir の下なら `-<uid>` 付き）。 */
+const RUNTIME_DIR_NAME = new RegExp(`^${RUNTIME_DIR_BASENAME}(?:-\\d+)?$`);
+
+/**
+ * `name` が実行時ディレクトリの名前の形か（D105）。ブリッジは、ソケットが実行時ディレクトリの
+ * 形をしたディレクトリの中にあることを確かめる。ブリッジ自身は構成できない候補
+ * （拡張にだけ `$XDG_RUNTIME_DIR` がある）もあるので、候補の一覧ではなく名前の形で見る。
+ */
+export function isRuntimeDirName(name: string): boolean {
+  return RUNTIME_DIR_NAME.test(name);
 }
 
 /**
@@ -72,12 +89,13 @@ export function runtimeDirPath(env: RuntimeDirEnv, tmpdir: string, uid: number):
  * `ssh` / `su` で入ったシェルには無い）。だから拡張は**両方の候補に登録ファイルを
  * 書く**。ソケットは1本のままで、複製するのは登録ファイルだけである。
  *
- * 先頭は必ず第一候補（＝ソケットを置く場所）。`$XDG_RUNTIME_DIR` が無い /
+ * 先頭は必ず第一候補。ソケットは、用意できてパスが `sun_path` に収まる最初の候補に置く
+ * （ふつうは第一候補。拡張の `server.ts`。D108）。`$XDG_RUNTIME_DIR` が無い /
  * 相対で信用できないときは第一候補と後退先が同じ場所になるので、1つに畳む
  * （同じディレクトリを2度走査すると、同じ窓の登録が2つに見える）。
  */
 export function runtimeDirCandidates(env: RuntimeDirEnv, tmpdir: string, uid: number): string[] {
   const primary = runtimeDirPath(env, tmpdir, uid);
-  const fallback = path.join(tmpdir, `${RUNTIME_DIR_BASENAME}-${uid}`);
+  const fallback = path.join(tmpdir, fallbackRuntimeDirName(uid));
   return primary === fallback ? [primary] : [primary, fallback];
 }

@@ -1,5 +1,5 @@
 {
-  "$comment": "ShowMe: エージェント設定を表示 が開く文書の日本語版（D58 / D62）。英語版は agent-config-doc.ts の english()。{0} ブリッジのパス / {1} シェル用に引用したパス / {2} 許可リスト JSON / {3} JSON 文字列として引用したパス / {4} Copilot CLI の JSON（ユーザーの設定と repo の設定で同じもの） / {5} いちばん新しい版を探す旨 / {6} 他の人の機械でも動く形（portable を埋めたもの。ホームの下でなければ空）。両方の版が同じ事実を書くことは test/agent-config-doc.test.ts が両方に同じ検査を当てて確かめる。",
+  "$comment": "ShowMe: エージェント設定を表示 が開く文書の日本語版（D58 / D62）。英語版は agent-config-doc.ts の english()。{0} ブリッジのパス / {1} シェル用に引用したパス / {2} 許可リスト JSON / {3} JSON 文字列として引用したパス / {4} Copilot CLI の JSON（ユーザーの設定と repo の設定で同じもの） / {5} 断片が何を起動するか（いちばん新しい版を探す旨・Windows の Claude Code の行の扱い。英語版の englishLead と同じ4通り） / {6} 他の人の機械でも動く形（portable を埋めたもの。ホームの下でなければ空） / {7} Claude Code のコマンドのフェンスの札（Windows は powershell、他は sh）。両方の版が同じ事実を書くことは test/agent-config-doc.test.ts が両方に同じ検査を当てて確かめる。",
   "lines": [
     "# ShowMe — エージェント設定（読み取り専用。ここからコピーして使う）",
     "",
@@ -11,7 +11,7 @@
     "",
     "## Claude Code",
     "",
-    "```sh",
+    "```{7}",
     "claude mcp add showme -- node {1}",
     "```",
     "",
@@ -28,7 +28,7 @@
     "",
     "削除:",
     "",
-    "```sh",
+    "```{7}",
     "claude mcp remove showme",
     "```",
     "",
@@ -69,7 +69,7 @@
     "",
     "自分のすべての repo で使う:",
     "",
-    "```sh",
+    "```{7}",
     "claude mcp add --scope user showme -- node {1}",
     "```",
     "",
@@ -77,7 +77,7 @@
     "project の MCP サーバを使う前に、人ごとに承認を求める。答えは `claude mcp reset-project-choices` で",
     "やり直せる）:",
     "",
-    "```sh",
+    "```{7}",
     "claude mcp add --scope project showme -- node {1}",
     "```",
     "",
@@ -137,6 +137,18 @@
     "",
     "下の断片は、この拡張と同じ場所に入っているいちばん新しい ShowMe を起動する。",
     "拡張を更新しても貼り直さなくてよい。",
+    ""
+  ],
+  "findsNewestWindows": [
+    "",
+    "下の JSON と TOML の断片は、この拡張と同じ場所に入っているいちばん新しい ShowMe を起動する。",
+    "拡張を更新しても貼り直さなくてよい。`claude mcp add` のコマンドは PowerShell とコマンド プロンプトの",
+    "どちらでも使える。この版のフォルダを名指すので、拡張を更新したら打ち直す。",
+    ""
+  ],
+  "windowsCommand": [
+    "",
+    "`claude mcp add` のコマンドは PowerShell とコマンド プロンプトのどちらでも使える。",
     ""
   ],
   "portable": [

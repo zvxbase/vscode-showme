@@ -8,7 +8,8 @@ import * as teardownDocJa from "./teardown-doc.ja.json";
  * `runtimeDirs` は `extension.ts` がソケットと登録ファイルを置くために既に
  * 計算している候補（`runtimeDirCandidates`）をそのまま受け取る。ここで
  * 計算し直すと、拡張が実際に書いた場所と文書に書く場所がずれうる。
- * 先頭がソケットのある第一候補で、残りは登録ファイルだけの後退先（§2A.6）。
+ * 先頭が第一候補で、残りは後退先（§2A.6）。登録ファイルは全候補に書き、ソケットは
+ * POSIX では候補の1つ（ふつうは第一候補）の中、Windows では名前付きパイプ。
  */
 export interface TeardownFacts {
   runtimeDirs: readonly string[];
@@ -84,7 +85,11 @@ If you wrote any \`showme.\` settings into your VS Code user settings, remove th
 
 \`${SOCKET_ENV_VAR}\` stays in the environment of terminals opened after it was injected. The
 extension cannot change the environment of a terminal that is already open, so reopen the
-terminal (or \`unset ${SOCKET_ENV_VAR}\`).
+terminal, or remove the variable in it:
+
+- bash / zsh: \`unset ${SOCKET_ENV_VAR}\`
+- PowerShell: \`Remove-Item Env:${SOCKET_ENV_VAR}\`
+- Command Prompt: \`set ${SOCKET_ENV_VAR}=\`
 `;
 }
 

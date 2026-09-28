@@ -68,6 +68,7 @@ import {
   assertGlobal,
   assertSocketIsListening,
   currentRole,
+  deleteInWorkspace,
   getEditorState,
   inspectVisuals,
   layoutGroups,
@@ -2997,9 +2998,14 @@ function arrangeTabs(): vscode.Tab[] {
   return vscode.window.tabGroups.all.flatMap((group) => group.tabs);
 }
 
+/**
+ * タブの題の一覧（並べ替え済み）。**端末のタブは題を `(terminal)` に置き換える。** 端末の題は
+ * シェルが後から付ける（実測: Windows では開いた直後が空で、少し後に `pwsh` になり、前後の比較が
+ * 「指した1枚以外にも差が出た」で落ちた）。端末が閉じていないことは枚数で別に確かめている。
+ */
 function arrangeTabLabels(): string[] {
   return arrangeTabs()
-    .map((tab) => tab.label)
+    .map((tab) => (tab.input instanceof vscode.TabInputTerminal ? "(terminal)" : tab.label))
     .sort();
 }
 
@@ -3406,10 +3412,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
 
   suiteTeardown(async () => {
     // 作った材料は残さない（次に走る節が「知らないタブ」を見ることになる）。
-    await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIR), {
-      recursive: true,
-      useTrash: false,
-    });
+    await deleteInWorkspace(ARRANGE_DIR);
   });
 
   setup(async () => {
@@ -3535,7 +3538,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
     } finally {
       await closeEverythingForArrange();
       await setLayoutSetting("closeHumanTabs", undefined);
-      await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIRTY_REL));
+      await deleteInWorkspace(ARRANGE_DIRTY_REL);
     }
   });
 
@@ -3577,7 +3580,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
     } finally {
       await closeEverythingForArrange();
       await setLayoutSetting("closeDirtyTabs", undefined);
-      await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIRTY_REL));
+      await deleteInWorkspace(ARRANGE_DIRTY_REL);
     }
   });
 
@@ -3710,7 +3713,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
       for (const terminal of vscode.window.terminals) terminal.dispose();
       await closeEverythingForArrange();
       await setLayoutSetting("closeHumanTabs", undefined);
-      await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIRTY_REL));
+      await deleteInWorkspace(ARRANGE_DIRTY_REL);
     }
   });
 
@@ -4126,7 +4129,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
           );
         } finally {
           await closeEverythingForArrange();
-          await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIRTY_REL));
+          await deleteInWorkspace(ARRANGE_DIRTY_REL);
         }
       });
     });
@@ -4875,10 +4878,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
     await writeArrangeFile(ARRANGE_KEEP_REL, "# keep\n\n人間が今見ているファイル\n");
   });
   suiteTeardown(async () => {
-    await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), ARRANGE_DIR), {
-      recursive: true,
-      useTrash: false,
-    });
+    await deleteInWorkspace(ARRANGE_DIR);
   });
   setup(async () => {
     await vscode.commands.executeCommand("showme.test.resetRateLimits");
@@ -5751,7 +5751,13 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     // 拡張のインストール先の中にある（別の場所を指していない）。
     const ext = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(ext);
-    assert.strictEqual(bridgePath, path.join(ext.extensionPath, "bridge", "index.js"));
+    // Windows のパスは大小を区別せず、VS Code の URI 由来の綴りはドライブ文字が小文字（`d:\…`）、
+    // 起動の引数の綴りは大文字（`D:\…`）になる。断片がどちらの綴りから作られても同じ実体なので、
+    // 比べる前に同じ `Uri.file(…).fsPath` を通して綴りを揃える（posix では何も変わらない）。
+    assert.strictEqual(
+      vscode.Uri.file(bridgePath).fsPath,
+      vscode.Uri.file(path.join(ext.extensionPath, "bridge", "index.js")).fsPath,
+    );
 
     // 許可リストに arrange_editors は無く、他は全部ある（B6）。**値で**見る。
     const allowBlock = /```json\n(\[[\s\S]*?\n\])\n```/.exec(text);
@@ -5913,10 +5919,7 @@ suite("実 VS Code / 信頼モード / タブとパネルを動かす（D59 / D5
 
   suiteTeardown(async () => {
     await closeEverythingForArrange();
-    await vscode.workspace.fs.delete(vscode.Uri.joinPath(workspaceRoot(), MOVE_DIR), {
-      recursive: true,
-      useTrash: false,
-    });
+    await deleteInWorkspace(MOVE_DIR);
   });
 
   setup(async () => {

@@ -57,7 +57,16 @@ suite("ワークスペースの外のファイル（D101 / D102）", () => {
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
-    dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-it-")));
+    // 外のパスの鍵（`normalizedPath`・`openPaths`・映しの URI）は、Windows ではドライブ文字を小文字に
+    // 揃えた綴りである（`normalizeAbsolutePath`。VS Code の URI と同じ）。`TEMP` は `D:\…` で来るので、
+    // 期待値もその鍵の綴りで持つ（大文字のままだと、同じ実体なのに文字列が一致しない）。
+    const real = fs.realpathSync.native(
+      fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-it-")),
+    );
+    dir =
+      process.platform === "win32" && /^[A-Za-z]:\\/.test(real)
+        ? real.charAt(0).toLowerCase() + real.slice(1)
+        : real;
     file = path.join(dir, "outside.ts");
     fs.writeFileSync(file, `export const a = 1;\n// ${MARKER}\nexport const b = 2;\n`);
     fs.writeFileSync(

@@ -407,6 +407,30 @@ export function visibleEditorFor(uri: vscode.Uri): vscode.TextEditor | undefined
 }
 
 /**
+ * ワークスペースの中のファイルかフォルダ（中身ごと）を消す（検査の後片づけ）。
+ *
+ * **Windows では一時的に消せないことがある。** 作ったばかりのファイルを別のプロセス（VS Code の
+ * 見張り・言語サーバ・Defender の走査）が開いている間は、Windows はそのフォルダの削除を
+ * `EBUSY` / `EPERM` / `ENOTEMPTY` で断る（POSIX は開かれていても名前を消せる）。ファイルも同じ。実測: 信頼の回の
+ * `move/` の片づけが `EBUSY: resource busy or locked, rmdir` で落ちた。相手が閉じれば消せるので、
+ * この3つだけを短く待って数回やり直す（Node の `fs.rm` の `maxRetries` と同じ考え方）。
+ * それ以外の失敗と、やり直しても消えないときはそのまま投げる。
+ */
+export async function deleteInWorkspace(rel: string): Promise<void> {
+  const uri = vscode.Uri.joinPath(workspaceRoot(), rel);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: false });
+      return;
+    } catch (e) {
+      const transient = /EBUSY|EPERM|ENOTEMPTY/.test(String(e));
+      if (!transient || attempt >= 10) throw e;
+      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+    }
+  }
+}
+
+/**
  * 条件が成立するまで待つ。
  *
  * 述語は同期でも非同期でもよい。観測がコマンド越し（`inspectVisuals`）に

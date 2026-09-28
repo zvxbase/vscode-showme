@@ -1,13 +1,17 @@
-import type { WireRequestInput, WireResponse } from "@zvx/vscode-showme-protocol";
+import {
+  WIRE_PROTOCOL_VERSION,
+  type WireRequestInput,
+  type WireResponse,
+} from "@zvx/vscode-showme-protocol";
 import { describe, expect, it } from "vitest";
 import { NoWindowError, ProtocolError } from "./client.js";
 import type { RegistryEntry } from "./discover.js";
 import { CALL_ATTEMPTS, createSocketInvoker } from "./invoke.js";
 
 const alpha: RegistryEntry = {
-  protocolVersion: 1,
+  protocolVersion: WIRE_PROTOCOL_VERSION,
   workspacePath: "/w/alpha",
-  pid: 1,
+  pid: process.pid,
   startedAt: "2026-09-09T00:00:00Z",
   socketPath: "/rt/a.sock",
   authToken: "a".repeat(64),
@@ -40,7 +44,7 @@ function ok(request: WireRequestInput, result: Record<string, unknown>): WireRes
 
 /** 候補を順に返す発見器。呼ばれるたびに exclude を記録する。 */
 function windows(entries: readonly RegistryEntry[], seenExcludes: string[][]) {
-  return (exclude: readonly string[]): RegistryEntry => {
+  return async (exclude: readonly string[]): Promise<RegistryEntry> => {
     seenExcludes.push([...exclude]);
     const usable = entries.filter((e) => !exclude.includes(e.socketPath));
     const first = usable[0];
@@ -212,7 +216,7 @@ describe("createSocketInvoker", () => {
 
   it("1回目の発見に失敗したら、その診断をそのまま返す", async () => {
     const invoke = createSocketInvoker({
-      resolveWindow: () => {
+      resolveWindow: async () => {
         throw new NoWindowError("実行時ディレクトリがありません");
       },
       call: async (_entry, request) => ok(request, listResult),

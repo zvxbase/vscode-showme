@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.5 — preview
+
+**After updating, restart your agent (or reconnect its MCP servers).** The extension and the bridge now authenticate each other with a new connection protocol, so a bridge that is still running from 0.1.4 reports a version mismatch.
+
+- **Native Windows:** ShowMe now runs on native Windows. It keeps the connection token in a folder under `%TEMP%`, makes you its owner, limits it to you and SYSTEM, and checks with `icacls` that only you, SYSTEM and Administrators can read it before it starts. If `TEMP` or `TMP` points at a folder other users can write to (a shared `C:\Temp`, or a folder on another drive such as `D:\Temp`), it refuses to start and says so; point `TEMP` and `TMP` at a folder only you can write to, such as the default `%LOCALAPPDATA%\Temp`.
+- **macOS** is now tested in CI (unit and integration tests in a real VS Code). A socket path longer than the operating system allows (104 bytes on macOS, 108 on Linux) is now reported with its length and the limit, instead of failing with `ENOENT`.
+- **ShowMe: Show agent configuration** on Windows: the `claude mcp add` line now works in both PowerShell and Command Prompt. It names the installed version's folder, so run it again after an update; the JSON and TOML snippets still start the newest installed version. The entry that works for everyone on the team is now offered on Windows too (the drive letter's case no longer hides it).
+- **ShowMe: Show teardown steps** now also shows how to remove `SHOWME_SOCK` from an open PowerShell (`Remove-Item Env:SHOWME_SOCK`) or Command Prompt (`set SHOWME_SOCK=`) terminal.
+- Fixed on Windows: two tool calls in a row could be refused as a second connection. The extension now answers one request per connection and frees the slot before it answers.
+- **Behavior change:** a file name with a part like `~1` (a tilde followed by a digit, such as `foo~1.txt` or Emacs's numbered backups `foo.c.~1~`) is now refused in workspace paths on every operating system, because on Windows it can be a second, short spelling of another file. Absolute paths to files outside the workspace are refused for this only on Windows.
+- **Behavior change:** on Windows, files outside the workspace on a mapped network drive are refused (their real path is a network path).
+- **Behavior change:** on every operating system, files on a file system that reports no file IDs (inode 0, such as some network shares) are refused, because ShowMe cannot check that the file it opens is the one it checked.
+- **Security:** a Windows 8.3 short name (such as `CREDEN~1.JSO` for `credentials.json`) could get around the redaction rules and let the agent show a redacted file. This was only reachable on Windows, where ShowMe did not start before this release.
+- **Security:** files whose real name contains a backslash (on Linux/macOS) were matched against the redaction rules under a rewritten name; such names are now refused. This affected earlier versions.
+- **Security:** reading a workspace file for **show_html** or for resolving a code anchor now opens exactly the file that was checked. A file swapped between the check and the read (for a link to a redacted file, or for a named pipe) could previously be read or could stop the extension. This affected earlier versions.
+- **Security:** a path in the workspace that exists but cannot be resolved to a real name inside the workspace (for example a link that points outside it) is now treated as redacted when ShowMe reports what is open in the editor. This affected earlier versions.
+- **Security:** the bridge now checks that the connection address in a registration file has the expected form (on Windows, a local named pipe of ShowMe's own name) before connecting, so a planted registration cannot send it to a network path.
+- **Security:** the bridge no longer sends the connection token over the connection, and it no longer sends a request until the other end proves it holds the token (both ends now prove it to each other). Before, if VS Code closed without removing its registration (a crash or a restart), another user on the same Windows machine could open a pipe of the same name and receive the token and the request, and answer with made-up results. The bridge also skips registrations whose VS Code process is no longer running, and the extension removes its registration before it stops listening. This changes the wire protocol: update the bridge and the extension together (a mismatch is reported as such). The other-user case was only reachable on Windows, where ShowMe did not start before this release.
+
 ## 0.1.4 — preview
 
 - **Native Windows:** ShowMe now says plainly that it does not start on native Windows yet (Node cannot check who may read the folder that holds the connection token there), instead of failing with `runtime dir mode is 666`, and it no longer leaves an empty folder behind. Use VS Code with WSL or a dev container.

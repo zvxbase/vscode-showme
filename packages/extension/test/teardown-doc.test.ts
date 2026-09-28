@@ -46,7 +46,15 @@ describe.each(["en", "ja"] as const)("buildTeardownDocument（D62）[%s]", (lang
     // `rm -rf ~` だけを禁じると、`rm -rf ~/.claude` のような別の形が通る。
     // この文書に `rm` が要る理由は無いので、**綴りごと**禁じる。
     expect(doc).not.toMatch(/\brm\s/);
-    expect(doc).not.toMatch(/\bdel\s|Remove-Item/);
+    // 例外は環境変数を外す `Remove-Item Env:`（ファイルを消さない）だけ
+    expect(doc).not.toMatch(/\bdel\s|Remove-Item(?!\s+Env:)/);
+  });
+
+  it("開いている端末の環境変数の外し方を、bash / zsh・PowerShell・コマンド プロンプトの3つで書く（D109）", () => {
+    expect(doc).toContain(`unset ${SOCKET_ENV_VAR}`);
+    expect(doc).toContain(`Remove-Item Env:${SOCKET_ENV_VAR}`);
+    expect(doc).toContain(`set ${SOCKET_ENV_VAR}=`);
+    expect(doc).toContain("PowerShell");
   });
 
   it("npx の断片は無い（S12）", () => {

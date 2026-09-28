@@ -1,35 +1,57 @@
 import * as assert from "node:assert";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { processUid, runtimeDirCandidates } from "@zvx/vscode-showme-protocol";
+import * as path from "node:path";
+import {
+  currentUserSid,
+  noForeignCreateVerdict,
+  privateDirVerdict,
+  processUid,
+  readSddl,
+  runtimeDirCandidates,
+} from "@zvx/vscode-showme-protocol";
 import { activateExtension } from "./helpers.js";
 
 /**
- * ネイティブの Windows の回（runTest.ts が win32 のときだけ走らせる）。
+ * ネイティブの Windows の信頼の回の最初に走る（suite/index.ts が win32 のときだけ足す）。
  *
- * Windows では拡張がソケットサーバを立てない（`prepareRuntimeDir` が閉じる側に倒す。
- * Node は ACL を読めないので、接続のトークンを置くディレクトリを誰が読めるかを確かめられない。
- * 設計書 §3.5 の Windows の行）。だから信頼モード・制限モードの回（どちらも最初に登録ファイルと
- * ソケットの実在を確かめ、ツールを呼ぶ）はここでは走らせない ―― 走らせても、全部が同じ1つの
- * 理由で落ちるだけである。代わりに、**実 VS Code の上で本当に立たないこと**を確かめる:
- * 拡張は有効になる（ログとコマンドは使える）が、実行時ディレクトリも名前付きパイプも作らない。
+ * Windows では実行時ディレクトリを DACL で確かめて立つ（D104）。ここでは**実 VS Code の上で
+ * 本当に立ち、トークンを置くディレクトリが本人と trusted（SYSTEM・Administrators）だけのもの
+ * であること**を確かめる。立たなかったときは、拡張の出した理由がそのまま失敗の文言になる
+ * （`TEMP` の ACL で断られたのか、別の理由かが CI のログで分かるように）。
  */
-suite("実 VS Code / ネイティブの Windows では起動を断る", () => {
-  test("拡張は有効になるが、実行時ディレクトリを作らず、名前付きパイプも立てない", async () => {
-    assert.strictEqual(process.platform, "win32", "この回は Windows でだけ走らせる");
+suite("実 VS Code / ネイティブの Windows で立つ", () => {
+  test("実行時ディレクトリが本人と trusted だけのもので、ShowMe の名前付きパイプが立っている", async () => {
+    assert.strictEqual(process.platform, "win32", "この検査は Windows でだけ走らせる");
     await activateExtension();
-    // activate はサーバの起動を待ってから返る（失敗しても例外にしない）。念のため少し待って、
-    // 遅れて作られるものが無いことも確かめる。
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
 
-    for (const dir of runtimeDirCandidates(process.env, os.tmpdir(), processUid(process))) {
-      assert.strictEqual(fs.existsSync(dir), false, `実行時ディレクトリが作られた: ${dir}`);
+    const [first] = runtimeDirCandidates(process.env, os.tmpdir(), processUid(process));
+    assert.ok(first !== undefined, "実行時ディレクトリの候補が無い");
+    // 立つまで待つ（activate はサーバの起動を待って返るが、念のため）。
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(first) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
+    if (!fs.existsSync(first)) {
+      // 立たなかった理由の多くは親（TEMP）の DACL。拡張と同じ判定で、親の SDDL ごと失敗に載せる。
+      const parent = path.dirname(first);
+      const parentSddl = await readSddl(parent).catch((e: unknown) => `(unreadable: ${String(e)})`);
+      const parentVerdict = noForeignCreateVerdict(parentSddl, await currentUserSid());
+      assert.fail(
+        `実行時ディレクトリが作られていない: ${first}\n親 ${parent} の SDDL: ${parentSddl}\n判定: ${JSON.stringify(parentVerdict)}`,
+      );
+    }
+
+    const verdict = privateDirVerdict(await readSddl(first), await currentUserSid());
+    assert.deepStrictEqual(verdict, { ok: true }, `実行時ディレクトリが私的でない: ${first}`);
+
+    const registrations = fs.readdirSync(first).filter((name) => /^[0-9a-f]{16}\.json$/.test(name));
+    assert.strictEqual(registrations.length, 1, `登録ファイルが1つでない: ${registrations}`);
+
     // 名前付きパイプの一覧は `\\.\pipe\` で読める。拡張が立てるパイプの名前は `vscode-showme-…`
-    // （server.ts）。一覧が読めること自体も確かめる（読めずに空なら、空振りの緑になる）。
+    // （server.ts）。
     const pipes = fs.readdirSync("\\\\.\\pipe\\");
-    assert.ok(pipes.length > 0, "名前付きパイプの一覧が読めない（空振りの緑を防ぐ）");
-    const ours = pipes.filter((name) => name.startsWith("vscode-showme-"));
-    assert.deepStrictEqual(ours, [], "ShowMe の名前付きパイプが立っている");
+    const ours = pipes.filter((name) => /^vscode-showme-[0-9a-f]{16}$/.test(name));
+    assert.strictEqual(ours.length, 1, `ShowMe の名前付きパイプが1本でない: ${ours}`);
   });
 });

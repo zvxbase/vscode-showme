@@ -1,10 +1,5 @@
-import * as path from "node:path";
-import {
-  type PanelSlot,
-  type TabKind,
-  normalizeWorkspaceRelative,
-  truncateDisplayText,
-} from "@zvx/vscode-showme-protocol";
+import { type PanelSlot, type TabKind, truncateDisplayText } from "@zvx/vscode-showme-protocol";
+import { rootRelativizer } from "./workspace-path-gate.js";
 
 /**
  * 人間の画面から読んだものを、線に載る形へ落とす**判断だけ**を集めたところ。
@@ -76,12 +71,23 @@ export function observedViewColumn(value: unknown): number | undefined {
 }
 
 export function relativizeToRoot(root: UriParts | undefined, uri: UriParts): string | undefined {
-  if (root === undefined) return undefined;
-  if (uri.scheme !== root.scheme || uri.authority !== root.authority) return undefined;
-  const rel = path.relative(root.fsPath, uri.fsPath);
-  if (rel.length === 0) return undefined;
-  // 綴りの正規化・脱出の拒否・NTFS 代替データストリームの拒否は protocol に1つ。
-  return normalizeWorkspaceRelative(rel);
+  return relativizerFor(root)(uri);
+}
+
+/**
+ * `relativizeToRoot` を同じ根に何度も当てるための形（根の実体は1回だけ取る。`rootRelativizer`）。
+ * 問い合わせ1回につき1つ作る（`resultPlacer` / `createLanguageSurface`）。
+ */
+export function relativizerFor(root: UriParts | undefined): (uri: UriParts) => string | undefined {
+  if (root === undefined) return () => undefined;
+  // 「根からの相対パス」は関門の隣の1つ（`rootRelativizer`）が決める（不変条件14）。根が
+  // リンク越しの綴りでも、実体の綴りで開かれた文書を中として読む。ローカルのファイルシステム
+  // （`file:`）でなければ根の実体は取らない。
+  const relative = rootRelativizer(root.fsPath, root.scheme === "file");
+  return (uri) =>
+    uri.scheme !== root.scheme || uri.authority !== root.authority
+      ? undefined
+      : relative(uri.fsPath);
 }
 
 /**

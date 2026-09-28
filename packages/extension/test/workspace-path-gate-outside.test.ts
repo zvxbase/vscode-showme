@@ -386,6 +386,55 @@ describe("設定がオン", () => {
     expect(onTarget).toEqual([`realpathSync.native ${spelled}`, `lstatSync ${abs}`]);
   });
 
+  it("実体の名前は中も外も realpathSync.native だけで求める（D106: 同じ量を2つの方法で決めない）", () => {
+    const { root, outside, home } = fixture();
+    fsTouches.calls.length = 0;
+    // 中（相対・絶対）・外・観測の側・ハードリンクの照合（実体のルートを歩く）を一通り通す。
+    fs.linkSync(path.join(root, "docs", "notes.md"), path.join(root, "docs", "copy.md"));
+    expect(acceptWorkspacePath(root, "docs/notes.md", policy(true), { home }).ok).toBe(true);
+    expect(acceptWorkspacePath(root, "docs/copy.md", policy(true), { home }).ok).toBe(true);
+    expect(
+      acceptWorkspacePath(root, path.join(root, "docs", "notes.md"), policy(true), { home }).ok,
+    ).toBe(true);
+    expect(acceptWorkspacePath(root, path.join(outside, "a.txt"), policy(true), { home }).ok).toBe(
+      true,
+    );
+    expect(isRedactedEntity(root, "docs/notes.md", policy(true))).toBe(false);
+    const realpaths = fsTouches.calls.filter((c) => c.startsWith("realpathSync"));
+    expect(realpaths.length).toBeGreaterThan(0);
+    // JS の realpathSync は Windows で 8.3 の短い名前を展開せず、大小もディスクに揃えない。
+    expect(realpaths.filter((c) => !c.startsWith("realpathSync.native "))).toEqual([]);
+  });
+
+  it("実体の絶対パスにも綴りの正規化を当てる（綴りで断る形の実体へリンクで回り込ませない）", () => {
+    // posix で綴りが断る形（バックスラッシュを含む名前）を、許された綴りからのリンクで指す。
+    // Windows では同じ関数が 8.3 の短い名前・末尾のドット・空白を断る（realpath.native は短い
+    // 名前を展開するので、残っているなら展開できなかった実体。閉じる側に倒す）。
+    if (process.platform === "win32") return;
+    const { root, outside, home } = fixture();
+    const odd = path.join(outside, "we\\ird.txt");
+    fs.writeFileSync(odd, "odd\n");
+    fs.symlinkSync(odd, path.join(outside, "plain.txt"));
+    expect(acceptWorkspacePath(root, odd, policy(true), { home })).toEqual(INVALID);
+    expect(
+      acceptWorkspacePath(root, path.join(outside, "plain.txt"), policy(true), { home }),
+    ).toEqual(INVALID);
+  });
+
+  it("外から中へのリンクでも、実体の名前のバックスラッシュを区切りに読み替えない（posix）", () => {
+    if (path.sep !== "/") return;
+    const { root, outside, home } = fixture();
+    const link = path.join(outside, "l.txt");
+    fs.symlinkSync(path.join(root, "a\\b.txt"), link);
+    const before = acceptWorkspacePath(root, link, policy(true), { home });
+    fs.writeFileSync(path.join(root, "a\\b.txt"), "backslash\n");
+    fs.mkdirSync(path.join(root, "a"));
+    fs.writeFileSync(path.join(root, "a", "b.txt"), "other file\n");
+    const after = acceptWorkspacePath(root, link, policy(true), { home });
+    expect(before).toEqual(INVALID);
+    expect(after).toEqual(INVALID);
+  });
+
   it("ワークスペースが無いときは今と同じく invalid-path", () => {
     const { outside, home } = fixture();
     expect(

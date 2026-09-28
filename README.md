@@ -44,7 +44,8 @@ itself.
   MCP server (this does not work in Restricted Mode).
 
 The snippets start the newest ShowMe installed, so you do not need to paste them again after the
-extension updates.
+extension updates. On Windows, the `claude mcp add` line names the installed version's folder instead,
+so that it works in both PowerShell and Command Prompt; run it again after the extension updates.
 
 `arrange_editors` is left out of the Claude Code allow list on purpose: it is the only tool that
 can close tabs. Add `"mcp__showme__arrange_editors"` yourself if you want it.
@@ -64,7 +65,9 @@ The document ends with a prompt you can give your agent so that it does the setu
 responsible for what the agent changes: read the prompt first.
 
 The agent and VS Code must run on the same machine and in the same environment: in a
-devcontainer, both inside the container; with Remote-SSH, both on the remote side.
+devcontainer, both inside the container; with Remote-SSH, both on the remote side; with VS Code
+connected to WSL, the agent inside WSL. An agent running on Windows cannot reach a VS Code window
+connected to WSL, and the other way around.
 
 ### 3. Turn it on in the window you want the agent to use
 
@@ -210,14 +213,17 @@ Look at the status bar first — ShowMe shows what it is doing there.
 | `ShowMe: Connected` | Working |
 | `ShowMe: On` / `ShowMe: Connected` with a warning icon and a warning background | `showme.allowOutsideWorkspace` is on: the agent can also open files outside the workspace. Turn it off when you do not need it |
 | `ShowMe: Stopped` | The extension is stopped. Run **ShowMe: Stop / Resume the extension** |
-| `ShowMe: Failed to start` | The tooltip says why. If it names a directory, check its owner and permissions with `ls -ld` |
+| `ShowMe: Failed to start` | The tooltip says why. If it names a directory, check its owner and permissions with `ls -ld` (on Windows, `icacls`) |
 | `ShowMe: second connection refused` | Only one agent can connect at a time. Stop the other one. If you are not running a second agent, some other process of yours connected first — find out what it is |
 | `ShowMe: not found …` / `ShowMe: multiple matches …` | The agent looked for a location and did not find exactly one. The agent needs to be more specific |
 | `ShowMe: rate limited …` | The agent repeated the same request too quickly |
 
 **The agent says it cannot find a VS Code window.** Check that ShowMe is `On` in a window, that
 the agent runs in the same environment as VS Code (see step 2), and that both see the same
-`$TMPDIR`.
+`$TMPDIR` (on Windows, the same `TEMP`).
+
+**Windows: ShowMe fails to start and the reason mentions TEMP/TMP.** `TEMP` or `TMP` points at a
+folder other users can write to. How to fix it is under Status below.
 
 **`.env` or a key file is "not found".** That is intended: ShowMe hides those paths and does not
 reveal where they are.
@@ -239,7 +245,8 @@ and disappears with it.
 2. Uninstall the extension: `code --uninstall-extension zvxbase.vscode-showme`. It removes its
    socket and registration files by itself. `showme.*` entries in your user settings stay until
    you delete them.
-3. Reopen terminals that were already open (or `unset SHOWME_SOCK`).
+3. Reopen terminals that were already open (or remove the variable: `unset SHOWME_SOCK` in bash or
+   zsh, `Remove-Item Env:SHOWME_SOCK` in PowerShell, `set SHOWME_SOCK=` in Command Prompt).
 
 If you uninstall the extension but leave the agent's registration, the agent only fails to start
 ShowMe with `ShowMe is not installed in …`. Nothing else happens, but remove the entry to stop
@@ -281,11 +288,16 @@ documents) are **English by default**, and Japanese when VS Code's display langu
 
 ## Status
 
-**Preview.** Verified on Linux (unit + integration tests in a real VS Code). macOS uses the same
-Unix-socket path but has not been verified yet. **ShowMe does not start on native Windows yet**:
-there, Node cannot check who may read the folder that holds the connection token, so the extension
-refuses to start rather than guess. Use VS Code with WSL or a dev container. The unit tests also run
-on Windows in CI.
+**Preview.** Verified on Linux, macOS and Windows (unit + integration tests in a real VS Code on
+each).
+
+**Windows runs natively.** ShowMe keeps the connection token in a folder under `%TEMP%` and checks
+that only you, SYSTEM and Administrators can read that folder. It refuses to start, and says why, if
+`TEMP` or `TMP` points at a folder other users can write to: for example a shared `C:\Temp`, or a
+folder on another drive such as `D:\Temp`, which keeps that drive's default permissions (other users
+can create files there). To fix it, point `TEMP` and `TMP` at a folder only you can write to, such
+as the default `%LOCALAPPDATA%\Temp`, and restart VS Code. VS Code with WSL or a dev container keeps
+working as before; the agent and VS Code must run in the same environment (see step 2).
 
 The public repository on GitHub is a **release mirror**: development happens in a private repository, and
 each release is published there as one commit — see `CONTRIBUTING.md`. This is a personal project

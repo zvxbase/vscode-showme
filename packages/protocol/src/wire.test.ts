@@ -44,13 +44,30 @@ const namesColor = (error: z.ZodError): boolean =>
   error.issues.some((i) => i.code === "unrecognized_keys" && i.keys.includes("color"));
 
 describe("wire schemas", () => {
-  it("ハンドシェイクはトークンを必須にする", () => {
-    expect(helloSchema.safeParse({ protocolVersion: 1, token: "a".repeat(64) }).success).toBe(true);
-    expect(helloSchema.safeParse({ protocolVersion: 1 }).success).toBe(false);
+  it("ハンドシェイクは clientNonce を必須にし、トークンを受け取らない（D111）", () => {
+    const v = WIRE_PROTOCOL_VERSION;
+    expect(helloSchema.safeParse({ protocolVersion: v, clientNonce: "a".repeat(64) }).success).toBe(
+      true,
+    );
+    expect(helloSchema.safeParse({ protocolVersion: v }).success).toBe(false);
+    // v1 の形（トークンを生で送る）はもう通らない。
+    expect(helloSchema.safeParse({ protocolVersion: v, token: "a".repeat(64) }).success).toBe(
+      false,
+    );
+    expect(
+      helloSchema.safeParse({
+        protocolVersion: v,
+        clientNonce: "a".repeat(64),
+        token: "a".repeat(64),
+      }).success,
+    ).toBe(false);
   });
 
-  it("短すぎるトークンを拒否する", () => {
-    expect(helloSchema.safeParse({ protocolVersion: 1, token: "short" }).success).toBe(false);
+  it("短すぎる nonce を拒否する", () => {
+    expect(
+      helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION, clientNonce: "short" })
+        .success,
+    ).toBe(false);
   });
 
   it("既知のツール名だけを受け付ける", () => {
@@ -112,26 +129,28 @@ describe("wire schemas — additional boundary cases", () => {
     }
   });
 
-  it("トークン長の境界: 63文字は拒否・64文字は受理・65文字は拒否", () => {
-    expect(helloSchema.safeParse({ protocolVersion: 1, token: "a".repeat(63) }).success).toBe(
-      false,
-    );
-    expect(helloSchema.safeParse({ protocolVersion: 1, token: "a".repeat(64) }).success).toBe(true);
-    expect(helloSchema.safeParse({ protocolVersion: 1, token: "a".repeat(65) }).success).toBe(
-      false,
-    );
+  it("nonce 長の境界: 63文字は拒否・64文字は受理・65文字は拒否", () => {
+    const hello = (clientNonce: string) =>
+      helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION, clientNonce }).success;
+    expect(hello("a".repeat(63))).toBe(false);
+    expect(hello("a".repeat(64))).toBe(true);
+    expect(hello("a".repeat(65))).toBe(false);
   });
 
-  it("トークンは小文字16進のみ許可する（大文字16進は拒否）", () => {
-    expect(helloSchema.safeParse({ protocolVersion: 1, token: "A".repeat(64) }).success).toBe(
-      false,
-    );
+  it("nonce は小文字16進のみ許可する（大文字16進は拒否）", () => {
+    expect(
+      helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION, clientNonce: "A".repeat(64) })
+        .success,
+    ).toBe(false);
   });
 
-  it("トークンは長さが合っていても非16進文字を含めば拒否する", () => {
-    expect(helloSchema.safeParse({ protocolVersion: 1, token: `g${"a".repeat(63)}` }).success).toBe(
-      false,
-    );
+  it("nonce は長さが合っていても非16進文字を含めば拒否する", () => {
+    expect(
+      helloSchema.safeParse({
+        protocolVersion: WIRE_PROTOCOL_VERSION,
+        clientNonce: `g${"a".repeat(63)}`,
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -578,14 +597,14 @@ describe("wire schemas — 上限とハンドシェイク", () => {
   });
 
   it("プロトコル版が違うハンドシェイクを拒否する", () => {
-    const token = "a".repeat(64);
-    expect(helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION, token }).success).toBe(
-      true,
-    );
+    const clientNonce = "a".repeat(64);
     expect(
-      helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION + 1, token }).success,
+      helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION, clientNonce }).success,
+    ).toBe(true);
+    expect(
+      helloSchema.safeParse({ protocolVersion: WIRE_PROTOCOL_VERSION + 1, clientNonce }).success,
     ).toBe(false);
-    expect(helloSchema.safeParse({ protocolVersion: 0, token }).success).toBe(false);
+    expect(helloSchema.safeParse({ protocolVersion: 0, clientNonce }).success).toBe(false);
   });
 });
 

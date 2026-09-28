@@ -99,6 +99,19 @@ export function bridgeLaunchArgs(bridgePath: string): string[] {
 function slashedWindowsPath(p: string): string {
   return /^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p;
 }
+/**
+ * Windows の `claude mcp add ... -- node <ここ>`（D109）。
+ *
+ * `-e` の1行はここでは出さない: POSIX の単一引用符は cmd が引用符として扱わず、1行の中の `"` は
+ * Windows PowerShell 5.1 が node.exe に渡すときに剥がす。そこで実際のパス（版番号入り）を `/` 区切りにして
+ * 二重引用符で包む ―― 二重引用符は cmd と PowerShell の両方で1引数になり、Windows のファイル名は `"` を
+ * 持てない。代わりに版が上がると古いフォルダを指すので、文書に「更新したら打ち直す」と書く。
+ * 残る穴: パスに `%`（cmd が展開する）や `$`・`` ` ``（PowerShell が展開する）があると壊れる。
+ * インストール先の名前に現れることはまず無いので、ここでは扱わない。
+ */
+function windowsCommandPath(bridgePath: string): string {
+  return `"${bridgePath.replace(/\\/g, "/")}"`;
+}
 const VERSIONED_BRIDGE = /^(.*)[\\/]([^\\/]+-)(\d+\.\d+\.\d+)[\\/]bridge[\\/]index\.js$/;
 
 /**
@@ -112,12 +125,18 @@ const VERSIONED_BRIDGE = /^(.*)[\\/]([^\\/]+-)(\d+\.\d+\.\d+)[\\/]bridge[\\/]ind
 export function portableLaunchArgs(
   bridgePath: string,
   home: string | undefined,
+  platform: NodeJS.Platform,
 ): string[] | undefined {
   const m = VERSIONED_BRIDGE.exec(bridgePath);
   if (m === null || home === undefined || home === "") return undefined;
   const [, dir = "", prefix = ""] = m;
   const base = home.replace(/[\\/]+$/, "");
-  if (base === "" || !(dir.startsWith(`${base}/`) || dir.startsWith(`${base}\\`))) return undefined;
+  // Windows のパスは大小を区別しない。しかも同じフォルダでも綴りの大小が揃わない
+  // （`Uri.fsPath` はドライブ文字を `c:\`、`os.homedir()` は `C:\` で返す）。POSIX は区別する
+  const fold = platform === "win32" ? (x: string) => x.toLowerCase() : (x: string) => x;
+  const d = fold(dir);
+  const b = fold(base);
+  if (base === "" || !(d.startsWith(`${b}/`) || d.startsWith(`${b}\\`))) return undefined;
   const segments = dir
     .slice(base.length + 1)
     .split(/[\\/]+/)
@@ -148,18 +167,22 @@ function newestLauncher(dirExpr: string, prefix: string): string {
 export function buildAgentConfigDocument(
   bridgePath: string,
   lang: UiLanguage,
-  home?: string,
+  home: string | undefined,
+  platform: NodeJS.Platform,
 ): string {
   const allowJson = JSON.stringify(agentConfigAllowList(), null, 2);
   // 3つのエージェントの断片は、同じ引数の列から作る（別々に組むとずれる。不変条件14）
   const args = bridgeLaunchArgs(bridgePath);
-  const shellPath = args.map(shellQuote).join(" ");
+  const windows = platform === "win32";
+  // Claude Code の行だけはシェルを通る。Windows では cmd と PowerShell の両方で壊れない形にする
+  // （`windowsCommandPath`）。JSON / TOML はシェルを通らないので、どの機械でも `-e` の1行のまま
+  const shellPath = windows ? windowsCommandPath(bridgePath) : args.map(shellQuote).join(" ");
   // JSON 文字列は TOML の基本文字列としてもそのまま通る（`\\` `\"` `\uXXXX`）。
   const quotedPath = args.map((a) => JSON.stringify(a)).join(", ");
   // Copilot CLI の断片はユーザーの mcp-config.json と repo の .mcp.json で同じ1つ。`tools` は
   // ローカルのサーバに必須（D99）
   const copilot = serversJson(args);
-  const portableArgs = portableLaunchArgs(bridgePath, home);
+  const portableArgs = portableLaunchArgs(bridgePath, home, platform);
   const portable = portableArgs === undefined ? undefined : serversJson(portableArgs);
   const findsNewest = args[0] === "-e";
   const parts = {
@@ -170,6 +193,7 @@ export function buildAgentConfigDocument(
     copilot,
     portable,
     findsNewest,
+    windows,
   };
   return lang === "ja" ? japanese(parts) : english(parts);
 }
@@ -198,23 +222,35 @@ interface DocumentParts {
   portable: string | undefined;
   /** 断片が「いちばん新しい版を探して起動する」形か（開発中は直接のパス） */
   findsNewest: boolean;
+  /** Windows の文書か（Claude Code の行は `windowsCommandPath`、札は powershell） */
+  windows: boolean;
+}
+
+/** 冒頭の「断片が何を起動するか」の段落（英語）。Windows では Claude Code の行だけ版に縛られる */
+function englishLead(p: DocumentParts): string {
+  const cmd =
+    "The `claude mcp add` commands work in both PowerShell and Command Prompt. Each names this\nversion's folder, so run it again after the extension updates.";
+  if (p.windows && p.findsNewest)
+    return `\nThe JSON and TOML snippets below start the newest ShowMe installed next to this one, so you do\nnot need to paste them again after the extension updates. ${cmd}\n`;
+  if (p.windows)
+    return "\nThe `claude mcp add` commands work in both PowerShell and Command Prompt.\n";
+  if (p.findsNewest)
+    return "\nThe snippets below start the newest ShowMe installed next to this one, so you do not need to\npaste them again after the extension updates.\n";
+  return "";
 }
 
 function english(p: DocumentParts): string {
+  const fence = p.windows ? "powershell" : "sh";
   return `# ShowMe — agent configuration (read-only; copy from here)
 
 ShowMe never edits other tools' configuration files. This document is read-only:
 copy the fragment you need into your agent's configuration.
 
 Bridge: ${p.bridgePath}
-${
-  p.findsNewest
-    ? "\nThe snippets below start the newest ShowMe installed next to this one, so you do not need to\npaste them again after the extension updates.\n"
-    : ""
-}
+${englishLead(p)}
 ## Claude Code
 
-\`\`\`sh
+\`\`\`${fence}
 claude mcp add showme -- node ${p.shellPath}
 \`\`\`
 
@@ -231,7 +267,7 @@ add the one line \`"mcp__showme__arrange_editors"\` yourself.
 
 Removal:
 
-\`\`\`sh
+\`\`\`${fence}
 claude mcp remove showme
 \`\`\`
 
@@ -274,7 +310,7 @@ repository-only.
 
 All your repositories:
 
-\`\`\`sh
+\`\`\`${fence}
 claude mcp add --scope user showme -- node ${p.shellPath}
 \`\`\`
 
@@ -282,7 +318,7 @@ Shared with your team (writes \`.mcp.json\` at the repository root, meant to be 
 Code asks each person to approve project servers before using them; \`claude mcp reset-project-choices\`
 resets those answers):
 
-\`\`\`sh
+\`\`\`${fence}
 claude mcp add --scope project showme -- node ${p.shellPath}
 \`\`\`
 
@@ -365,7 +401,17 @@ function japanese(p: DocumentParts): string {
     p.allowJson,
     p.quotedPath,
     p.copilot,
-    p.findsNewest ? agentConfigDocJa.findsNewest.join("\n") : "",
+    japaneseLead(p),
     p.portable === undefined ? "" : format(agentConfigDocJa.portable.join("\n"), [p.portable]),
+    p.windows ? "powershell" : "sh",
   ]);
+}
+
+/** 冒頭の段落（日本語）。`englishLead` と同じ4通り */
+function japaneseLead(p: DocumentParts): string {
+  const ja = agentConfigDocJa;
+  if (p.windows && p.findsNewest) return ja.findsNewestWindows.join("\n");
+  if (p.windows) return ja.windowsCommand.join("\n");
+  if (p.findsNewest) return ja.findsNewest.join("\n");
+  return "";
 }

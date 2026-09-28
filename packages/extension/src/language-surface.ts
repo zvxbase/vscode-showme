@@ -1,6 +1,6 @@
-import * as path from "node:path";
 import type { FoundLocation, Location } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
+import { relativizerFor } from "./editor-observation.js";
 import type { AnchorResolution, LanguageSurface } from "./handlers/find-locations.js";
 import { outsideResultName } from "./language-lookup.js";
 import { probeUntilNonEmpty } from "./symbol-lookup.js";
@@ -29,6 +29,8 @@ export function createLanguageSurface(
   workspaceRoot: vscode.Uri | undefined,
   redaction: () => RedactionPolicy,
 ): LanguageSurface {
+  // 根の実体はこの面（問い合わせ1回）の中で1回だけ取る。
+  const relativize = relativizerFor(workspaceRoot);
   const toRelative = (uri: vscode.Uri): string | undefined => {
     if (workspaceRoot === undefined) return undefined;
     // **ワークスペースの外は返さない。** 言語サーバは node_modules や
@@ -43,8 +45,15 @@ export function createLanguageSurface(
     // `canonicalizeWorkspacePath` を直に呼んでいて、除外判定は呼び出し側が
     // 別に当てていた ―― 同じ量を2箇所で決めていた形である（不変条件14）。
     if (uri.scheme !== "file") return undefined;
-    const rel = path.relative(workspaceRoot.fsPath, uri.fsPath);
-    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    //
+    // **根からの相対パスは `relativizerFor`（関門の隣の `rootRelativizer`）が決める**（不変条件14）。根が
+    // リンク越しの綴りのとき、言語サーバは実体の綴りで返すことがある（macOS の `/var/folders/…` →
+    // `/private/var/folders/…` で実測。全部が外に見えて `find_references` が `not-found` だった）。
+    // `get_editor_state` のタブの名前と映しの写し方も同じ関数を通すので、ここで名指したファイルを
+    // 人間が開いても同じ名前で見える。根そのもの（空）は中ではない。
+    // 根のスキームと authority の一致も同じ関数が見る（`file:` でない根は実体を辿らない）。
+    const rel = relativize(uri);
+    if (rel === undefined) {
       // **外（D102）は、人間が設定をオンにしているときだけ**、関門を通るものを正規化した絶対パス
       // （綴り。realpath ではない）で返す。オフなら今までどおり返さない（関門が落とす）。
       const accepted = acceptPath(uri.fsPath);
@@ -55,7 +64,7 @@ export function createLanguageSurface(
       // 錨と同じ実体なら、エージェントの綴りで返す（リンクの指す先を明かさない）。
       return outsideResultName(accepted.realPath, spelled, anchorSpellings);
     }
-    const accepted = acceptPath(rel.split(path.sep).join("/"));
+    const accepted = acceptPath(rel);
     return accepted.ok ? verdictPath(accepted) : undefined;
   };
 

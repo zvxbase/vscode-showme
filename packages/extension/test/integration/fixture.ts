@@ -394,7 +394,14 @@ export function outsideDirFor(root: string): string {
 }
 
 export function createFixtureWorkspace(label: string): FixtureWorkspace {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), `showme-int-${label}-`));
+  // 実体の綴りで作る。macOS の一時フォルダ（`/var/folders/…`）は `/private/var/folders/…` への
+  // シンボリックリンクで、リンク越しの綴りでワークスペースを開くと、TS の言語サーバは同じファイルを
+  // 2つの綴りで別々に持ち、参照の答えが崩れる（Linux でも根をリンク越しにして再現した）。ShowMe 側は
+  // 実体の綴りで返った結果も根の中として読む（`language-surface.ts` の `relativeToRoot`）が、TS 自身の
+  // 答えの崩れはこちらでは直せない。検査は人間が普通に開く形（実体の綴り）で行う。
+  const base = fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), `showme-int-${label}-`)),
+  );
   const root = path.join(base, "workspace");
   const outsideDir = outsideDirFor(root);
 

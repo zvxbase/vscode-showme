@@ -7,7 +7,7 @@ import {
   type RegistryRead,
   defaultRuntimeDirs,
   describeSelectionFailure,
-  nodeRegistryFileSystem,
+  posixRegistryFileSystem,
   readRegistryEntries,
   selectWindow,
 } from "@zvx/vscode-showme-bridge/dist/discover.js";
@@ -162,9 +162,12 @@ async function waitForBeta(
   }
 }
 
-/** ブリッジが実際に読むのと同じ経路で登録ファイルを読む。 */
+/**
+ * ブリッジが POSIX で読むのと同じ経路で登録ファイルを読む（この束は Linux でだけ走る。
+ * Windows のブリッジは `discoverRegistry` で候補の DACL を確かめてから読む）。
+ */
 function readRegistry(): RegistryRead {
-  return readRegistryEntries(defaultRuntimeDirs(), nodeRegistryFileSystem);
+  return readRegistryEntries(defaultRuntimeDirs(), posixRegistryFileSystem);
 }
 
 function entryOf(read: RegistryRead, windowId: string): RegistryEntry {

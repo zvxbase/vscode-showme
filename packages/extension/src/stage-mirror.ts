@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { MAX_RESOLVE_BYTES } from "@zvx/vscode-showme-protocol";
+import { identityUnverifiable } from "./file-identity.js";
 import { STAGE_SCHEME_READONLY, type StageScheme } from "./stage-uri.js";
 import { type RedactionPolicy, acceptWorkspacePath } from "./workspace-path-gate.js";
 
@@ -52,6 +53,9 @@ const READ_CHUNK = 64 * 1024;
  * - `O_NOCTTY`: 端末に差し替わっていても制御端末にしない
  * - `fstat` で通常ファイル・同じ dev/ino・上限以内を確かめる。親ディレクトリが
  *   リンクに差し替わった場合は O_NOFOLLOW では防げないので、inode の比較で落とす
+ * - 番号（ino）が 0 なら開かない（D107）。番号を返さないファイルシステム（SMB など）では
+ *   0 == 0 で何でも一致し、上の比較が効かない。判定した側・開いた側のどちらが 0 でも落とす
+ *   （判定は `identityUnverifiable` 1つ。秘匿へのハードリンクの照合と同じ）
  *
  * 開けない（消えた・リンク・別物）のは `not-found`。関門を通った実体についての
  * それ以外の失敗（権限など）だけが `io-error`。
@@ -69,6 +73,8 @@ export function openJudgedFile(
   expected: { dev: bigint; ino: bigint },
   flags: number,
 ): JudgedOpen {
+  // 確かめられない実体は開きもしない（開くだけで FIFO・デバイスに触りうる）。
+  if (identityUnverifiable(expected)) return { ok: false, reason: "not-found" };
   let fd: number;
   try {
     fd = fs.openSync(realPath, flags | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY);
@@ -83,6 +89,7 @@ export function openJudgedFile(
     const stat = fs.fstatSync(fd, { bigint: true });
     if (
       stat.isFile() &&
+      !identityUnverifiable(stat) &&
       stat.dev === expected.dev &&
       stat.ino === expected.ino &&
       stat.size <= CAP
@@ -287,6 +294,9 @@ export class StageMirror {
         ? fs.lstatSync(verdict.realPath, { bigint: true })
         : fs.statSync(verdict.realPath, { bigint: true });
       if (!stat.isFile()) return undefined;
+      // 番号が 0 の実体は、開く所（`openJudgedFile`）で同一性を確かめられない（D107）。read / stat /
+      // write のどれも同じ答えにするため、ここで落とす（stat だけ通ると、読めないのに在ると答える）。
+      if (identityUnverifiable(stat)) return undefined;
       if (outside && (String(stat.dev) !== verdict.dev || String(stat.ino) !== verdict.ino)) {
         return undefined;
       }
@@ -309,15 +319,44 @@ export function readAcceptedOutsideFile(verdict: {
   dev: string;
   ino: string;
 }): string | undefined {
-  const opened = openJudgedFile(
-    verdict.realPath,
-    { dev: BigInt(verdict.dev), ino: BigInt(verdict.ino) },
-    fs.constants.O_RDONLY,
-  );
+  return readJudgedText(verdict.realPath, {
+    dev: BigInt(verdict.dev),
+    ino: BigInt(verdict.ino),
+  });
+}
+
+/**
+ * 関門が受け入れた**中の**実体の中身を読む。`read-workspace-file.ts` が中の答えで呼ぶ
+ * （`show_html` の `path` と、位置の解決器の `readText`）。
+ *
+ * 関門は中の実体の dev / ino を答えに載せないので、ここで realPath を **lstat**（リンクを辿らない）
+ * して、通常のファイルであることと dev / ino を取り、その実体だけを開く。パスで読み直すと、
+ * 判定から読むまでの間に
+ * - 秘匿ファイルへのリンクに差し替えられたとき、その中身を読む（`show_html` に描かれる）
+ * - FIFO に差し替えられたとき、読み手の無い open で拡張のホストが止まる
+ * （外の読みと同じ口を通す。読み方を2つに書かない）
+ */
+export function readAcceptedInsideFile(realPath: string): string | undefined {
+  let stat: fs.BigIntStats;
+  try {
+    stat = fs.lstatSync(realPath, { bigint: true });
+  } catch {
+    return undefined;
+  }
+  if (!stat.isFile() || stat.size > CAP) return undefined;
+  return readJudgedText(realPath, stat);
+}
+
+/** 判定した実体（dev / ino）だけを開いて、上限まで UTF-8 で読む。 */
+function readJudgedText(
+  realPath: string,
+  expected: { dev: bigint; ino: bigint },
+): string | undefined {
+  const opened = openJudgedFile(realPath, expected, fs.constants.O_RDONLY);
   if (!opened.ok) return undefined;
   try {
     const bytes = readUpToCap(opened.fd);
-    // 中の読み（`readFileSync(…, "utf8")`）と同じ復号（BOM を剥がさない）。
+    // 以前の `readFileSync(…, "utf8")` と同じ復号（BOM を剥がさない）。
     return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
   } catch {
     return undefined;

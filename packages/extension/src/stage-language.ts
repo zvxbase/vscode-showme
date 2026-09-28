@@ -1,7 +1,6 @@
-import * as fs from "node:fs";
 import * as vscode from "vscode";
 import type { DefinitionTarget } from "./config.js";
-import { relativizeToRoot } from "./editor-observation.js";
+import { relativizerFor } from "./editor-observation.js";
 import { stageKeyOfUri, stageUriFor } from "./stage-uri-vscode.js";
 import {
   STAGE_SCHEME_EDITABLE,
@@ -38,27 +37,13 @@ export type ResultPlace =
  * 結果の `file:` URI → ワークスペースの置き場所を答える関数を作る。関門は `acceptWorkspacePath` 1つ
  * （不変条件14: パスを受け入れるかをここで別に決めない）。
  *
- * **1回の問い合わせにつき1つ作る。** ルートの実体（realpath）は最初に要ったときに1回だけ取り、
- * 答えは結果の URI ごとに覚える（参照は同じファイルの結果が何十件も来る）。問い合わせをまたいで
- * 持ち越さない ―― ルートも秘匿の設定もファイルシステムも、次の問い合わせまでに変わりうる。
+ * **1回の問い合わせにつき1つ作る。** 答えは結果の URI ごとに覚える（参照は同じファイルの結果が
+ * 何十件も来る）。問い合わせをまたいで持ち越さない ―― ルートも秘匿の設定もファイルシステムも、次の問い合わせまでに変わりうる。
  */
 export function resultPlacer(
   root: vscode.Uri,
   redaction: RedactionPolicy,
 ): (uri: vscode.Uri) => ResultPlace {
-  let realRoot: vscode.Uri | null | undefined; // undefined = まだ取っていない、null = 使わない
-  const realRootUri = (): vscode.Uri | null => {
-    if (realRoot !== undefined) return realRoot;
-    realRoot = null;
-    if (root.scheme !== "file") return realRoot;
-    try {
-      const real = fs.realpathSync(root.fsPath);
-      if (real !== root.fsPath) realRoot = vscode.Uri.file(real);
-    } catch {
-      // ルートが読めなければ綴りだけで決める（関門も同じルートで落とす）。
-    }
-    return realRoot;
-  };
   /**
    * ワークスペースの外の結果（D102）。設定がオンで関門を通るものだけ `outside-accepted`（外の映しに
    * 写せる）。それ以外は今までどおり `outside`（`file:` のまま返す）。
@@ -74,20 +59,17 @@ export function resultPlacer(
       ? { kind: "inside", rel: key, canonical: verdict.canonical }
       : { kind: "outside-accepted", rel: key, canonical: verdict.absPath };
   };
+  // 根の実体は問い合わせの中で1回だけ取る（`relativizerFor`）。
+  const relativize = relativizerFor(root);
   const cache = new Map<string, ResultPlace>();
   return (uri) => {
     const key = uri.toString();
     const hit = cache.get(key);
     if (hit !== undefined) return hit;
-    // 綴りのルートで相対にできなければ、ルートの実体でも試す。ルートがリンクのとき、TS は実体の
-    // パスで答えうる ―― 綴りだけで比べるとワークスペースの中の結果が `outside` になり、関門を
-    // 通らずに返る（秘匿のファイルでも）。実体のルートからの rel は綴りのルートに繋いでも同じ実体を
-    // 指すので、関門にはそのまま渡せる。
-    let rel = relativizeToRoot(root, uri);
-    if (rel === undefined) {
-      const real = realRootUri();
-      if (real !== null) rel = relativizeToRoot(real, uri);
-    }
+    // 綴りの根で相対にできなければ根の実体でも測る（根がリンクのとき TS は実体のパスで答えうる）。
+    // 決めるのは `relativizerFor` の1つ（関門の隣の `rootRelativizer`）で、
+    // `get_editor_state` のタブの名前と同じ関数（不変条件14）。
+    const rel = relativize(uri);
     let place: ResultPlace;
     if (rel === undefined) place = outsidePlace(uri);
     else {

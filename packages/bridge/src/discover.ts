@@ -2,13 +2,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  type AclVerdict,
   TOKEN_HEX_LENGTH,
   WIRE_PROTOCOL_VERSION,
   type WindowCandidate,
   type WindowRole,
+  checkRegisteredSocketPath,
   chooseStageWindow,
+  processIsAlive,
   processUid,
   runtimeDirCandidates,
+  verifyRuntimeDirWindows,
   windowRoleSchema,
 } from "@zvx/vscode-showme-protocol";
 import { z } from "zod";
@@ -55,7 +59,13 @@ const registryEntrySchema = z.object({
   }),
 });
 
-export type RegistryEntry = z.infer<typeof registryEntrySchema>;
+export type RegistryEntry = z.infer<typeof registryEntrySchema> & {
+  /**
+   * 読んだ登録ファイルのパス（`scanRegistry` が付ける。ファイルの中の値は読まない ―― スキーマに無い鍵は
+   * 落ちる）。繋いだ相手が証明できなかったとき、人間に消すファイルを名指すため（D111）。
+   */
+  registryFile?: string;
+};
 
 /** 登録ファイル1件を読む。読めない・形が違うなら undefined（黙って飛ばす）。 */
 export function parseRegistryEntry(raw: string): RegistryEntry | undefined {
@@ -198,23 +208,108 @@ export interface RegistryScan {
   /** 衛生検査に落ちた理由。あるなら黙って迂回せず人間に見せる（設計書 D22） */
   unsafe?: string;
   entries: RegistryEntry[];
+  /** 読めたが `socketPath` の確かめ（D105）で捨てた登録 */
+  rejected: RejectedRegistration[];
 }
 
-/** 実行時ディレクトリの中の登録ファイルを全部読む。 */
-export function scanRegistry(dir: string, io: RegistryFileSystem): RegistryScan {
+/**
+ * `socketPath` の確かめ（D105）か pid の生死（D111）で捨てた登録。ファイルと理由だけを持つ ―― 登録の中身
+ * （ソケットのパス・トークン・窓の情報）は持たない。1件も見つからなかったときに、
+ * 「登録はあったが使わなかった」ことを人間に見せるため（黙って消すと「拡張が居ない」と読まれる）。
+ */
+export interface RejectedRegistration {
+  file: string;
+  reason: string;
+}
+
+/**
+ * 実行時ディレクトリの中の登録ファイルを全部読む。
+ *
+ * 登録の `socketPath` が拡張の作りうる形でなければ、読めない登録と同じく捨てる（D105）。
+ * 形は protocol の `checkRegisteredSocketPath` が決める（拡張がソケットを作る関数と同じ場所）。
+ * POSIX ではさらに、ソケットの在るディレクトリが実行時ディレクトリと同じ衛生
+ * （`io.openDir` が ok）を満たすこと。そのディレクトリは、登録を見つけた候補とは限らない ――
+ * 登録は全候補に複製され、ソケットは1つの候補にしか無い（§2A.6）。
+ *
+ * **pid が死んでいる登録も捨てる**（D111。全 OS）。拡張が登録を消さずに死ぬと（クラッシュ・kill・
+ * 再起動）、登録は誰も listen していない名前を指し続ける。Windows のパイプの名前はマシン全体で共有
+ * されるので、別の利用者がその名前でパイプを作れる。相互認証（protocol の `handshake.ts`）で
+ * トークンも要求も渡らないが、死んだ窓の登録にはそもそも繋がない。判定は拡張の掃除と同じ
+ * protocol の `processIsAlive`（`ESRCH` だけが死。`EPERM` は生きている）。pid の再利用では
+ * 「生きている」と外れるので、この判定は窓を縮めるだけで、守りの本体は相互認証である。
+ */
+export function scanRegistry(
+  dir: string,
+  io: RegistryFileSystem,
+  platform: NodeJS.Platform = process.platform,
+  isAlive: (pid: number) => boolean = processIsAlive,
+): RegistryScan {
   const state = io.openDir(dir);
-  if (state.kind === "absent") return { dir, present: false, entries: [] };
-  if (state.kind === "unsafe") return { dir, present: true, unsafe: state.reason, entries: [] };
+  if (state.kind === "absent") return { dir, present: false, entries: [], rejected: [] };
+  if (state.kind === "unsafe") {
+    return { dir, present: true, unsafe: state.reason, entries: [], rejected: [] };
+  }
 
   const entries: RegistryEntry[] = [];
+  const rejected: RejectedRegistration[] = [];
   for (const name of state.names) {
     if (!name.endsWith(".json")) continue;
     const raw = io.read(dir, name);
     if (raw === undefined) continue;
     const entry = parseRegistryEntry(raw);
-    if (entry !== undefined) entries.push(entry);
+    if (entry === undefined) continue;
+    const file = path.join(dir, name);
+    const shape = checkRegisteredSocketPath(entry.socketPath, name, platform);
+    if (!shape.ok) {
+      rejected.push({
+        file,
+        reason:
+          "its socketPath is not a path the extension creates (a local socket named after the registration file)",
+      });
+      continue;
+    }
+    if (shape.socketDir !== undefined) {
+      const socketDir = io.openDir(shape.socketDir);
+      if (socketDir.kind !== "ok") {
+        rejected.push({
+          file,
+          reason:
+            socketDir.kind === "absent"
+              ? `the directory of its socket does not exist: ${shape.socketDir}`
+              : `the directory of its socket is not safe: ${socketDir.reason}`,
+        });
+        continue;
+      }
+    }
+    // pid <= 0 は判定に渡さない（kill(0) はプロセスグループ全体に飛ぶ）。拡張がそう書くことは無い。
+    if (entry.pid <= 0 || !isAlive(entry.pid)) {
+      rejected.push({
+        file,
+        reason: `its process (pid ${entry.pid}) is not running (the window closed without removing its registration)`,
+      });
+      continue;
+    }
+    entries.push({ ...entry, registryFile: file });
   }
-  return { dir, present: true, entries };
+  return { dir, present: true, entries, rejected };
+}
+
+/**
+ * `openDir` の答えを1回の走査の間だけ覚える。同じディレクトリを候補としても
+ * ソケットの在り処としても見るので、見るたびに違う答えを出させない（1回の lstat で決める）。
+ */
+function memoizeOpenDir(io: RegistryFileSystem): RegistryFileSystem {
+  const seen = new Map<string, DirState>();
+  return {
+    openDir(dir) {
+      const known = seen.get(dir);
+      if (known !== undefined) return known;
+      const state = io.openDir(dir);
+      seen.set(dir, state);
+      return state;
+    },
+    read: (dir, name) => io.read(dir, name),
+  };
 }
 
 /** 両方の候補を走査した結果。 */
@@ -227,6 +322,8 @@ export interface RegistryRead {
   unsafe: readonly { dir: string; reason: string }[];
   /** 窓ごとに1件に畳んだ登録。候補の順（先頭は書き込み先の候補） */
   entries: RegistryEntry[];
+  /** `socketPath` の確かめ（D105）か pid の生死（D111）で捨てた登録（ファイルと理由だけ） */
+  rejected: readonly RejectedRegistration[];
 }
 
 /**
@@ -257,9 +354,16 @@ export interface RegistryRead {
  * 止めると、`/tmp`（1777）に後退先の名前で先回りするだけで、誰でも疎通を
  * 止められる。読まないので、飛ばしても攻撃者の登録は1件も入らない。
  */
-export function readRegistryEntries(dirs: readonly string[], io: RegistryFileSystem): RegistryRead {
+export function readRegistryEntries(
+  dirs: readonly string[],
+  fileSystem: RegistryFileSystem,
+  platform: NodeJS.Platform = process.platform,
+  isAlive: (pid: number) => boolean = processIsAlive,
+): RegistryRead {
+  const io = memoizeOpenDir(fileSystem);
   const scanned = new Set<string>();
   const unsafe: { dir: string; reason: string }[] = [];
+  const rejected: RejectedRegistration[] = [];
   const byWindow = new Map<string, RegistryEntry>();
   const order: string[] = [];
   let present = false;
@@ -269,9 +373,10 @@ export function readRegistryEntries(dirs: readonly string[], io: RegistryFileSys
     if (scanned.has(dir)) continue;
     scanned.add(dir);
 
-    const scan = scanRegistry(dir, io);
+    const scan = scanRegistry(dir, io, platform, isAlive);
     if (scan.present) present = true;
     if (scan.unsafe !== undefined) unsafe.push({ dir, reason: scan.unsafe });
+    rejected.push(...scan.rejected);
 
     for (const entry of scan.entries) {
       const key = windowKey(entry);
@@ -286,7 +391,7 @@ export function readRegistryEntries(dirs: readonly string[], io: RegistryFileSys
     const entry = byWindow.get(key);
     if (entry !== undefined) entries.push(entry);
   }
-  return { dirs: [...scanned], present, unsafe, entries };
+  return { dirs: [...scanned], present, unsafe, entries, rejected };
 }
 
 /**
@@ -307,12 +412,11 @@ export function ownedAndPrivate(
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
   if (st.isSymbolicLink()) return `${what} is a symlink: ${target}`;
-  // Windows では所有者もモードも確かめられない（Node は ACL を読まず、`st.uid` は 0、`st.mode` は
-  // 読み取り専用の属性から作った値）。確かめられないものは信じない ―― 拡張も Windows では
-  // 登録を書かない（`prepareRuntimeDir`）。モードが偶然 0700 に見えても通さないよう、先に断る。
-  if (platform === "win32") {
-    return `${what} cannot be verified on native Windows (ShowMe does not run there yet): ${target}`;
-  }
+  // Windows では所有者もモードも `fs.Stats` からは読めない（`st.uid` は 0、`st.mode` は読み取り専用の
+  // 属性から作った値）。そこはここでは見ず、実行時ディレクトリの DACL を `verifyRuntimeDirWindows`
+  // で確かめる（D104。`createNodeRegistryFileSystem` の win32 の枝）。登録ファイルは締めた DACL を
+  // 継承するので、ファイルごとには確かめない。
+  if (platform === "win32") return undefined;
   if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
     return `${what} is owned by another user (uid ${st.uid}): ${target}`;
   }
@@ -323,39 +427,134 @@ export function ownedAndPrivate(
   return undefined;
 }
 
-/** 本物のファイルシステム。衛生検査つき。 */
-export const nodeRegistryFileSystem: RegistryFileSystem = {
-  openDir(dir) {
-    let st: fs.Stats;
-    try {
-      st = fs.lstatSync(dir);
-    } catch {
-      return { kind: "absent" };
-    }
-    if (!st.isDirectory()) {
-      return { kind: "unsafe", reason: `runtime dir is not a directory: ${dir}` };
-    }
-    const bad = ownedAndPrivate(st, "runtime dir", dir);
-    if (bad !== undefined) return { kind: "unsafe", reason: bad };
-    try {
-      return { kind: "ok", names: fs.readdirSync(dir) };
-    } catch (e) {
-      return { kind: "unsafe", reason: `cannot list runtime dir: ${String(e)}` };
-    }
-  },
+export interface NodeRegistryFileSystemOptions {
+  platform?: NodeJS.Platform;
+  /**
+   * win32: 走査の前に `verifyRuntimeDirWindows` で取った、候補ごとの判定（D104）。
+   * **判定の無いディレクトリは読まない**（確かめていないものを信じない）。
+   */
+  windowsVerdicts?: ReadonlyMap<string, AclVerdict>;
+}
 
-  read(dir, name) {
-    const target = path.join(dir, name);
+/**
+ * 本物のファイルシステム。衛生検査つき。
+ *
+ * POSIX は `lstat` の所有者とモード（`ownedAndPrivate`）。win32 は Node が ACL を読めないので、
+ * 同期の走査の前に非同期で取った DACL の判定（`windowsVerdicts`）を引く。
+ */
+export function createNodeRegistryFileSystem(
+  options: NodeRegistryFileSystemOptions = {},
+): RegistryFileSystem {
+  const platform = options.platform ?? process.platform;
+  const verdicts = options.windowsVerdicts ?? new Map<string, AclVerdict>();
+  return {
+    openDir(dir) {
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(dir);
+      } catch {
+        return { kind: "absent" };
+      }
+      if (!st.isDirectory()) {
+        return { kind: "unsafe", reason: `runtime dir is not a directory: ${dir}` };
+      }
+      const bad = ownedAndPrivate(st, "runtime dir", dir, platform);
+      if (bad !== undefined) return { kind: "unsafe", reason: bad };
+      if (platform === "win32") {
+        const verdict = verdicts.get(dir);
+        if (verdict === undefined) {
+          return {
+            kind: "unsafe",
+            reason: `runtime dir was not verified (its access control list was not checked): ${dir}`,
+          };
+        }
+        if (!verdict.ok) return { kind: "unsafe", reason: verdict.reason };
+      }
+      try {
+        return { kind: "ok", names: fs.readdirSync(dir) };
+      } catch (e) {
+        return { kind: "unsafe", reason: `cannot list runtime dir: ${String(e)}` };
+      }
+    },
+
+    read(dir, name) {
+      const target = path.join(dir, name);
+      try {
+        const st = fs.lstatSync(target);
+        // 通常のファイルだけ（symlink・junction・ディレクトリは読まない）。
+        if (!st.isFile()) return undefined;
+        if (ownedAndPrivate(st, "registry file", target, platform) !== undefined) return undefined;
+        return fs.readFileSync(target, "utf8");
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+/**
+ * **POSIX 専用**の本物のファイルシステム（所有者とモードで確かめる。DACL の判定を持たない）。
+ * 同期で走査したい検査のためにある。win32 では判定が無いので、どの候補も `unsafe` になり
+ * 何も読まない ―― Windows で探すのは `discoverRegistry`（ブリッジの本線もこちら）。
+ */
+export const posixRegistryFileSystem: RegistryFileSystem = createNodeRegistryFileSystem();
+
+export interface DiscoverOptions {
+  platform?: NodeJS.Platform;
+  /** win32 で候補の DACL を確かめる関数。既定は protocol の `verifyRuntimeDirWindows`（本物の icacls）。 */
+  verifyWindowsDir?: (dir: string) => Promise<AclVerdict>;
+}
+
+/**
+ * 候補を走査して登録を集める（ブリッジの本線）。
+ *
+ * win32 では、走査の前に在る候補ごとに `verifyRuntimeDirWindows`（親を他人が書けないこと・
+ * ディレクトリが本人と trusted だけのもの。拡張と同じ関数。D104）を取り、その判定を同期の走査に渡す。
+ * 通らなかった候補は `unsafe`（理由つき）になり、中身は読まない。無い候補は確かめない（`absent`）。
+ * 候補ごとに icacls を2回起動する（約 160 ms）。呼び出しのたびに探し直す理由は `index.ts` の
+ * `resolveWindow`。
+ *
+ * POSIX では今までどおり、`lstat` の所有者とモードだけで決める。
+ */
+export async function discoverRegistry(
+  dirs: readonly string[],
+  options: DiscoverOptions = {},
+): Promise<RegistryRead> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    return readRegistryEntries(dirs, createNodeRegistryFileSystem({ platform }), platform);
+  }
+  const verify = options.verifyWindowsDir ?? ((dir: string) => verifyRuntimeDirWindows(dir));
+  const unique = [...new Set(dirs)].filter((dir) => {
     try {
-      const st = fs.lstatSync(target);
-      if (!st.isFile()) return undefined;
-      if (ownedAndPrivate(st, "registry file", target) !== undefined) return undefined;
-      return fs.readFileSync(target, "utf8");
+      fs.lstatSync(dir);
+      return true;
     } catch {
-      return undefined;
+      return false;
     }
-  },
-};
+  });
+  const verdicts = new Map<string, AclVerdict>();
+  await Promise.all(
+    unique.map(async (dir) => {
+      let verdict: AclVerdict;
+      try {
+        verdict = await verify(dir);
+      } catch (e) {
+        // 確かめられなかったものは信じない。
+        verdict = {
+          ok: false,
+          reason: `Could not verify the runtime directory ${dir}: ${String(e)}`,
+        };
+      }
+      verdicts.set(dir, verdict);
+    }),
+  );
+  return readRegistryEntries(
+    dirs,
+    createNodeRegistryFileSystem({ platform, windowsVerdicts: verdicts }),
+    platform,
+  );
+}
 
 /**
  * 拡張と同じ規則で、読みに行く実行時ディレクトリの候補を出す。
@@ -385,11 +584,23 @@ export function defaultRuntimeDirs(): string[] {
  */
 export function describeSelectionFailure(
   failure: SelectionFailed,
-  read: Pick<RegistryRead, "dirs" | "present">,
+  read: Pick<RegistryRead, "dirs" | "present"> & Partial<Pick<RegistryRead, "rejected">>,
 ): string {
   const where = read.dirs.join(", ");
   switch (failure.reason) {
-    case "no-entries":
+    case "no-entries": {
+      // 登録はあったが、接続先の確かめ（D105）で使わなかった。「拡張が居ない」より先にそれを言う
+      // （名指すのは自分の実行時ディレクトリの中のファイルと理由だけ）。
+      const rejected = read.rejected ?? [];
+      if (rejected.length > 0) {
+        const listed = rejected.map((r) => `${r.file} (${r.reason})`).join("; ");
+        return [
+          `No usable VS Code window found. Registration file(s) in the runtime directory (${where}) `,
+          `were ignored: ${listed}. `,
+          "Reload the VS Code window to rewrite its registration; if the file was not written by ",
+          "the ShowMe extension, leave it for a human to inspect.",
+        ].join("");
+      }
       return [
         read.present
           ? `No VS Code window found. The runtime directory (${where}) has no registration. `
@@ -402,6 +613,7 @@ export function describeSelectionFailure(
         "Also check that $XDG_RUNTIME_DIR does not differ between the extension and here ",
         "(if it is set on only one side, the two look in different places).",
       ].join("");
+    }
     case "version-mismatch":
       return [
         "The VS Code extension and this bridge speak different wire protocol versions ",

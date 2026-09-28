@@ -90,3 +90,48 @@ describe("normalizeAbsolutePath（D102）", () => {
     expect(normalizeAbsolutePath("\\\\srv\\share\\a.ts", nodePath.win32)).toBeUndefined();
   });
 });
+
+describe("8.3 の短い名前（D106）", () => {
+  it("hasShortNameSegment は ~ の後に数字が続くセグメントを見つける", async () => {
+    const { hasShortNameSegment } = await import("./paths.js");
+    for (const s of ["ENV~1", "CREDEN~1.JSO", "B~12", "PROGRA~1", "foo~1.txt", "~1"]) {
+      expect(hasShortNameSegment(s), s).toBe(true);
+    }
+    for (const s of ["foo~bar", "~", "notes~draft.md", "a~b~c", "file~", "x~.ts"]) {
+      expect(hasShortNameSegment(s), s).toBe(false);
+    }
+  });
+
+  it("normalizeWorkspaceRelative は短い名前を持つパスを全 OS で断る", () => {
+    // Windows では `ENV~1` が `.env` と同じ実体を指し、綴りに当てる秘匿の判定をすり抜ける。
+    // Linux の repo も Windows で開かれうるので、OS を問わず断る。
+    for (const raw of [
+      "ENV~1",
+      "CREDEN~1.JSO",
+      "a/B~12/c",
+      "src\\PROGRA~1\\x.ts",
+      "sub/ENV~1",
+      "foo~1.txt",
+    ]) {
+      expect(normalizeWorkspaceRelative(raw), raw).toBeUndefined();
+    }
+  });
+
+  it("~ を含むふつうの名前は今どおり通す（両方向）", () => {
+    expect(normalizeWorkspaceRelative("notes~draft.md")).toBe("notes~draft.md");
+    expect(normalizeWorkspaceRelative("foo~bar/x.ts")).toBe("foo~bar/x.ts");
+    expect(normalizeWorkspaceRelative("~")).toBe("~");
+    expect(normalizeWorkspaceRelative("~/x")).toBe("~/x");
+    expect(normalizeWorkspaceRelative("backup~")).toBe("backup~");
+  });
+
+  it("normalizeAbsolutePath の win32 の判定も同じ関数で、posix は今どおり通す", async () => {
+    const { normalizeAbsolutePath } = await import("./paths.js");
+    const nodePath = await import("node:path");
+    expect(normalizeAbsolutePath("C:\\PROGRA~1\\a.ts", nodePath.win32)).toBeUndefined();
+    expect(normalizeAbsolutePath("C:\\notes~draft\\a.ts", nodePath.win32)).toBe(
+      "c:\\notes~draft\\a.ts",
+    );
+    expect(normalizeAbsolutePath("/tmp/PROGRA~1/a.ts", nodePath.posix)).toBe("/tmp/PROGRA~1/a.ts");
+  });
+});

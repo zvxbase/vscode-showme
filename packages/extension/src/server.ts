@@ -3,13 +3,25 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import {
+  HANDSHAKE_REFUSALS,
+  MAX_HANDSHAKE_LINE_BYTES,
   MAX_WIRE_LINE_BYTES,
-  TOKEN_HEX_LENGTH,
   WIRE_PROTOCOL_VERSION,
   type WindowRole,
+  type WindowsAclIo,
   type WireRequest,
-  helloSchema,
+  newHandshakeNonce,
+  parseClientProofLine,
+  parseHelloLine,
+  prepareRuntimeDirWindows,
+  processIsAlive,
+  registryFileNameFor,
+  registrySuffixOf,
   requestSchema,
+  serverProofLine,
+  socketPathFor,
+  socketPathLength,
+  verifyClientProof,
 } from "@zvx/vscode-showme-protocol";
 import { ToolError } from "./tool-error.js";
 
@@ -18,8 +30,11 @@ import { ToolError } from "./tool-error.js";
 // `server.ts` を読み込まずに投げられるようにするために分けてある。
 export { ToolError };
 
-/** ハンドシェイク前に受け取ってよい最大バイト数。 */
-const MAX_HANDSHAKE_BYTES = 4096;
+/**
+ * 認証の前に受け取ってよい1行の最大バイト数。**protocol が決める**（ブリッジも同じ値で拡張の
+ * 証明の行を読む。D27 / D111 / 不変条件14）。
+ */
+const MAX_HANDSHAKE_BYTES = MAX_HANDSHAKE_LINE_BYTES;
 /**
  * 1行(1メッセージ)の最大バイト数。**protocol が決める**（不変条件14）。
  *
@@ -41,6 +56,13 @@ const HANDSHAKE_TIMEOUT_MS = 3000;
 const MAX_AUTHED_CONNECTIONS = 1;
 
 /**
+ * 答えを書いて閉じた（`end`）後、相手が閉じるのを待つ時間。過ぎたら切る（`destroy`）。
+ * 閉じない相手に fd と `sockets` の席を握らせ続けないため。答えは書き終えているので、
+ * ふつうのクライアント（答えを読んだらすぐ閉じる）には効かない。
+ */
+export const ANSWERED_LINGER_MS = 2000;
+
+/**
  * 2本目を拒否したときに観測者へ渡す理由。
  *
  * 可視化の分岐（ステータスバーに出すかどうか）が文字列リテラルの綴りに
@@ -50,13 +72,26 @@ export const SECOND_CONNECTION_REASON = "second concurrent connection";
 
 export type PrepareResult = { ok: true } | { ok: false; reason: string };
 
-/** Windows でソケットサーバを立てない理由（人間が読む。拡張の通知とステータスバーに出る）。 */
-export const WINDOWS_UNSUPPORTED_REASON =
-  "ShowMe does not run on native Windows yet: Node cannot verify who may read the runtime directory " +
-  "there, and that directory holds the connection token. Use VS Code with WSL or a dev container.";
+/**
+ * 実行時ディレクトリを用意し、安全性を検証する（OS ごとの手順に振り分ける）。
+ *
+ * - Windows: DACL で確かめる（D104。`prepareRuntimeDirWindows` ―― ブリッジと同じ判定を通す）。
+ *   Node の `fs.stat` は ACL を映さない（mode は 666、uid は 0）ので、POSIX の手順は使えない
+ * - それ以外: 所有者と 0700（`prepareRuntimeDirPosix`）
+ *
+ * `windowsAclIo` は検査が偽物を渡すためのもの（Linux の上でも振り分けを確かめる）。
+ */
+export async function prepareRuntimeDir(
+  dir: string,
+  platform: NodeJS.Platform = process.platform,
+  windowsAclIo?: WindowsAclIo,
+): Promise<PrepareResult> {
+  if (platform === "win32") return prepareRuntimeDirWindows(dir, windowsAclIo);
+  return prepareRuntimeDirPosix(dir);
+}
 
 /**
- * 実行時ディレクトリを用意し、安全性を検証する。
+ * POSIX の実行時ディレクトリを用意し、安全性を検証する。
  *
  * /tmp は 1777 なので、攻撃者が先回りしてディレクトリやシンボリックリンクを
  * 置ける(設計書 S7 / D22)。作成後に開いた fd を fstat し、所有者・
@@ -64,16 +99,7 @@ export const WINDOWS_UNSUPPORTED_REASON =
  * **拒否する。既存を消さない**(共有ディレクトリでの無検査 unlink は
  * 任意ファイル削除になる)。
  */
-export function prepareRuntimeDir(
-  dir: string,
-  platform: NodeJS.Platform = process.platform,
-): PrepareResult {
-  // Windows では上の検証（所有者と 0700）が意味を持たない。Node は ACL を読まず、`st.mode` は
-  // 読み取り専用の属性から作った 666 / 444 を返し、`st.uid` は 0 である。確かめられないものを
-  // 「確かめた」にしないため、ディレクトリを作る前に閉じる側に倒す（設計書 §3.5 の Windows の行）。
-  // 以前は作ってから 666 で落ちていた ―― 結果は同じ拒否だが、理由が人間に読めず、空の
-  // ディレクトリを残していた（不変条件13）。
-  if (platform === "win32") return { ok: false, reason: WINDOWS_UNSUPPORTED_REASON };
+export function prepareRuntimeDirPosix(dir: string): PrepareResult {
   const parent = path.dirname(dir);
   if (!fs.existsSync(parent)) {
     return { ok: false, reason: `parent directory does not exist: ${parent}` };
@@ -138,8 +164,6 @@ export function prepareRuntimeDir(
   return { ok: true };
 }
 
-/** 登録ファイルの名前。suffix は 16 桁の 16 進数。 */
-const REGISTRATION_NAME = /^[0-9a-f]+\.json$/;
 /**
  * 原子的な書き込みの途中（rename 前）に落ちたときに残る名前。pid を含む。
  *
@@ -152,23 +176,9 @@ const REGISTRATION_TMP_NAME = /^[0-9a-f]+\.json\.tmp-(\d+)-[0-9a-f]+$/;
 /** 登録ファイルとして読む上限。共有ディレクトリなので、中身は他人が置きうる。 */
 const MAX_REGISTRATION_BYTES = 64 * 1024;
 
-/**
- * プロセスが生きているか。
- *
- * `EPERM` は「いるが自分のものではない」なので**生きている**側に倒す。
- * `ESRCH` のときだけ死んでいると判定する。**この判定は消しすぎない向きにだけ
- * 外れる**: pid が再利用されていれば「生きている」と答え、掃除を見送る
- * （設計書 S7 が「pid だけで生死を決めるな」と言う理由）。到達可否による
- * 一次判定は、発見の側（ブリッジ）が接続して行う。
- */
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+// プロセスの生死は protocol の `processIsAlive` で決める（ブリッジの走査と同じ判定。D111 / 不変条件14）。
+// `EPERM` は生きている側に倒し、`ESRCH` のときだけ死んでいる。**この判定は消しすぎない向きにだけ
+// 外れる**: pid が再利用されていれば「生きている」と答え、掃除を見送る（設計書 S7）。
 
 /**
  * 登録ファイルから pid を読む。読めない・信用できないなら undefined。
@@ -176,6 +186,10 @@ function processIsAlive(pid: number): boolean {
  * lstat で通常ファイル・自分所有であることを確かめてから開く。symlink を
  * 辿らないのは D23 のため、FIFO を弾くのは `readFileSync` が**永久に
  * 止まりうる**ため（攻撃者は同じディレクトリに名前付きパイプを置ける）。
+ *
+ * Windows には `process.getuid` が無く、所有者の照合は飛ぶ。それで足りるのは、ここへ来る
+ * ディレクトリが `prepareRuntimeDir` を通ったもの（本人と trusted だけが中に作れる DACL。D104）
+ * だけだからである ―― 他人はそもそも中にファイルを置けない。
  */
 function readRegistrationPid(file: string): number | undefined {
   try {
@@ -208,6 +222,10 @@ function readRegistrationPid(file: string): number | undefined {
  *
  * **候補ごとに呼ぶこと。** 読む候補が2つなら掃除する候補も2つ、が対称である
  * （設計書 §2A.6）。呼び出し側は `start()`。
+ *
+ * **`prepareRuntimeDir` を通ったディレクトリにだけ呼ぶこと。** Windows では所有者（uid）の
+ * 照合が効かず（`process.getuid` が無い）、他人のファイルでないことは、ディレクトリの DACL が
+ * 他人に中へ作らせないこと（D104）だけで保たれている。
  */
 export function cleanStaleRegistrations(
   dir: string,
@@ -232,7 +250,9 @@ export function cleanStaleRegistrations(
       }
       continue;
     }
-    if (!REGISTRATION_NAME.test(name)) continue;
+    // 登録ファイルの名前の形と接尾辞は protocol の1つ（`registryFileNameFor` の逆。D105）。
+    const suffix = registrySuffixOf(name);
+    if (suffix === undefined) continue;
     const registryPath = path.join(dir, name);
     const pid = readRegistrationPid(registryPath);
     if (pid === undefined || isAlive(pid)) continue;
@@ -240,7 +260,8 @@ export function cleanStaleRegistrations(
     safeUnlink(registryPath);
     // 対応するソケットは**名前から導く**。登録ファイルの中の socketPath は
     // 他人が書ける値で、そこを消しに行くと任意パスへの unlink になる。
-    safeUnlink(path.join(dir, `${name.slice(0, -".json".length)}.sock`));
+    // 作るのと同じ `socketPathFor`。Windows は名前付きパイプでディレクトリに残らない。
+    if (process.platform !== "win32") safeUnlink(socketPathFor(dir, suffix, process.platform));
     removed.push(registryPath);
   }
   return removed;
@@ -262,7 +283,11 @@ export interface WindowIdentity {
 }
 
 export interface ServerInfo {
-  /** ソケットは1本。用意できた**先頭の候補**の中にある。 */
+  /**
+   * ソケットは1本。POSIX では、用意できた候補のうちパスが `sun_path` に収まる**最初の**候補の中にある
+   * （ふつうは第一候補。D108）。Windows では名前付きパイプ（`\\.\pipe\vscode-showme-<接尾辞>`）で、
+   * どの候補の中にも無い。作るのは protocol の `socketPathFor` 1つ（D105）。
+   */
   socketPath: string;
   /**
    * 登録ファイル。**候補ごとに1つ**（設計書 §2A.6）。
@@ -307,16 +332,67 @@ interface Registration {
  * 名前は `.json` で終わらないので、ブリッジは途中の tmp を登録ファイルとして
  * 読まない。落ちて残った tmp は `cleanStaleRegistrations` が pid で掃除する。
  */
-function writeRegistrationFile(target: string, payload: string): void {
+export function writeRegistrationFile(
+  target: string,
+  payload: string,
+  deps: RegistrationWriteDeps = defaultRegistrationWriteDeps,
+): void {
   const tmp = `${target}.tmp-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
   try {
     // `wx` で作る。既存を開かないので、モード 0600 は必ず作成時に効く
     // （`writeFileSync` の mode は既存ファイルには適用されない）。
     fs.writeFileSync(tmp, payload, { mode: 0o600, flag: "wx" });
-    fs.renameSync(tmp, target);
+    renameWithRetry(tmp, target, deps);
   } catch (e) {
+    // Windows では、rename を諦めた原因（ウイルス対策などが開いている）で unlink も失敗し、tmp が
+    // 残りうる。中身はトークンを含むが、置き場は本人と SYSTEM だけの DACL の中（D104）で、
+    // 次の起動の `cleanStaleRegistrations` が pid で掃除する。
     safeUnlink(tmp);
     throw e;
+  }
+}
+
+/** 登録ファイルの置き換えに使う I/O。検査は失敗する rename と眠らない sleep を渡す。 */
+export interface RegistrationWriteDeps {
+  platform: NodeJS.Platform;
+  rename: (from: string, to: string) => void;
+  /** 同期で待つ（ミリ秒）。 */
+  sleep: (ms: number) => void;
+}
+
+/** 同期で眠る。拡張ホストのスレッドを止めるが、上限は `RENAME_RETRY_DELAY_MS × 回数` で短い。 */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+const defaultRegistrationWriteDeps: RegistrationWriteDeps = {
+  platform: process.platform,
+  rename: (from, to) => fs.renameSync(from, to),
+  sleep: sleepSync,
+};
+
+/**
+ * Windows の rename は、置き換え先を誰かが開いている間（ブリッジが読んでいる・ウイルス対策が
+ * 見ている）EPERM / EBUSY / EACCES で落ちる（D109）。POSIX の rename は開いているファイルでも
+ * 置き換えられるので、やり直すのは Windows だけ。
+ */
+const RENAME_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+/** やり直しの回数と間隔。書き直しは同期なので、最悪でも 100 ms で諦める。 */
+const RENAME_RETRIES = 5;
+const RENAME_RETRY_DELAY_MS = 20;
+
+function renameWithRetry(from: string, to: string, deps: RegistrationWriteDeps): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      deps.rename(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      const retryable =
+        deps.platform === "win32" && code !== undefined && RENAME_RETRY_CODES.has(code);
+      if (!retryable || attempt >= RENAME_RETRIES) throw e;
+      deps.sleep(RENAME_RETRY_DELAY_MS);
+    }
   }
 }
 
@@ -378,11 +454,32 @@ export class ShowMeSocketServer {
       // 同じディレクトリに2度書かない（候補が畳まれていないときの保険）。
       if (seen.has(dir)) continue;
       seen.add(dir);
-      const result = prepareRuntimeDir(dir);
+      const result = await prepareRuntimeDir(dir);
       if (result.ok) prepared.push(dir);
       else failures.push(result.reason);
     }
-    const socketDir = prepared[0];
+
+    // パス接尾辞は衝突回避のためだけ。秘密ではない(/proc/net/unix は world-readable)。
+    const suffix = crypto.randomBytes(8).toString("hex");
+    // 認証トークンは別の値で、登録ファイルの中にだけ置く。
+    const token = crypto.randomBytes(32).toString("hex");
+
+    // **ソケットは1本のまま。** 置くのは、用意できた候補のうちパスが `sun_path` に収まる
+    // 最初のもの（D108）。収まらないと listen は黙って切り詰めた名前で立ち、誰も繋げない。
+    // 名前付きパイプ（win32）に長さの上限は無い。
+    let socketDir: string | undefined;
+    for (const dir of prepared) {
+      const candidate = socketPathFor(dir, suffix, process.platform);
+      // 判定と文言は同じ1回の測定から作る（不変条件14）
+      const { tooLong, bytes, limit } = socketPathLength(candidate, process.platform);
+      if (!tooLong) {
+        socketDir = dir;
+        break;
+      }
+      failures.push(
+        `socket path is ${bytes} bytes, over the ${limit}-byte limit of this OS: ${candidate}. Set TMPDIR (or XDG_RUNTIME_DIR) to a shorter directory`,
+      );
+    }
     // **両方失敗したときだけ**投げる。理由は全部載せる ―― どちらが
     // どう落ちたかが分からないと、人間には直しようがない。
     if (socketDir === undefined) {
@@ -395,18 +492,12 @@ export class ShowMeSocketServer {
     // **掃除も両候補**。読む候補が2つなら掃除する候補も2つ、が対称である。
     for (const dir of prepared) cleanStaleRegistrations(dir);
 
-    // パス接尾辞は衝突回避のためだけ。秘密ではない(/proc/net/unix は world-readable)。
-    const suffix = crypto.randomBytes(8).toString("hex");
-    // 認証トークンは別の値で、登録ファイルの中にだけ置く。
-    const token = crypto.randomBytes(32).toString("hex");
-
-    // **ソケットは1本のまま。** 登録ファイルは `socketPath` を絶対パスで持つので、
-    // どちらの候補で見つけても同じソケットに繋がる。複製するのは登録ファイルだけ。
-    const socketPath =
-      process.platform === "win32"
-        ? `\\\\.\\pipe\\vscode-showme-${suffix}`
-        : path.join(socketDir, `${suffix}.sock`);
-    const registryPaths = prepared.map((dir) => path.join(dir, `${suffix}.json`));
+    // 登録ファイルは `socketPath` を絶対パスで持つので、どちらの候補で見つけても同じ
+    // ソケットに繋がる。複製するのは登録ファイルだけ。先頭はソケットのあるディレクトリの分
+    // （`ServerInfo.registryPaths` の約束）。
+    const socketPath = socketPathFor(socketDir, suffix, process.platform);
+    const registryDirs = [socketDir, ...prepared.filter((dir) => dir !== socketDir)];
+    const registryPaths = registryDirs.map((dir) => path.join(dir, registryFileNameFor(suffix)));
 
     // maxConnections は設定しない。トークンを持たない接続まで「2本目」に
     // 数えてしまうし、蹴ったことを人間に見せる手段も無くなる。制限は
@@ -585,18 +676,54 @@ export class ShowMeSocketServer {
       }
     }, HANDSHAKE_TIMEOUT_MS);
 
+    /**
+     * 認証済みの枠を返す（何度呼んでも1回だけ効く）。切断のときと、**答えを書く直前**に呼ぶ。
+     *
+     * **1接続1要求**（ブリッジの `callExtension` は1行送って1行受け取って閉じる）なので、答えを
+     * 書いたらこの接続でできることは残っていない。枠を返すのを切断の通知まで待つと、ブリッジが
+     * 続けて張る次の接続が「2本目の同時接続」として断られうる ―― Windows の名前付きパイプでは
+     * 切断がサーバに届くのが遅い（実測）。答えを書く**前**に返すので、クライアントが答えを
+     * 受け取った時点で枠は必ず空いている（届く速さに依らない）。
+     *
+     * **保証するのは「認証済みの接続の数は同時に1を超えない」ことだけ**（§3.5 / D21）。
+     * 切断（`close`）でも枠は無条件に返るので、要求の途中で相手が切ると（ブリッジ自身も
+     * 応答の期限を過ぎたら切って再試行する）、見捨てられた要求の処理はまだ走っているのに
+     * 次の接続が認証されうる ―― **要求の処理は重なりうる**（この変更の前から同じ）。
+     */
+    /**
+     * hello を受け取って証明を返した後、クライアントの証明を待っている間の nonce の組（D111）。
+     * undefined なら hello を待っている。serverNonce は接続ごとに作るので、別の接続で盗み見た
+     * クライアントの証明はここでは通らない。
+     */
+    let challenge: { clientNonce: string; serverNonce: string } | undefined;
+    const release = (): void => {
+      if (!authed) return;
+      authed = false;
+      this.authedConnections -= 1;
+      this.observer.onDisconnected(this.authedConnections);
+    };
+    /** 要求を1つ受け取った。以後この接続から届くものは読まない。 */
+    let requested = false;
+    /** 答えを書いた後、閉じない相手を切る時計（`ANSWERED_LINGER_MS`）。 */
+    let lingerTimer: NodeJS.Timeout | undefined;
+    const closeAfterAnswer = (): void => {
+      clearTimeout(lingerTimer);
+      lingerTimer = setTimeout(() => socket.destroy(), ANSWERED_LINGER_MS);
+      // 拡張ホストの終了をこの時計で引き止めない。
+      lingerTimer.unref();
+    };
+
     socket.on("close", () => {
       clearTimeout(timer);
+      clearTimeout(lingerTimer);
       this.sockets.delete(socket);
-      if (authed) {
-        authed = false;
-        this.authedConnections -= 1;
-        this.observer.onDisconnected(this.authedConnections);
-      }
+      release();
     });
     socket.on("error", () => clearTimeout(timer));
 
     socket.on("data", (chunk) => {
+      // 1接続1要求。2つ目以降の行は読まず、溜めもしない（答えを書いたら閉じる）。
+      if (requested) return;
       buffer = Buffer.concat([buffer, chunk]);
 
       // **ハンドシェイクの終わりは「まだ消費していないバッファの中の行」で決める。**
@@ -614,13 +741,19 @@ export class ShowMeSocketServer {
       // 前3件と違って**安全側に閉じすぎる**方向に壊れたので、安全性の検査は全部緑のまま
       // 機能だけが黙って死んでいた。実地で踏むまで誰も気づかなかった。
       //
-      // 改行が来ていれば、その手前までが hello 行で、後ろは要求本文である。
+      // 改行が来ていれば、その手前までがハンドシェイクの行で、後ろは要求本文である。
       // こうすると1回の `write` でも2回でも**同じ答え**になる ―― それが要求である。
+      // 相互認証（D111）でハンドシェイクの行は2つ（hello とクライアントの証明）になり、
+      // ブリッジは**証明と要求**を1回の `write` で送る。どちらの行も同じ数え方で測る。
       if (!authed) {
-        const helloEnd = buffer.indexOf(0x0a);
-        const helloLineBytes = helloEnd < 0 ? buffer.length : helloEnd;
-        if (helloLineBytes > MAX_HANDSHAKE_BYTES) {
-          this.rejectWithReason(socket, "handshake too large", "Handshake is too large");
+        const handshakeEnd = buffer.indexOf(0x0a);
+        const handshakeLineBytes = handshakeEnd < 0 ? buffer.length : handshakeEnd;
+        if (handshakeLineBytes > MAX_HANDSHAKE_BYTES) {
+          this.rejectWithReason(
+            socket,
+            "handshake too large",
+            HANDSHAKE_REFUSALS.handshakeTooLarge,
+          );
           return;
         }
       }
@@ -628,7 +761,7 @@ export class ShowMeSocketServer {
       // 上限は**バイト数**で測る。`String.length` は UTF-16 コード単位なので、
       // CJK（1文字 3 バイト）なら約3倍まで通ってしまう。
       if (buffer.length > MAX_LINE_BYTES) {
-        this.rejectWithReason(socket, "line too long", "A single message is too large");
+        this.rejectWithReason(socket, "line too long", HANDSHAKE_REFUSALS.lineTooLong);
         return;
       }
 
@@ -640,8 +773,32 @@ export class ShowMeSocketServer {
         buffer = buffer.subarray(nl + 1);
         if (line.trim().length === 0) continue;
 
-        if (!authed) {
-          if (!this.checkHello(line, token)) {
+        if (!authed && challenge === undefined) {
+          // hello（D111）。形の整った hello を受け取るまでは何も書かない。証明はトークンを
+          // 持たない相手には何も明かさないが、読む前に書く理由も無い。
+          const hello = parseHelloLine(line);
+          if (hello.kind === "version-mismatch") {
+            // 版は登録ファイルに書いてある公開の値で、トークンの当否とは無関係（D28）。
+            this.rejectWithReason(
+              socket,
+              "protocol version mismatch",
+              HANDSHAKE_REFUSALS.versionMismatch,
+            );
+            return;
+          }
+          if (hello.kind !== "ok") {
+            this.observer.onRejected("bad token");
+            socket.destroy();
+            return;
+          }
+          challenge = { clientNonce: hello.clientNonce, serverNonce: newHandshakeNonce() };
+          socket.write(`${serverProofLine(token, challenge.clientNonce, challenge.serverNonce)}\n`);
+          continue;
+        }
+
+        if (!authed && challenge !== undefined) {
+          // クライアントの証明。落ちたら今までの誤ったトークンと同じく**無言で**切る（D28）。
+          if (!checkClientProof(line, token, challenge)) {
             this.observer.onRejected("bad token");
             socket.destroy();
             return;
@@ -664,28 +821,24 @@ export class ShowMeSocketServer {
           continue;
         }
 
-        void this.dispatch(socket, line);
+        requested = true;
+        buffer = Buffer.alloc(0);
+        void this.dispatch(socket, line, release, closeAfterAnswer);
+        return;
       }
     });
   }
 
-  private checkHello(line: string, token: string): boolean {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      return false;
-    }
-    const hello = helloSchema.safeParse(parsed);
-    if (!hello.success) return false;
-
-    const given = Buffer.from(hello.data.token, "utf8");
-    const expected = Buffer.from(token, "utf8");
-    if (given.length !== expected.length || given.length !== TOKEN_HEX_LENGTH) return false;
-    return crypto.timingSafeEqual(given, expected);
-  }
-
-  private async dispatch(socket: net.Socket, line: string): Promise<void> {
+  /**
+   * 1つの要求を処理して答え、接続を閉じる。答えを書く直前に `release` で枠を返す
+   * （`onConnection` の `release` の注記）。
+   */
+  private async dispatch(
+    socket: net.Socket,
+    line: string,
+    release: () => void,
+    closeAfterAnswer: () => void,
+  ): Promise<void> {
     let id = "unknown";
     try {
       const parsed = JSON.parse(line) as { id?: unknown };
@@ -694,7 +847,7 @@ export class ShowMeSocketServer {
       // 信頼境界はブリッジではなくソケット。ここで必ず再検証する。
       const req = requestSchema.safeParse(parsed);
       if (!req.success) {
-        this.send(socket, {
+        this.answer(socket, release, closeAfterAnswer, {
           id,
           ok: false,
           error: { code: "invalid-request", message: req.error.message },
@@ -702,19 +855,31 @@ export class ShowMeSocketServer {
         return;
       }
       const result = await this.handle(req.data);
-      this.send(socket, { id, ok: true, result });
+      this.answer(socket, release, closeAfterAnswer, { id, ok: true, result });
     } catch (e) {
       // 判っている失敗は判っている名前で返す。それ以外だけが internal。
       const error =
         e instanceof ToolError
           ? { code: e.code, message: e.message }
           : { code: "internal" as const, message: String(e) };
-      this.send(socket, { id, ok: false, error });
+      this.answer(socket, release, closeAfterAnswer, { id, ok: false, error });
     }
   }
 
-  private send(socket: net.Socket, payload: unknown): void {
-    if (!socket.destroyed) socket.write(`${JSON.stringify(payload)}\n`);
+  /**
+   * 枠を返してから、答えの1行を書いて閉じる（順序が要。`onConnection` の `release`）。
+   * 相手が閉じなければ `ANSWERED_LINGER_MS` の後に切る。
+   */
+  private answer(
+    socket: net.Socket,
+    release: () => void,
+    closeAfterAnswer: () => void,
+    payload: unknown,
+  ): void {
+    release();
+    if (socket.destroyed) return;
+    socket.end(`${JSON.stringify(payload)}\n`);
+    closeAfterAnswer();
   }
 
   async stop(): Promise<void> {
@@ -724,6 +889,13 @@ export class ShowMeSocketServer {
     this.info = undefined;
     // 以後の書き直しで登録ファイルを復活させない。
     this.registration = undefined;
+    // **登録ファイルを先に消す**（D111）。サーバを閉じた後に消すと、その間だけ登録が死んだパイプ
+    // （Windows では名前がマシン全体で共有され、誰でも同じ名前で作れる）を指す。
+    // **両方消す。** 書いたのが両候補なら消すのも両候補、が対称である。
+    // 片方だけ消すと、死んだ窓の登録が後退先に残り続ける。
+    if (info !== undefined) {
+      for (const registryPath of info.registryPaths) safeUnlink(registryPath);
+    }
     if (server !== undefined) {
       // close() は「新規受付を止める」だけで、**最後の接続が閉じるまで完了しない**。
       // 待つ前に開いている接続を切る。切らないと、エージェントが繋いだままの
@@ -733,16 +905,17 @@ export class ShowMeSocketServer {
       this.sockets.clear();
       await closed;
     }
-    if (info !== undefined) {
-      // **両方消す。** 書いたのが両候補なら消すのも両候補、が対称である。
-      // 片方だけ消すと、死んだ窓の登録が後退先に残り続ける。
-      for (const registryPath of info.registryPaths) safeUnlink(registryPath);
-      if (process.platform !== "win32") safeUnlink(info.socketPath);
-    }
+    if (info !== undefined && process.platform !== "win32") safeUnlink(info.socketPath);
   }
 }
 
-/** 自分が作った通常ファイルだけを消す。シンボリックリンクは辿らない。 */
+/**
+ * 自分が作った通常ファイルだけを消す。シンボリックリンクは辿らない。
+ *
+ * Windows には `process.getuid` が無く、所有者の照合は飛ぶ。消しに来るのは
+ * `prepareRuntimeDir` を通ったディレクトリの中（他人が中に作れない DACL。D104）の、名前から
+ * 導いたパスだけなので、他人のファイルを消すことにはならない。
+ */
 function safeUnlink(target: string): void {
   try {
     const st = fs.lstatSync(target);
@@ -752,6 +925,20 @@ function safeUnlink(target: string): void {
   } catch {
     // 既に無いなら何もしない
   }
+}
+
+/**
+ * クライアントの証明の行を確かめる（D111）。照合は protocol の `verifyClientProof`（定数時間）で、
+ * ブリッジが証明を作る関数と同じ場所にある（不変条件14）。
+ */
+function checkClientProof(
+  line: string,
+  token: string,
+  challenge: { clientNonce: string; serverNonce: string },
+): boolean {
+  const proof = parseClientProofLine(line);
+  if (proof === undefined) return false;
+  return verifyClientProof(token, challenge.clientNonce, challenge.serverNonce, proof.proof);
 }
 
 function peerPid(socket: net.Socket): number | undefined {

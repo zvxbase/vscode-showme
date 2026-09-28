@@ -7,6 +7,29 @@ import { STAGE_SCHEME_EDITABLE, STAGE_SCHEME_READONLY } from "./stage-uri.js";
 import { type RedactionPolicy, spellAgentPath } from "./workspace-path-gate.js";
 
 /**
+ * 人間の `file:` 文書 → 映しの鍵（ワークスペース相対パス、または外の絶対パス）。未保存の中身を引く
+ * 側と変更を知らせる側の**両方がこの1つを通る**。中の相対パスは `relativizeToRoot`（根からの相対パス
+ * の1つ。不変条件14）。外のファイル（D102）は、映しの鍵と同じ綴りの読み方（`spellAgentPath`）で
+ * 絶対パスの鍵にする。設定がオフなら外の鍵は作らない（外の映しはそもそも読めない）。
+ */
+export function humanDocumentKey(
+  root: vscode.Uri | undefined,
+  uri: vscode.Uri,
+  redaction: RedactionPolicy,
+): string | undefined {
+  if (uri.scheme !== "file") return undefined;
+  const rel = relativizeToRoot(root, uri);
+  if (rel !== undefined) return rel;
+  const spelled = spellAgentPath(root?.fsPath, uri.fsPath, redaction);
+  return spelled?.kind === "outside" ? spelled.abs : undefined;
+}
+
+/** ディスクの変更（見張りの URI）→ 映しの鍵。中だけ（外は見張らない）。 */
+export function diskChangeKey(root: vscode.Uri | undefined, uri: vscode.Uri): string | undefined {
+  return relativizeToRoot(root, uri);
+}
+
+/**
  * 映しの2つのスキームを登録し、変更の知らせを配線する（設計 D81）。activate で1回呼ぶ。
  *
  * **窓を預けていなくても登録する**（D81: 人間が既に開いている映しのタブを復元できる
@@ -33,15 +56,8 @@ export function registerStageFileSystem(
    * 2通りに決めない。片方を `Uri.joinPath` の文字列比較にすると、綴りの正規化が
    * 食い違ったときに「知らせたのに未保存が映らない」が起きる）。
    */
-  const relOfHumanDocument = (uri: vscode.Uri): string | undefined => {
-    if (uri.scheme !== "file") return undefined;
-    const rel = relativizeToRoot(rootUri(), uri);
-    if (rel !== undefined) return rel;
-    // 外のファイル（D102）は、映しの鍵と同じ綴りの読み方（`spellAgentPath`）で絶対パスの鍵にする。
-    // 設定がオフなら外の鍵は作らない（外の映しはそもそも読めない）。
-    const spelled = spellAgentPath(rootUri()?.fsPath, uri.fsPath, redaction());
-    return spelled?.kind === "outside" ? spelled.abs : undefined;
-  };
+  const relOfHumanDocument = (uri: vscode.Uri): string | undefined =>
+    humanDocumentKey(rootUri(), uri, redaction());
 
   // 既知の制限: 一致は正規化した綴りの完全一致で見る。大文字小文字を区別しない
   // ファイルシステムで、映しの綴りと人間の文書の綴りが大小だけ違うと、未保存の中身では
@@ -119,7 +135,7 @@ export function registerStageFileSystem(
   // （temp に書いて rename）は見張りから delete → create に見える（webview/panel.ts の
   // watch() と同じ理由）。映しは読み直すだけで、読み直しは毎回関門を通る。
   const diskChanged = (uri: vscode.Uri): void => {
-    const rel = relativizeToRoot(rootUri(), uri);
+    const rel = diskChangeKey(rootUri(), uri);
     if (rel === undefined) return;
     mirror.bump();
     ro.notifyChanged(rel);

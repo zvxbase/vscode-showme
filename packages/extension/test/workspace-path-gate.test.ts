@@ -71,6 +71,37 @@ describe("acceptWorkspacePath", () => {
     });
   });
 
+  it("posix: 実体の名前のバックスラッシュを区切りに読み替えない（正準名が実体を名指さなくなる）", () => {
+    // posix ではバックスラッシュは名前の1文字。`credentials\old` は `credentials*` に当たるが、
+    // 読み替えた `credentials/old` は当たらない。読み替えると秘匿がリンク1本で読めた（main から）。
+    if (path.sep !== "/") return;
+    const { root } = tmpWorkspace();
+    const secret = path.join(root, "credentials\\old");
+    fs.symlinkSync(secret, path.join(root, "docs", "innocent.txt"));
+    fs.symlinkSync(path.join(root, "a\\b.txt"), path.join(root, "docs", "ab-link.txt"));
+    // 先が無いときと在るときで同じ答え（存在のオラクルを作らない）。
+    const before = [
+      acceptWorkspacePath(root, "docs/innocent.txt", policy()),
+      acceptWorkspacePath(root, "docs/ab-link.txt", policy()),
+    ];
+    fs.writeFileSync(secret, "SECRET=1\n");
+    fs.writeFileSync(path.join(root, "a\\b.txt"), "backslash\n");
+    fs.mkdirSync(path.join(root, "a"));
+    fs.writeFileSync(path.join(root, "a", "b.txt"), "other file\n");
+    const after = [
+      acceptWorkspacePath(root, "docs/innocent.txt", policy()),
+      acceptWorkspacePath(root, "docs/ab-link.txt", policy()),
+    ];
+    const invalid = { ok: false, reason: "invalid-path" };
+    expect(before).toEqual([invalid, invalid]);
+    expect(after).toEqual([invalid, invalid]);
+    // 観測の側は、在るのに正準化できないものを秘匿として扱う（閉じる側）。
+    expect(isRedactedEntity(root, "docs/innocent.txt", policy())).toBe(true);
+    // 対照: エージェントの綴りのバックスラッシュは区切り（Windows の綴り。設計どおり）。
+    const spelled = acceptWorkspacePath(root, "a\\b.txt", policy());
+    expect(spelled.ok && spelled.kind === "inside" && spelled.canonical).toBe("a/b.txt");
+  });
+
   it("**除外は綴りではなく実体で効く**", () => {
     const { root } = tmpWorkspace();
     fs.symlinkSync(path.join(root, ".env"), path.join(root, "docs", "harmless.txt"));
@@ -86,6 +117,21 @@ describe("acceptWorkspacePath", () => {
       ok: false,
       reason: "excluded-path",
     });
+  });
+
+  it("8.3 の短い名前の形（~ の後に数字）は、存在を問わず invalid-path（D106）", () => {
+    const { root } = tmpWorkspace();
+    // posix では実在の名前として作れる。作っても作らなくても同じ答え（存在のオラクルを作らない）。
+    fs.writeFileSync(path.join(root, "docs", "NOTES~1.MD"), "x\n");
+    for (const p of ["ENV~1", "docs/NOTES~1.MD", "SSH~1/config", "docs/CREDEN~1.JSO"]) {
+      expect(acceptWorkspacePath(root, p, policy()), p).toEqual({
+        ok: false,
+        reason: "invalid-path",
+      });
+    }
+    // `~` の後が数字でない名前は今までどおり通る。
+    fs.writeFileSync(path.join(root, "docs", "notes~draft.md"), "x\n");
+    expect(acceptWorkspacePath(root, "docs/notes~draft.md", policy()).ok).toBe(true);
   });
 
   it("設定で足したパターンも効く", () => {
@@ -225,7 +271,8 @@ describe("不完全な走査の知らせ（onRedactedLinkWalkIncomplete。D91）
       ok: false,
       reason: "excluded-path",
     });
-    expect(seen).toEqual([fs.realpathSync(root)]);
+    // 関門の実体は realpath.native（D106。Windows では 8.3 の短い名前も展開する）。
+    expect(seen).toEqual([fs.realpathSync.native(root)]);
     // 覚えている間は歩かないので、知らせも増えない。観測の側も同じ索引を通る。
     expect(isRedactedEntity(root, "docs/copy.md", policy())).toBe(true);
     expect(seen).toHaveLength(1);
@@ -261,6 +308,30 @@ describe("isRedactedEntity（観測した名前の秘匿判定。関門と同じ
   it("普通のファイルは秘匿でない", () => {
     const { root } = tmpWorkspace();
     expect(isRedactedEntity(root, "docs/notes.md", policy())).toBe(false);
+  });
+
+  it("在るのに正準化できないもの（外へのリンク・宙に浮いたリンク・断る綴り）は秘匿として扱う", () => {
+    const { root, outside } = tmpWorkspace();
+    fs.symlinkSync(path.join(outside, "target.txt"), path.join(root, "docs", "to-outside.txt"));
+    fs.symlinkSync(path.join(root, "nowhere"), path.join(root, "docs", "dangling.txt"));
+    expect(isRedactedEntity(root, "docs/to-outside.txt", policy())).toBe(true);
+    expect(isRedactedEntity(root, "docs/dangling.txt", policy())).toBe(true);
+    for (const bad of ["../outside/target.txt", "/etc/passwd", "a\u0000b"]) {
+      expect(isRedactedEntity(root, bad, policy()), bad).toBe(true);
+    }
+    // 無い普通の名前は今までどおり名前だけで判定する（閉じた文書のタブ・消えたファイル）。
+    expect(isRedactedEntity(root, "docs/deleted.md", policy())).toBe(false);
+    expect(isRedactedEntity(root, "docs/notes.md", policy())).toBe(false);
+  });
+
+  it("8.3 の短い名前の形の観測名は秘匿として扱う（D106。関門が断る形を名前だけで通さない）", () => {
+    // 関門（`acceptWorkspacePath`）は正規化で断るが、観測の側は正規化に落ちた名前を「秘匿でない」
+    // と答えていた。Windows では `ENV~1` は `.env` と同じ実体でありうる。閉じる側に倒す。
+    const { root } = tmpWorkspace();
+    for (const rel of ["ENV~1", "docs/CREDEN~1.JSO", "SSH~1/config"]) {
+      expect(isRedactedEntity(root, rel, policy()), rel).toBe(true);
+    }
+    expect(isRedactedEntity(root, "docs/notes~draft.md", policy())).toBe(false);
   });
 
   it("秘匿ファイルへのハードリンクは秘匿。設定を切れば名前だけ", () => {

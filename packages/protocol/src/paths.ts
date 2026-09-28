@@ -1,6 +1,18 @@
 import * as path from "node:path";
 
 /**
+ * パスの1つの部分が 8.3 の短い名前を含みうるか（`~` の後に数字）。
+ *
+ * Windows は `PROGRA~1` / `ENV~1` のような短い名前で同じ実体を開ける。綴りに当てる判定
+ * （秘匿・資格情報の置き場所）は短い名前を知らないので、別の綴りで同じ実体を指されると
+ * すり抜ける。相対パスと絶対パスの両方の関門がこの1つを通す（D106。不変条件14）。
+ * ふつうの名前の `foo~1.txt` も巻き添えで落ちる（`notes~draft.md` のように数字が続かない `~` は通る）。
+ */
+export function hasShortNameSegment(segment: string): boolean {
+  return /~\d/.test(segment);
+}
+
+/**
  * ワークスペース相対パスとして受け入れられる形に正規化する。
  * 受け入れられないものは undefined を返す（例外を投げない — 呼び出し側が
  * reason コードに変換するため）。
@@ -39,6 +51,9 @@ export function normalizeWorkspaceRelative(raw: string): string | undefined {
     if (segment.length === 0) continue;
     const last = segment.charAt(segment.length - 1);
     if (last === " " || last === ".") return undefined;
+    // 8.3 の短い名前（`ENV~1` は Windows で `.env` と同じ実体）。綴りに当てる秘匿の判定を
+    // すり抜けるので断る。Linux の repo も Windows で開かれうるので、OS を問わない（D106）。
+    if (hasShortNameSegment(segment)) return undefined;
   }
 
   const cleaned = normalized === "." ? "" : normalized;
@@ -102,7 +117,7 @@ export function normalizeAbsolutePath(
     if (windows) {
       const last = segment.charAt(segment.length - 1);
       if (last === " " || last === ".") return undefined;
-      if (/~\d/.test(segment)) return undefined;
+      if (hasShortNameSegment(segment)) return undefined;
     }
   }
   const normalized = p.normalize(unified);

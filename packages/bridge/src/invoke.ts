@@ -16,8 +16,11 @@ import type { ToolInvoker } from "./mcp-server.js";
 export const CALL_ATTEMPTS = 2;
 
 export interface InvokerDeps {
-  /** 繋ぐウィンドウを決める。届かなかった候補は `exclude` で渡される。 */
-  resolveWindow: (exclude: readonly string[]) => RegistryEntry;
+  /**
+   * 繋ぐウィンドウを決める。届かなかった候補は `exclude` で渡される。見つからなければ
+   * reject する（Windows では候補の DACL を確かめるので非同期）。
+   */
+  resolveWindow: (exclude: readonly string[]) => Promise<RegistryEntry>;
   /** 線に書く。渡るのは**広告面の形**（transform 前）であって、検証した出力ではない。 */
   call: (entry: RegistryEntry, request: WireRequestInput) => Promise<WireResponse>;
   newId: () => string;
@@ -78,7 +81,7 @@ async function invokeOnce(deps: InvokerDeps, tool: ToolName, args: unknown): Pro
   for (let attempt = 1; attempt <= CALL_ATTEMPTS; attempt += 1) {
     let entry: RegistryEntry;
     try {
-      entry = deps.resolveWindow(exclude);
+      entry = await deps.resolveWindow(exclude);
     } catch (e) {
       // 候補が尽きたなら、言うべきは「候補が尽きた」ではなく「届かなかった」
       // ほう（そちらだけが直せる情報を持っている）。1回目なら発見の診断を返す。

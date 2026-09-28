@@ -1,8 +1,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isRedactedPath, normalizeWorkspaceRelative } from "@zvx/vscode-showme-protocol";
+import {
+  hasShortNameSegment,
+  isRedactedPath,
+  normalizeWorkspaceRelative,
+} from "@zvx/vscode-showme-protocol";
 import { type CanonicalTarget, canonicalizeWorkspacePath } from "./canonical-path.js";
+import { identityUnverifiable } from "./file-identity.js";
 import {
   isDeniedOutsidePath,
   isRedactedOutsidePath,
@@ -336,6 +341,83 @@ export function insideOnly(
   return verdict.ok && verdict.kind === "outside" ? INVALID : verdict;
 }
 
+/**
+ * **観測した**絶対パス（VS Code の文書・タブ・言語サーバの結果の `fsPath`）を、ワークスペースの根からの
+ * 相対パスにする。**「根からの相対パス」を決めるのはここだけ**（不変条件14。増分11 で3箇所が別々に
+ * 決めていて割れた: 言語の面は根の実体でも測り直し、`get_editor_state` と映しの尾は綴りだけで測った ――
+ * 根をリンク越しに開くと、`find_references` が `src/a.ts` と名指したファイルを人間が開いた途端、
+ * 同じファイルが `(outside workspace)` になった）。
+ *
+ * - まず**綴りの根**から測る。中ならそれを使う（リンク越しの綴りの名前をそのまま保つ）
+ * - 綴りの根から外に見えるときだけ、`followRootLinks` なら**根の実体**（`realpathSync.native`。
+ *   関門と同じ関数 ―― symlink・junction・subst・8.3 の短い名前・大小を実体の綴りに直す）からも測る。
+ *   根がリンク越しの綴りでも、VS Code と言語サーバは実体の綴りで返すことがある（macOS の
+ *   `/var` → `/private/var` で実測）。根の実体からの相対パスは、綴りの根に繋いでも同じ実体を指す
+ * - **根そのもの（相対が空）は `undefined`**。ファイルではない（関門も空の相対パスを断る）。
+ *   綴りの根で空なら、実体では測り直さない
+ * - posix で相対パスにバックスラッシュが残れば `undefined`（それは名前の1文字で、下の正規化が区切りに
+ *   読み替えると別の実体を名指す。`canonicalizeWorkspacePath` と同じ規則）
+ * - 最後に `normalizeWorkspaceRelative` を通す（`/` 区切り・脱出・NTFS の代替データストリーム・8.3 の
+ *   短い名前の形を断る。エージェントの綴りと同じ関数）
+ *
+ * **判断はしない。** 除外・リンクの行き先・在るかは、返した相対パスを関門（`acceptWorkspacePath` /
+ * `canonicalWorkspaceName`）に通して決める。触るのは根の realpath だけで、対象の綴りには触らない。
+ * `followRootLinks` は**呼び出し側が必ず言う**（既定を置かない）。偽にするのは、ローカルの
+ * ファイルシステムでない根（`file:` でないスキーム）。URI から決めるのは `relativizeToRoot` /
+ * `relativizerFor`（`editor-observation.ts`）で、URI を持つ面はそちらを通す。
+ */
+export function relativeToWorkspaceRoot(
+  rootPath: string,
+  targetPath: string,
+  followRootLinks: boolean,
+): string | undefined {
+  return rootRelativizer(rootPath, followRootLinks)(targetPath);
+}
+
+/**
+ * `relativeToWorkspaceRoot` を同じ根に何度も当てるための形。**根の実体（realpath）は最初に要ったときに
+ * 1回だけ取り、この関数の寿命のあいだ覚える**（参照の結果は何十件も来る。問い合わせ1回につき1つ作り、
+ * 問い合わせをまたいで持ち越さない ―― 根もファイルシステムも次の問い合わせまでに変わりうる）。
+ */
+export function rootRelativizer(
+  rootPath: string,
+  followRootLinks: boolean,
+): (targetPath: string) => string | undefined {
+  let rootReal: string | null | undefined; // undefined = まだ取っていない、null = 使わない
+  const realRoot = (): string | null => {
+    if (rootReal !== undefined) return rootReal;
+    rootReal = null;
+    if (!followRootLinks) return rootReal;
+    try {
+      const real = fs.realpathSync.native(rootPath);
+      if (real !== rootPath) rootReal = real;
+    } catch {
+      // 根が辿れなければ綴りだけで決める（関門も同じ根で落とす）。
+    }
+    return rootReal;
+  };
+  return (targetPath) => {
+    const spelled = path.relative(rootPath, targetPath);
+    if (spelled === "") return undefined;
+    if (!escapesRoot(spelled)) return normalizeObservedRelative(spelled);
+    const real = realRoot();
+    if (real === null) return undefined;
+    const fromReal = path.relative(real, targetPath);
+    if (fromReal === "" || escapesRoot(fromReal)) return undefined;
+    return normalizeObservedRelative(fromReal);
+  };
+}
+
+/** `path.relative` の結果が根の外を指すか（空＝根そのものは呼び出し側が先に見る）。 */
+function escapesRoot(rel: string): boolean {
+  return path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`);
+}
+
+function normalizeObservedRelative(rel: string): string | undefined {
+  if (path.sep === "/" && rel.includes("\\")) return undefined;
+  return normalizeWorkspaceRelative(rel);
+}
+
 /** `abs` が `root` の中（ルート自身を含む）なら `/` 区切りの相対パス、外なら `undefined`。 */
 function relativeInside(root: string, abs: string): string | undefined {
   const rel = path.relative(root, abs);
@@ -387,6 +469,13 @@ function acceptOutsidePath(
     return INVALID;
   }
 
+  // 実体にも**綴りと同じ正規化**を当てる（D106）。綴りで断る形（Windows の 8.3 の短い名前・末尾の
+  // ドットや空白、posix のバックスラッシュ）の実体へ、許された綴りからのリンクで回り込ませない。
+  // `.native` は短い名前を展開するので、残っているなら展開できなかった実体である。閉じる側に倒す。
+  // **中へ渡す前に当てる** ―― 中の判断は相対パスを正規化し直すので、posix の `a\b.txt` が
+  // 別の実体 `a/b.txt` の名前になる。
+  if (normalizeOutsideAbsolute(realPath) === undefined) return INVALID;
+
   const realInside = relativeInside(rootReal, realPath);
   if (realInside !== undefined) return acceptInsidePath(rootPath, realInside, policy);
 
@@ -399,6 +488,9 @@ function acceptOutsidePath(
     return INVALID;
   }
   if (!stat.isFile()) return INVALID;
+  // 番号が 0 なら、開く側（`stage-mirror.ts`）が dev / ino の一致で差し替えを見られない（D107）。
+  // 受け入れない。理由は無い・外と同じ（秘匿かどうかについては何も語らない）。
+  if (identityUnverifiable(stat)) return INVALID;
   if (policy.blockLinksToRedacted && stat.nlink > 1n) return EXCLUDED;
 
   return {
@@ -409,6 +501,16 @@ function acceptOutsidePath(
     dev: String(stat.dev),
     ino: String(stat.ino),
   };
+}
+
+/** 通常のファイルで、番号が 0（同一性を確かめられない）か。stat できなければ真（閉じる側）。 */
+function inodeUnverifiableFile(realPath: string): boolean {
+  try {
+    const stat = fs.statSync(realPath, { bigint: true });
+    return stat.isFile() && identityUnverifiable(stat);
+  } catch {
+    return true;
+  }
 }
 
 /** ホームの実体。辿れなければ綴りのまま（綴りでの照合は既に済んでいる）。 */
@@ -450,6 +552,12 @@ function acceptInsidePath(
   // ハードリンク（D91）も同じ答え（`excluded-path`）にする ―― 理由を割ると、どの名前が
   // 秘匿ファイルと同じ実体かが読める。
   if (redactsTarget(canonical, policy)) return EXCLUDED;
+
+  // 番号（ino）が 0 のファイルは、開く側が dev / ino の一致で差し替えを見られない（D107）。外の判断と
+  // 同じく受け入れない ―― 関門が通して映しだけが断ると、口ごとに答えが割れる（show_html の読みは
+  // 読めて映しは読めない）。秘匿の判定の**後**に置く（秘匿の名前・リンクは今までどおり excluded-path）。
+  // ディレクトリは開いて読まないので対象外（エクスプローラーの口）。
+  if (inodeUnverifiableFile(canonical.realPath)) return INVALID;
 
   return {
     ok: true,
@@ -523,9 +631,13 @@ export function canonicalWorkspaceName(
  *
  * - 綴りが秘匿なら、存在を問わず秘匿（ファイルシステムに触らない）
  * - 実体まで辿れれば、関門と同じく実体の名前とハードリンクを見る
- * - 辿れない（無い・外・ルートが無い）ものは名前だけで判定する（D91 より前と同じ）。
- *   **受け入れる限界**: 開いている文書は、そのパスが消えた・別の実体に張り替えられた後も
- *   中身を持ちうる。そのときは名前だけで判定し、実体（リンク）は見ない
+ * - 関門が断る綴り（`..`・NUL・8.3 の短い名前の形など）は秘匿（閉じる側）
+ * - **在るのに辿れない**もの（外へのリンク・宙に浮いたリンク・posix でバックスラッシュを名前に
+ *   持つ実体へのリンク・読めない途中のディレクトリ）は秘匿（閉じる側）。名前は無害でも、
+ *   実体がどれかを確かめられない
+ * - **無い**もの・ルートが無いときは名前だけで判定する（D91 より前と同じ）。
+ *   **受け入れる限界**: 開いている文書は、そのパスが消えた後も中身を持ちうる（閉じ忘れた
+ *   タブ・消したファイル）。そのときは名前だけで判定する
  */
 export function isRedactedEntity(
   rootPath: string | undefined,
@@ -538,12 +650,28 @@ export function isRedactedEntity(
   // カーソル・選択を返さない）。観測の側（`observedPathName`）は関門に落ちる外を名指さないので、
   // 普通はここへ来る前に `(outside workspace)` に畳まれている。
   if (path.isAbsolute(rel)) return !acceptWorkspacePath(rootPath, rel, policy).ok;
+  // 8.3 の短い名前の形（D106）。Windows では `ENV~1` が `.env` と同じ実体でありうるが、正規化に
+  // 落ちるので下では「辿れない＝名前だけ」になり、名前は秘匿の規則に当たらない。関門は同じ形を
+  // 断る（`normalizeWorkspaceRelative`。判定は protocol の同じ関数）。観測の側は閉じる側に倒す。
+  if (rel.split(/[\\/]/).some(hasShortNameSegment)) return true;
   if (rootPath === undefined) return false;
   const normalized = normalizeWorkspaceRelative(rel);
-  if (normalized === undefined) return false;
+  if (normalized === undefined) return true;
   const target = canonicalizeWorkspacePath(rootPath, normalized);
-  if (target === undefined) return false;
+  // 辿れない: 名前そのもの（リンクを辿らない lstat）が在れば閉じる側、無ければ名前だけ。
+  if (target === undefined) return entryExists(path.join(rootPath, normalized));
   return redactsTarget(target, policy);
+}
+
+/** 名前そのものが在るか（リンクは辿らない）。確かめられないとき（権限など）も在るとみなす。 */
+function entryExists(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code !== "ENOENT" && code !== "ENOTDIR";
+  }
 }
 
 /** 観測の側と `arrange_editors` のパスの答え（`acceptObservablePath`）。 */

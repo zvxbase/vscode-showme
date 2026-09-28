@@ -17,21 +17,78 @@ import {
 import { TOOL_NAMES } from "./tools.js";
 import { VIEW_ACTIONS } from "./view-action.js";
 
-/** 線上プロトコルの版。互換性が壊れる変更で上げる。 */
-export const WIRE_PROTOCOL_VERSION = 1;
+/**
+ * 線上プロトコルの版。互換性が壊れる変更で上げる。
+ *
+ * 2: ハンドシェイクを相互認証にした（増分11 D111）。v1 は hello でトークンを生で送っていた。
+ */
+export const WIRE_PROTOCOL_VERSION = 2;
 
 /** トークンは randomBytes(32) の hex なので 64 文字。 */
 export const TOKEN_HEX_LENGTH = 64;
+/** ハンドシェイクの nonce（randomBytes(32) の hex）。 */
+export const NONCE_HEX_LENGTH = 64;
+/** ハンドシェイクの証明（HMAC-SHA256 の hex）。 */
+export const PROOF_HEX_LENGTH = 64;
 
+const lowerHex = (length: number) =>
+  z
+    .string()
+    .length(length)
+    .regex(/^[0-9a-f]+$/);
+
+/**
+ * ハンドシェイクの行（増分11 D111。作り方と確かめ方は `handshake.ts`）。
+ *
+ * 1. ブリッジ → 拡張: `hello`（版と clientNonce。**トークンは送らない**）
+ * 2. 拡張 → ブリッジ: `serverProof`（serverNonce と、トークンを持つことの証明）
+ * 3. ブリッジ → 拡張: `clientProof`（同じく）と要求の行を1回の write で
+ *
+ * 登録の `socketPath` に居るのが拡張だと確かめられるまで、ブリッジは要求を送らない。
+ */
 export const helloSchema = z
   .object({
     protocolVersion: z.literal(WIRE_PROTOCOL_VERSION),
-    token: z
-      .string()
-      .length(TOKEN_HEX_LENGTH)
-      .regex(/^[0-9a-f]+$/),
+    clientNonce: lowerHex(NONCE_HEX_LENGTH),
   })
   .strict();
+export const serverProofSchema = z
+  .object({
+    serverNonce: lowerHex(NONCE_HEX_LENGTH),
+    proof: lowerHex(PROOF_HEX_LENGTH),
+  })
+  .strict();
+export const clientProofSchema = z
+  .object({
+    proof: lowerHex(PROOF_HEX_LENGTH),
+  })
+  .strict();
+export type ServerProof = z.infer<typeof serverProofSchema>;
+export type ClientProof = z.infer<typeof clientProofSchema>;
+
+/**
+ * 認証の前に受け取ってよい1行の最大バイト数（改行を除く）。**両端がこれを使う**（D27 / 不変条件14）。
+ *
+ * 拡張は hello と clientProof の行を、ブリッジは serverProof の行（または理由の行。D28）を
+ * この上限で読む。数えるのは「まだ消費していないバッファの先頭の行」で、同じ write で続く要求の
+ * 本文は数えない（D27）。どの行も 200 B に満たない（`handshake.test.ts` が測る）。
+ */
+export const MAX_HANDSHAKE_LINE_BYTES = 4096;
+
+/**
+ * 認証と無関係な理由で切るときに、拡張が1行書く言葉（D28）。
+ *
+ * ブリッジは認証の前に届いた理由の行を、**この言葉のどれかと一致するときだけ**エージェントに見せる。
+ * 登録を横取りした相手が書いた任意の文字列を、拡張の言葉としてエージェントに渡さないため。
+ */
+export const HANDSHAKE_REFUSALS = {
+  handshakeTooLarge: "Handshake is too large",
+  lineTooLong: "A single message is too large",
+  versionMismatch:
+    "The VS Code extension speaks a different wire protocol version than this bridge. " +
+    "Bring both to the same version and reload the VS Code window.",
+} as const;
+
 export type Hello = z.infer<typeof helloSchema>;
 
 export const showCodeArgsSchema = z
@@ -587,9 +644,10 @@ const MAX_WIRE_BYTES_PER_CHAR = 6;
  *
  * ## 大きさについて
  *
- * 未認証の相手には `MAX_HANDSHAKE_BYTES`（4096）しか積ませない。ここが効くのは
- * **認証済みの1接続だけ**（`MAX_AUTHED_CONNECTIONS` = 1）なので、
- * この値のバッファが同時に複数できることはない。
+ * 未認証の相手には `MAX_HANDSHAKE_LINE_BYTES`（4096）しか積ませない。ここが効くのは
+ * 認証済みの接続だけで、**認証済みの接続の数は同時に1を超えない**（`MAX_AUTHED_CONNECTIONS` = 1）ので、
+ * この値まで溜まる受信バッファも同時に1つである。ただし、要求の途中で相手が切ると枠は返るので、
+ * 見捨てられた要求の処理（受け取り済みの要求）と次の要求の処理は重なりうる。
  */
 export const MAX_WIRE_LINE_BYTES = MAX_HTML_CHARS * MAX_WIRE_BYTES_PER_CHAR + 8192;
 

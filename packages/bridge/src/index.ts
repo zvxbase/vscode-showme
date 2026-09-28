@@ -8,8 +8,7 @@ import {
   defaultRuntimeDirs,
   describeSelectionFailure,
   describeUnsafeRuntimeDir,
-  nodeRegistryFileSystem,
-  readRegistryEntries,
+  discoverRegistry,
   selectWindow,
 } from "./discover.js";
 import { createSocketInvoker } from "./invoke.js";
@@ -21,9 +20,11 @@ import { createShowMeServer } from "./mcp-server.js";
  * 起動時に1度だけ決めない。VS Code は**ブリッジより後に立ち上がりうる**し、
  * ウィンドウの再読み込みでソケットが変わる。1度掴んだら離さない作りにすると、
  * 「一度失敗したセッションは二度と繋がらない」ことになる。
+ *
+ * 非同期なのは Windows のため。候補の DACL を icacls で確かめてから走査する（D104）。
  */
-function resolveWindow(exclude: readonly string[]): RegistryEntry {
-  const read = readRegistryEntries(defaultRuntimeDirs(), nodeRegistryFileSystem);
+async function resolveWindow(exclude: readonly string[]): Promise<RegistryEntry> {
+  const read = await discoverRegistry(defaultRuntimeDirs());
 
   const selection = selectWindow(read.entries, {
     // $SHOWME_SOCK は主経路ではない（制限モードで死に、tmux でも伝播しない）。
@@ -56,7 +57,10 @@ async function main(): Promise<void> {
   const server = createShowMeServer(
     createSocketInvoker({
       resolveWindow,
-      call: (entry, request) => callExtension(entry.socketPath, entry.authToken, request),
+      call: (entry, request) =>
+        callExtension(entry.socketPath, entry.authToken, request, {
+          registryFile: entry.registryFile,
+        }),
       newId: randomUUID,
     }),
   );

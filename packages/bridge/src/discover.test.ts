@@ -1,18 +1,24 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { processUid, runtimeDirCandidates } from "@zvx/vscode-showme-protocol";
+import {
+  WIRE_PROTOCOL_VERSION,
+  processUid,
+  runtimeDirCandidates,
+} from "@zvx/vscode-showme-protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type DirState,
   type RegistryEntry,
   type RegistryFileSystem,
+  createNodeRegistryFileSystem,
   defaultRuntimeDirs,
   describeSelectionFailure,
   describeUnsafeRuntimeDir,
-  nodeRegistryFileSystem,
+  discoverRegistry,
   ownedAndPrivate,
   parseRegistryEntry,
+  posixRegistryFileSystem,
   readRegistryEntries,
   scanRegistry,
   selectWindow,
@@ -21,9 +27,9 @@ import {
 const TOKEN = "a".repeat(64);
 
 const alpha: RegistryEntry = {
-  protocolVersion: 1,
+  protocolVersion: WIRE_PROTOCOL_VERSION,
   workspacePath: "/w/alpha",
-  pid: 1,
+  pid: process.pid,
   startedAt: "2026-09-09T00:00:00Z",
   socketPath: "/rt/a.sock",
   authToken: TOKEN,
@@ -145,7 +151,7 @@ describe("selectWindow", () => {
 
 describe("parseRegistryEntry", () => {
   const written = JSON.stringify({
-    protocolVersion: 1,
+    protocolVersion: WIRE_PROTOCOL_VERSION,
     workspacePath: "/w/alpha",
     pid: 4242,
     startedAt: "2026-09-09T00:00:00.000Z",
@@ -219,40 +225,61 @@ describe("parseRegistryEntry", () => {
   });
 });
 
+/** 登録ファイルの名前とソケットの接尾辞（16 桁の hex。拡張の `crypto.randomBytes(8)` の形）。 */
+const H1 = "0123456789abcdef";
+const H2 = "fedcba9876543210";
+/** POSIX の形の実行時ディレクトリ。これを使う検査は platform に "linux" を渡す（Windows の CI でも同じ答え）。 */
+const RT = "/rt/vscode-showme";
+
 describe("scanRegistry", () => {
-  function fakeFs(files: Record<string, string | undefined>, dir?: DirState): RegistryFileSystem {
+  function fakeFs(
+    files: Record<string, string | undefined>,
+    dir?: DirState,
+    others: Record<string, DirState> = {},
+  ): RegistryFileSystem {
     return {
-      openDir: () => dir ?? { kind: "ok", names: Object.keys(files) },
+      openDir: (d) => others[d] ?? dir ?? { kind: "ok", names: Object.keys(files) },
       read: (_dir, name) => files[name],
     };
   }
 
-  const good = JSON.stringify({
-    protocolVersion: 1,
-    workspacePath: "/w/alpha",
-    pid: 1,
-    startedAt: "2026-09-09T00:00:00Z",
-    socketPath: "/rt/a.sock",
-    authToken: TOKEN,
-  });
+  const regOf = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      protocolVersion: WIRE_PROTOCOL_VERSION,
+      workspacePath: "/w/alpha",
+      pid: process.pid,
+      startedAt: "2026-09-09T00:00:00Z",
+      socketPath: `${RT}/${H1}.sock`,
+      authToken: TOKEN,
+      ...over,
+    });
+  const good = regOf();
 
   it(".json だけを読む", () => {
-    const scan = scanRegistry("/rt", fakeFs({ "a.json": good, "a.sock": good, "notes.txt": good }));
-    expect(scan.entries.map((e) => e.socketPath)).toEqual(["/rt/a.sock"]);
+    const scan = scanRegistry(
+      RT,
+      fakeFs({ [`${H1}.json`]: good, [`${H1}.sock`]: good, "notes.txt": good }),
+      "linux",
+    );
+    expect(scan.entries.map((e) => e.socketPath)).toEqual([`${RT}/${H1}.sock`]);
   });
 
   it("壊れた登録は飛ばし、残りは読む", () => {
-    const scan = scanRegistry("/rt", fakeFs({ "bad.json": "{{{", "a.json": good }));
+    const scan = scanRegistry(RT, fakeFs({ [`${H2}.json`]: "{{{", [`${H1}.json`]: good }), "linux");
     expect(scan.entries).toHaveLength(1);
   });
 
   it("読めなかったファイル(衛生検査落ち)は飛ばす", () => {
-    const scan = scanRegistry("/rt", fakeFs({ "hostile.json": undefined, "a.json": good }));
+    const scan = scanRegistry(
+      RT,
+      fakeFs({ [`${H2}.json`]: undefined, [`${H1}.json`]: good }),
+      "linux",
+    );
     expect(scan.entries).toHaveLength(1);
   });
 
   it("ディレクトリが無ければ present が false になる(拡張が居ないだけ・警報ではない)", () => {
-    const scan = scanRegistry("/rt", fakeFs({}, { kind: "absent" }));
+    const scan = scanRegistry(RT, fakeFs({}, { kind: "absent" }));
     expect(scan.present).toBe(false);
     expect(scan.unsafe).toBeUndefined();
     expect(scan.entries).toEqual([]);
@@ -260,8 +287,8 @@ describe("scanRegistry", () => {
 
   it("ディレクトリが衛生検査に落ちたら理由を持ち帰る(黙って迂回しない)", () => {
     const scan = scanRegistry(
-      "/rt",
-      fakeFs({ "a.json": good }, { kind: "unsafe", reason: "mode is 777, expected 700" }),
+      RT,
+      fakeFs({ [`${H1}.json`]: good }, { kind: "unsafe", reason: "mode is 777, expected 700" }),
     );
     expect(scan.unsafe).toContain("mode is 777");
     // 衛生検査に落ちたディレクトリの中身は1件も読まない
@@ -269,27 +296,221 @@ describe("scanRegistry", () => {
   });
 
   it("ディレクトリが健全なら unsafe を持たない", () => {
-    const scan = scanRegistry("/rt", fakeFs({ "a.json": good }));
+    const scan = scanRegistry(RT, fakeFs({ [`${H1}.json`]: good }));
     expect(scan.unsafe).toBeUndefined();
     expect(scan.present).toBe(true);
+  });
+
+  describe("登録の pid が生きていること（D111）", () => {
+    it("pid が死んでいる登録は使わず、ファイルと理由を持ち帰る", () => {
+      const asked: number[] = [];
+      const scan = scanRegistry(
+        RT,
+        fakeFs({
+          [`${H1}.json`]: regOf({ pid: 4242 }),
+          [`${H2}.json`]: regOf({ pid: 4343, socketPath: `${RT}/${H2}.sock` }),
+        }),
+        "linux",
+        (pid) => {
+          asked.push(pid);
+          return pid === 4343;
+        },
+      );
+      expect(asked.sort()).toEqual([4242, 4343]);
+      expect(scan.entries.map((e) => e.pid)).toEqual([4343]);
+      expect(scan.rejected).toEqual([
+        { file: path.join(RT, `${H1}.json`), reason: expect.stringContaining("4242") },
+      ]);
+      expect(scan.rejected[0]?.reason).toContain("not running");
+    });
+
+    it("win32 でも同じ（パイプの名前は誰でも作れるので、死んだ窓の登録には繋がない）", () => {
+      const dir = "C:\\Users\\u\\AppData\\Local\\Temp\\vscode-showme-0";
+      const pipe = `\\\\.\\pipe\\vscode-showme-${H1}`;
+      const scan = scanRegistry(
+        dir,
+        fakeFs({ [`${H1}.json`]: regOf({ socketPath: pipe, pid: 4242 }) }),
+        "win32",
+        () => false,
+      );
+      expect(scan.entries).toEqual([]);
+      expect(scan.rejected).toHaveLength(1);
+    });
+
+    it("0 以下の pid は生死判定に渡さず捨てる（kill(0) はプロセスグループに飛ぶ）", () => {
+      const asked: number[] = [];
+      const scan = scanRegistry(
+        RT,
+        fakeFs({ [`${H1}.json`]: regOf({ pid: 0 }) }),
+        "linux",
+        (pid) => {
+          asked.push(pid);
+          return true;
+        },
+      );
+      expect(asked).toEqual([]);
+      expect(scan.entries).toEqual([]);
+      expect(scan.rejected).toHaveLength(1);
+    });
+
+    it("使う登録は、読んだファイルのパスを持つ（ファイルに書かれた値ではない）", () => {
+      const scan = scanRegistry(
+        RT,
+        fakeFs({ [`${H1}.json`]: regOf({ pid: process.pid, registryFile: "/etc/passwd" }) }),
+        "linux",
+      );
+      expect(scan.entries.map((e) => e.registryFile)).toEqual([path.join(RT, `${H1}.json`)]);
+    });
+
+    it("既定の判定は本物の process.kill(pid, 0)（自分の pid は生きている）", () => {
+      const scan = scanRegistry(
+        RT,
+        fakeFs({ [`${H1}.json`]: regOf({ pid: process.pid }) }),
+        "linux",
+      );
+      expect(scan.entries).toHaveLength(1);
+    });
+
+    it("readRegistryEntries も同じ判定を渡す", () => {
+      const read = readRegistryEntries(
+        [RT],
+        fakeFs({ [`${H1}.json`]: regOf({ pid: 4242 }) }),
+        "linux",
+        () => false,
+      );
+      expect(read.entries).toEqual([]);
+      expect(read.rejected).toHaveLength(1);
+    });
+  });
+
+  describe("socketPath の形（D105）", () => {
+    it("別の候補（実行時ディレクトリの名前で、衛生を満たす）にあるソケットは通す", () => {
+      // 拡張にだけ XDG がある: 登録は後退先で見つかり、ソケットは XDG 側にある（§2A.6）。
+      const xdgSock = `/run/user/1000/vscode-showme/${H1}.sock`;
+      const scan = scanRegistry(
+        "/tmp/vscode-showme-1000",
+        fakeFs({ [`${H1}.json`]: regOf({ socketPath: xdgSock }) }),
+        "linux",
+      );
+      expect(scan.entries.map((e) => e.socketPath)).toEqual([xdgSock]);
+    });
+
+    it("実行時ディレクトリの名前でないところ・相対・.. ・接尾辞の食い違いのソケットは捨てる", () => {
+      for (const socketPath of [
+        `/home/me/.ssh/${H1}.sock`,
+        `rt/vscode-showme/${H1}.sock`,
+        `${RT}/../vscode-showme/${H1}.sock`,
+        `${RT}/${H2}.sock`,
+        `\\\\host\\pipe\\vscode-showme-${H1}`,
+      ]) {
+        const scan = scanRegistry(RT, fakeFs({ [`${H1}.json`]: regOf({ socketPath }) }), "linux");
+        expect(scan.entries, socketPath).toEqual([]);
+      }
+    });
+
+    it("登録ファイルの名前が <16桁の hex>.json でなければ捨てる", () => {
+      const scan = scanRegistry(RT, fakeFs({ "a.json": good }), "linux");
+      expect(scan.entries).toEqual([]);
+    });
+
+    it("ソケットの在るディレクトリが衛生検査に落ちたら捨てる（無い・危ない）", () => {
+      const other = "/run/user/1000/vscode-showme";
+      for (const state of [
+        { kind: "absent" } as const,
+        { kind: "unsafe", reason: "mode 777" } as const,
+      ]) {
+        const scan = scanRegistry(
+          RT,
+          fakeFs({ [`${H1}.json`]: regOf({ socketPath: `${other}/${H1}.sock` }) }, undefined, {
+            [other]: state,
+          }),
+          "linux",
+        );
+        expect(scan.entries, state.kind).toEqual([]);
+      }
+    });
+
+    it("形で捨てた登録は、ファイルと理由を持ち帰る（黙って消さない）", () => {
+      const scan = scanRegistry(
+        RT,
+        fakeFs({ [`${H1}.json`]: regOf({ socketPath: `/home/me/.ssh/${H1}.sock` }) }),
+        "linux",
+      );
+      expect(scan.entries).toEqual([]);
+      expect(scan.rejected).toHaveLength(1);
+      expect(scan.rejected[0]?.file).toBe(path.join(RT, `${H1}.json`));
+      expect(scan.rejected[0]?.reason).toContain("socketPath");
+      // 登録の中身（ソケットのパス）は言葉に載せない。
+      expect(scan.rejected[0]?.reason).not.toContain(".ssh");
+    });
+
+    it("ソケットの在るディレクトリで捨てた登録は、そのディレクトリの理由を持ち帰る", () => {
+      const other = "/run/user/1000/vscode-showme";
+      const scan = scanRegistry(
+        RT,
+        fakeFs({ [`${H1}.json`]: regOf({ socketPath: `${other}/${H1}.sock` }) }, undefined, {
+          [other]: { kind: "unsafe", reason: "mode 777" },
+        }),
+        "linux",
+      );
+      expect(scan.rejected.map((r) => r.file)).toEqual([path.join(RT, `${H1}.json`)]);
+      expect(scan.rejected[0]?.reason).toContain("mode 777");
+    });
+
+    it("読めない・壊れた登録は rejected に数えない（今までどおり黙って飛ばす）", () => {
+      const scan = scanRegistry(
+        RT,
+        fakeFs({ [`${H2}.json`]: "{{{", [`${H1}.json`]: undefined }),
+        "linux",
+      );
+      expect(scan.rejected).toEqual([]);
+    });
+
+    it("win32: ローカルのパイプ `\\\\.\\pipe\\vscode-showme-<接尾辞>` だけを通す", () => {
+      const dir = "C:\\Users\\u\\AppData\\Local\\Temp\\vscode-showme-0";
+      const pipe = `\\\\.\\pipe\\vscode-showme-${H1}`;
+      const ok = scanRegistry(
+        dir,
+        fakeFs({ [`${H1}.json`]: regOf({ socketPath: pipe }) }),
+        "win32",
+      );
+      expect(ok.entries.map((e) => e.socketPath)).toEqual([pipe]);
+      for (const socketPath of [
+        `\\\\host\\pipe\\vscode-showme-${H1}`,
+        `\\\\.\\pipe\\vscode-showme-${H2}`,
+        `${dir}\\${H1}.sock`,
+      ]) {
+        const scan = scanRegistry(dir, fakeFs({ [`${H1}.json`]: regOf({ socketPath }) }), "win32");
+        expect(scan.entries, socketPath).toEqual([]);
+      }
+    });
   });
 });
 
 describe("readRegistryEntries（両候補の走査）", () => {
   const TOKEN2 = "b".repeat(64);
+  const XDG = "/xdg/vscode-showme";
+  const TMP = "/tmp/vscode-showme-1000";
 
-  function entryJson(over: Record<string, unknown>): string {
-    return JSON.stringify({
-      protocolVersion: 1,
-      workspacePath: "/w/alpha",
-      pid: 1,
-      startedAt: "2026-09-09T00:00:00Z",
-      socketPath: "/rt/a.sock",
-      authToken: TOKEN2,
-      windowId: "w-1",
-      role: "stage",
-      ...over,
-    });
+  /** 登録1件（ファイル名と中身）。ソケットは `socketDir` の下の `<suffix>.sock`。 */
+  function reg(
+    suffix: string,
+    socketDir: string,
+    over: Record<string, unknown> = {},
+  ): Record<string, string> {
+    return {
+      [`${suffix}.json`]: JSON.stringify({
+        protocolVersion: WIRE_PROTOCOL_VERSION,
+        workspacePath: "/w/alpha",
+        pid: process.pid,
+        startedAt: "2026-09-09T00:00:00Z",
+        socketPath: `${socketDir}/${suffix}.sock`,
+        authToken: TOKEN2,
+        windowId: "w-1",
+        role: "stage",
+        ...over,
+      }),
+    };
   }
 
   /** ディレクトリごとに中身と状態を持つ、偽のファイルシステム。 */
@@ -315,32 +536,32 @@ describe("readRegistryEntries（両候補の走査）", () => {
   }
 
   it("片方の候補にしか登録が無くても読める", () => {
-    const read = readRegistryEntries(
-      ["/xdg", "/tmp/rt"],
-      fsOf({ "/tmp/rt": { "a.json": entryJson({}) } }),
-    );
+    const read = readRegistryEntries([XDG, TMP], fsOf({ [TMP]: reg(H1, TMP) }), "linux");
     expect(read.entries.map((e) => e.windowId)).toEqual(["w-1"]);
     expect(read.present).toBe(true);
   });
 
   it("両方の候補を走査して、両方の窓を集める", () => {
     const read = readRegistryEntries(
-      ["/xdg", "/tmp/rt"],
+      [XDG, TMP],
       fsOf({
-        "/xdg": { "a.json": entryJson({ windowId: "w-1", socketPath: "/xdg/a.sock" }) },
-        "/tmp/rt": { "b.json": entryJson({ windowId: "w-2", socketPath: "/tmp/rt/b.sock" }) },
+        [XDG]: reg(H1, XDG, { windowId: "w-1" }),
+        [TMP]: reg(H2, TMP, { windowId: "w-2" }),
       }),
+      "linux",
     );
     expect(read.entries.map((e) => e.windowId)).toEqual(["w-1", "w-2"]);
   });
 
   it("同じ窓が両方の候補に書いていたら windowId で1つに畳む", () => {
+    // 拡張は両候補に**同じ内容**を書く（ソケットは第一候補の1本だけ）。
     const read = readRegistryEntries(
-      ["/xdg", "/tmp/rt"],
+      [XDG, TMP],
       fsOf({
-        "/xdg": { "a.json": entryJson({ windowId: "same", socketPath: "/xdg/a.sock" }) },
-        "/tmp/rt": { "a.json": entryJson({ windowId: "same", socketPath: "/tmp/rt/a.sock" }) },
+        [XDG]: reg(H1, XDG, { windowId: "same" }),
+        [TMP]: reg(H1, XDG, { windowId: "same" }),
       }),
+      "linux",
     );
     expect(read.entries).toHaveLength(1);
   });
@@ -351,47 +572,44 @@ describe("readRegistryEntries（両候補の走査）", () => {
     // なら、両候補走査は攻撃者に経路を1本渡したことになる(レビュー N2)。
     // 順序で決めれば、攻撃者は拡張の第一候補より先の候補に置く必要がある。
     const read = readRegistryEntries(
-      ["/xdg", "/tmp/rt"],
+      [XDG, TMP],
       fsOf({
-        "/xdg": {
-          "a.json": entryJson({
-            windowId: "same",
-            socketPath: "/xdg/real.sock",
-            authToken: "c".repeat(64),
-            startedAt: "2026-09-09T00:00:00Z",
-          }),
-        },
-        "/tmp/rt": {
-          "a.json": entryJson({
-            windowId: "same",
-            socketPath: "/tmp/rt/planted.sock",
-            authToken: "d".repeat(64),
-            // 未来の時刻。自己申告なので、攻撃者は好きな値を書ける。
-            startedAt: "2099-01-01T00:00:00Z",
-          }),
-        },
+        [XDG]: reg(H1, XDG, {
+          windowId: "same",
+          authToken: "c".repeat(64),
+          startedAt: "2026-09-09T00:00:00Z",
+        }),
+        [TMP]: reg(H2, TMP, {
+          windowId: "same",
+          authToken: "d".repeat(64),
+          // 未来の時刻。自己申告なので、攻撃者は好きな値を書ける。
+          startedAt: "2099-01-01T00:00:00Z",
+        }),
       }),
+      "linux",
     );
-    expect(read.entries.map((e) => e.socketPath)).toEqual(["/xdg/real.sock"]);
+    expect(read.entries.map((e) => e.socketPath)).toEqual([`${XDG}/${H1}.sock`]);
     expect(read.entries.map((e) => e.authToken)).toEqual(["c".repeat(64)]);
   });
 
   it("windowId が違えば、同じフォルダの窓でも畳まない", () => {
     const read = readRegistryEntries(
-      ["/xdg", "/tmp/rt"],
+      [XDG, TMP],
       fsOf({
-        "/xdg": { "a.json": entryJson({ windowId: "w-1", socketPath: "/xdg/a.sock" }) },
-        "/tmp/rt": { "b.json": entryJson({ windowId: "w-2", socketPath: "/tmp/rt/b.sock" }) },
+        [XDG]: reg(H1, XDG, { windowId: "w-1" }),
+        [TMP]: reg(H2, TMP, { windowId: "w-2" }),
       }),
+      "linux",
     );
     expect(read.entries).toHaveLength(2);
   });
 
   it("同じ候補を2度渡されても1度しか走査しない(同じ窓が2つに見える)", () => {
-    const io = fsOf({ "/tmp/rt": { "a.json": entryJson({}) } });
-    const read = readRegistryEntries(["/tmp/rt", "/tmp/rt"], io);
+    const io = fsOf({ [TMP]: reg(H1, TMP) });
+    const read = readRegistryEntries([TMP, TMP], io, "linux");
     expect(read.entries).toHaveLength(1);
-    expect(io.listed).toEqual(["/tmp/rt"]);
+    // ソケットの在り処の確かめも、同じ走査の中では同じ答えを使う（2度 lstat しない）。
+    expect(io.listed).toEqual([TMP]);
   });
 
   it("片方が衛生検査に落ちても、もう片方は読む(先回りで塞がれない)", () => {
@@ -399,33 +617,71 @@ describe("readRegistryEntries（両候補の走査）", () => {
     // 全体を止めると、攻撃者は疎通そのものを止められる。読まずに迂回し、
     // 理由は持ち帰る(設計書 D22)。
     const read = readRegistryEntries(
-      ["/xdg", "/tmp/rt"],
+      [XDG, TMP],
       fsOf({
-        "/xdg": { "a.json": entryJson({}) },
-        "/tmp/rt": { kind: "unsafe", reason: "mode 777" },
+        [XDG]: reg(H1, XDG),
+        [TMP]: { kind: "unsafe", reason: "mode 777" },
       }),
+      "linux",
     );
     expect(read.entries).toHaveLength(1);
-    expect(read.unsafe.map((u) => u.dir)).toEqual(["/tmp/rt"]);
+    expect(read.unsafe.map((u) => u.dir)).toEqual([TMP]);
+  });
+
+  it("後退先のソケットを指す登録は、後退先が衛生検査に落ちていれば捨てる（D105）", () => {
+    const read = readRegistryEntries(
+      [XDG, TMP],
+      fsOf({
+        [XDG]: reg(H1, TMP),
+        [TMP]: { kind: "unsafe", reason: "mode 777" },
+      }),
+      "linux",
+    );
+    expect(read.entries).toEqual([]);
+  });
+
+  it("走査先に無いディレクトリのソケットも、名前の形と衛生を満たせば通す（XDG を構成できないブリッジ）", () => {
+    const io = fsOf({ [TMP]: reg(H1, XDG), [XDG]: {} });
+    const read = readRegistryEntries([TMP], io, "linux");
+    expect(read.entries.map((e) => e.socketPath)).toEqual([`${XDG}/${H1}.sock`]);
+    expect(read.dirs).toEqual([TMP]);
+    expect(read.unsafe).toEqual([]);
   });
 
   it("壊れた登録や読めない登録があっても、残りは読む", () => {
     const read = readRegistryEntries(
-      ["/xdg", "/tmp/rt"],
+      [XDG, TMP],
       fsOf({
-        "/xdg": { "broken.json": "{{{", "denied.json": undefined },
-        "/tmp/rt": { "a.json": entryJson({}) },
+        [XDG]: { [`${H2}.json`]: "{{{", "denied.json": undefined },
+        [TMP]: reg(H1, TMP),
       }),
+      "linux",
     );
     expect(read.entries).toHaveLength(1);
     expect(read.unsafe).toEqual([]);
   });
 
+  it("捨てた登録を候補をまたいで集める（D105）", () => {
+    const read = readRegistryEntries(
+      [XDG, TMP],
+      fsOf({
+        [XDG]: reg(H1, "/home/me"),
+        [TMP]: reg(H2, TMP, { socketPath: `${TMP}/${H1}.sock` }),
+      }),
+      "linux",
+    );
+    expect(read.entries).toEqual([]);
+    expect(read.rejected.map((r) => r.file)).toEqual([
+      path.join(XDG, `${H1}.json`),
+      path.join(TMP, `${H2}.json`),
+    ]);
+  });
+
   it("どちらの候補も無ければ present が false(拡張が居ないだけ)", () => {
-    const read = readRegistryEntries(["/xdg", "/tmp/rt"], fsOf({}));
+    const read = readRegistryEntries([XDG, TMP], fsOf({}), "linux");
     expect(read.present).toBe(false);
     expect(read.entries).toEqual([]);
-    expect(read.dirs).toEqual(["/xdg", "/tmp/rt"]);
+    expect(read.dirs).toEqual([XDG, TMP]);
   });
 });
 
@@ -443,36 +699,41 @@ describe("defaultRuntimeDirs", () => {
   });
 });
 
-/**
- * Windows では登録を信じない（`ownedAndPrivate` が閉じる側に倒す。拡張も書かない）。
- * 0700 / 0600 の本物のファイルシステムでの検査は POSIX の上でだけ走らせ、Windows では
- * 「本物のディレクトリでも unsafe になる」ことを確かめる。
- */
 const onWindows = process.platform === "win32";
 
-describe("ownedAndPrivate: Windows では確かめられないので信じない", () => {
+describe("ownedAndPrivate", () => {
   let dir: string;
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "showme-discover-win-"));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "showme-discover-own-"));
     fs.chmodSync(dir, 0o700);
   });
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("win32 なら、モードが 0700 に見えても理由を返す", () => {
+  it("win32 では所有者とモードを見ない（DACL は verifyRuntimeDirWindows が見る。D104）", () => {
     const st = fs.lstatSync(dir);
-    expect(ownedAndPrivate(st, "runtime dir", dir, "win32")).toContain("native Windows");
+    expect(ownedAndPrivate(st, "runtime dir", dir, "win32")).toBeUndefined();
   });
 
-  it.runIf(onWindows)("本物の Windows では、実行時ディレクトリも登録ファイルも読まない", () => {
-    fs.writeFileSync(path.join(dir, "a.json"), "{}");
-    expect(nodeRegistryFileSystem.openDir(dir).kind).toBe("unsafe");
-    expect(nodeRegistryFileSystem.read(dir, "a.json")).toBeUndefined();
+  it("win32 でも symlink は断る", () => {
+    const link = path.join(dir, "link");
+    fs.symlinkSync(dir, link, "junction");
+    expect(ownedAndPrivate(fs.lstatSync(link), "runtime dir", link, "win32")).toContain("symlink");
   });
 });
 
-describe.skipIf(onWindows)("nodeRegistryFileSystem（本物のファイルシステムで検査する）", () => {
+/** 実行時ディレクトリの名前の形をした、本物の一時ディレクトリの組（D105 の名前の形を満たす）。 */
+function makeRuntimeRoot(prefix: string): { root: string; primary: string; fallback: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const primary = path.join(root, "xdg", "vscode-showme");
+  const fallback = path.join(root, "tmp", "vscode-showme-1000");
+  for (const dir of [primary, fallback]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!onWindows) for (const dir of [primary, fallback]) fs.chmodSync(dir, 0o700);
+  return { root, primary, fallback };
+}
+
+describe.skipIf(onWindows)("posixRegistryFileSystem（本物のファイルシステムで検査する）", () => {
   let dir: string;
 
   beforeEach(() => {
@@ -485,12 +746,12 @@ describe.skipIf(onWindows)("nodeRegistryFileSystem（本物のファイルシス
   });
 
   it("無いディレクトリは absent", () => {
-    expect(nodeRegistryFileSystem.openDir(path.join(dir, "nope")).kind).toBe("absent");
+    expect(posixRegistryFileSystem.openDir(path.join(dir, "nope")).kind).toBe("absent");
   });
 
   it("0700 のディレクトリは中身を列挙できる", () => {
     fs.writeFileSync(path.join(dir, "a.json"), "{}", { mode: 0o600 });
-    const state = nodeRegistryFileSystem.openDir(dir);
+    const state = posixRegistryFileSystem.openDir(dir);
     expect(state.kind).toBe("ok");
     expect(state.kind === "ok" ? [...state.names] : []).toEqual(["a.json"]);
   });
@@ -499,7 +760,7 @@ describe.skipIf(onWindows)("nodeRegistryFileSystem（本物のファイルシス
     // /tmp は 1777 なので、決定的なパスは先回りされうる（設計書 S7 / D22）。
     // 作る側だけでなく読む側にも同じ検査が要る。
     fs.chmodSync(dir, 0o777);
-    const state = nodeRegistryFileSystem.openDir(dir);
+    const state = posixRegistryFileSystem.openDir(dir);
     expect(state.kind).toBe("unsafe");
     expect(state.kind === "unsafe" ? state.reason : "").toContain("mode 777");
   });
@@ -507,28 +768,28 @@ describe.skipIf(onWindows)("nodeRegistryFileSystem（本物のファイルシス
   it("ディレクトリでないものは unsafe", () => {
     const file = path.join(dir, "plain");
     fs.writeFileSync(file, "x", { mode: 0o600 });
-    expect(nodeRegistryFileSystem.openDir(file).kind).toBe("unsafe");
+    expect(posixRegistryFileSystem.openDir(file).kind).toBe("unsafe");
   });
 
   it("0600 の通常ファイルは読める", () => {
     fs.writeFileSync(path.join(dir, "a.json"), "hello", { mode: 0o600 });
-    expect(nodeRegistryFileSystem.read(dir, "a.json")).toBe("hello");
+    expect(posixRegistryFileSystem.read(dir, "a.json")).toBe("hello");
   });
 
   it("他人が読める登録ファイルは読まない（トークンが漏れている登録は信じない）", () => {
     fs.writeFileSync(path.join(dir, "a.json"), "hello", { mode: 0o644 });
-    expect(nodeRegistryFileSystem.read(dir, "a.json")).toBeUndefined();
+    expect(posixRegistryFileSystem.read(dir, "a.json")).toBeUndefined();
   });
 
   it("シンボリックリンクの登録ファイルは辿らない", () => {
     const outside = path.join(dir, "outside.txt");
     fs.writeFileSync(outside, "secret", { mode: 0o600 });
     fs.symlinkSync(outside, path.join(dir, "link.json"));
-    expect(nodeRegistryFileSystem.read(dir, "link.json")).toBeUndefined();
+    expect(posixRegistryFileSystem.read(dir, "link.json")).toBeUndefined();
   });
 
   it("無いファイルは undefined", () => {
-    expect(nodeRegistryFileSystem.read(dir, "missing.json")).toBeUndefined();
+    expect(posixRegistryFileSystem.read(dir, "missing.json")).toBeUndefined();
   });
 });
 
@@ -542,9 +803,9 @@ describe.skipIf(onWindows)(
     const TOKEN3 = "c".repeat(64);
     const entry = (over: Record<string, unknown>) =>
       JSON.stringify({
-        protocolVersion: 1,
+        protocolVersion: WIRE_PROTOCOL_VERSION,
         workspacePath: "/w/alpha",
-        pid: 1,
+        pid: process.pid,
         startedAt: "2026-09-09T00:00:00Z",
         authToken: TOKEN3,
         role: "stage",
@@ -557,10 +818,7 @@ describe.skipIf(onWindows)(
     }
 
     beforeEach(() => {
-      root = fs.mkdtempSync(path.join(os.tmpdir(), "showme-candidates-"));
-      primary = path.join(root, "xdg");
-      fallback = path.join(root, "tmp");
-      for (const dir of [primary, fallback]) fs.mkdirSync(dir, { mode: 0o700 });
+      ({ root, primary, fallback } = makeRuntimeRoot("showme-candidates-"));
     });
 
     afterEach(() => {
@@ -568,10 +826,11 @@ describe.skipIf(onWindows)(
     });
 
     it("同じ窓が両方のディレクトリに書いていても1件になる", () => {
-      place(primary, "w.json", entry({ windowId: "same", socketPath: `${primary}/w.sock` }));
-      place(fallback, "w.json", entry({ windowId: "same", socketPath: `${fallback}/w.sock` }));
+      const body = entry({ windowId: "same", socketPath: `${primary}/${H1}.sock` });
+      place(primary, `${H1}.json`, body);
+      place(fallback, `${H1}.json`, body);
 
-      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      const read = readRegistryEntries([primary, fallback], posixRegistryFileSystem);
       expect(read.entries).toHaveLength(1);
       // 預けられた窓は1つ。畳めていなければ multiple-stages になる。
       const selection = selectWindow(read.entries, {});
@@ -579,19 +838,32 @@ describe.skipIf(onWindows)(
     });
 
     it("片方のディレクトリにしか無い窓も見つかる(XDG の食い違いで黙って見失わない)", () => {
-      place(fallback, "w.json", entry({ windowId: "only", socketPath: `${fallback}/w.sock` }));
-      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      place(
+        fallback,
+        `${H1}.json`,
+        entry({ windowId: "only", socketPath: `${fallback}/${H1}.sock` }),
+      );
+      const read = readRegistryEntries([primary, fallback], posixRegistryFileSystem);
       expect(read.entries.map((e) => e.windowId)).toEqual(["only"]);
     });
 
     it("読めない登録が混ざっても、読める登録は読む(全体が落ちない)", () => {
-      place(primary, "broken.json", "{{{ not json");
-      place(primary, "leaky.json", entry({ windowId: "leaky", socketPath: "/x.sock" }), 0o644);
-      fs.symlinkSync(path.join(primary, "broken.json"), path.join(primary, "link.json"));
-      fs.mkdirSync(path.join(primary, "dir.json"), { mode: 0o700 });
-      place(fallback, "good.json", entry({ windowId: "good", socketPath: `${fallback}/g.sock` }));
+      place(primary, `${H2}.json`, "{{{ not json");
+      place(
+        primary,
+        "1111111111111111.json",
+        entry({ windowId: "leaky", socketPath: `${primary}/1111111111111111.sock` }),
+        0o644,
+      );
+      fs.symlinkSync(path.join(primary, `${H2}.json`), path.join(primary, "2222222222222222.json"));
+      fs.mkdirSync(path.join(primary, "3333333333333333.json"), { mode: 0o700 });
+      place(
+        fallback,
+        `${H1}.json`,
+        entry({ windowId: "good", socketPath: `${fallback}/${H1}.sock` }),
+      );
 
-      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      const read = readRegistryEntries([primary, fallback], posixRegistryFileSystem);
       expect(read.entries.map((e) => e.windowId)).toEqual(["good"]);
       expect(read.unsafe).toEqual([]);
     });
@@ -599,23 +871,176 @@ describe.skipIf(onWindows)(
     it("後退先が他人にも書ける状態で先回りされていても、正規の候補は読める", () => {
       // /tmp は 1777。ここで全体を止めると、誰でも疎通を止められる。
       fs.chmodSync(fallback, 0o777);
-      place(primary, "w.json", entry({ windowId: "ok", socketPath: `${primary}/w.sock` }));
+      place(primary, `${H1}.json`, entry({ windowId: "ok", socketPath: `${primary}/${H1}.sock` }));
 
-      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      const read = readRegistryEntries([primary, fallback], posixRegistryFileSystem);
       expect(read.entries.map((e) => e.windowId)).toEqual(["ok"]);
       expect(read.unsafe.map((u) => u.dir)).toEqual([fallback]);
     });
 
     it("危ないディレクトリの中身は1件も読まない", () => {
-      place(fallback, "w.json", entry({ windowId: "planted", socketPath: `${fallback}/w.sock` }));
+      place(
+        fallback,
+        `${H1}.json`,
+        entry({ windowId: "planted", socketPath: `${fallback}/${H1}.sock` }),
+      );
       fs.chmodSync(fallback, 0o777);
 
-      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      const read = readRegistryEntries([primary, fallback], posixRegistryFileSystem);
       expect(read.entries).toEqual([]);
       expect(read.unsafe).toHaveLength(1);
     });
+
+    it("ソケットの在るディレクトリが他人に開いていれば、その登録は捨てる（D105）", () => {
+      // 登録は健全な候補にあるが、ソケットは他人も書ける実行時ディレクトリの形の場所を指す。
+      const loose = path.join(root, "loose", "vscode-showme");
+      fs.mkdirSync(loose, { recursive: true });
+      fs.chmodSync(loose, 0o777);
+      place(primary, `${H1}.json`, entry({ windowId: "loose", socketPath: `${loose}/${H1}.sock` }));
+      const read = readRegistryEntries([primary], posixRegistryFileSystem);
+      expect(read.entries).toEqual([]);
+    });
+
+    it("ソケットの在るディレクトリが symlink なら、その登録は捨てる（D105）", () => {
+      const link = path.join(root, "link", "vscode-showme");
+      fs.mkdirSync(path.dirname(link));
+      fs.symlinkSync(primary, link);
+      place(primary, `${H1}.json`, entry({ windowId: "link", socketPath: `${link}/${H1}.sock` }));
+      expect(readRegistryEntries([primary], posixRegistryFileSystem).entries).toEqual([]);
+    });
+
+    it("走査先に無い、健全な実行時ディレクトリのソケットは通す（拡張にだけ XDG がある）", () => {
+      place(
+        fallback,
+        `${H1}.json`,
+        entry({ windowId: "xdg", socketPath: `${primary}/${H1}.sock` }),
+      );
+      const read = readRegistryEntries([fallback], posixRegistryFileSystem);
+      expect(read.entries.map((e) => e.windowId)).toEqual(["xdg"]);
+    });
   },
 );
+
+describe("discoverRegistry（win32 の手順。偽の DACL の判定で、どの OS でも回す）", () => {
+  const PIPE = `\\\\.\\pipe\\vscode-showme-${H1}`;
+  let root: string;
+  let primary: string;
+  let fallback: string;
+
+  beforeEach(() => {
+    ({ root, primary, fallback } = makeRuntimeRoot("showme-discover-w-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const body = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      protocolVersion: WIRE_PROTOCOL_VERSION,
+      workspacePath: "C:\\w",
+      pid: process.pid,
+      startedAt: "2026-09-09T00:00:00Z",
+      socketPath: PIPE,
+      authToken: TOKEN,
+      windowId: "w-1",
+      role: "stage",
+      ...over,
+    });
+
+  it("通った候補だけを読み、通らなかった候補は理由つきの unsafe にする", async () => {
+    fs.writeFileSync(path.join(primary, `${H1}.json`), body());
+    fs.writeFileSync(
+      path.join(fallback, `${H2}.json`),
+      body({ windowId: "w-2", socketPath: PIPE.replace(H1, H2) }),
+    );
+    const verified: string[] = [];
+    const read = await discoverRegistry([primary, fallback], {
+      platform: "win32",
+      verifyWindowsDir: async (dir) => {
+        verified.push(dir);
+        return dir === primary ? { ok: true } : { ok: false, reason: "Everyone can read it" };
+      },
+    });
+    expect(verified.sort()).toEqual([primary, fallback].sort());
+    expect(read.entries.map((e) => e.windowId)).toEqual(["w-1"]);
+    expect(read.unsafe).toEqual([{ dir: fallback, reason: "Everyone can read it" }]);
+  });
+
+  it("無い候補は確かめず absent（拡張が居ないだけ。警報にしない）", async () => {
+    const missing = path.join(root, "nope", "vscode-showme-0");
+    const verified: string[] = [];
+    const read = await discoverRegistry([missing], {
+      platform: "win32",
+      verifyWindowsDir: async (dir) => {
+        verified.push(dir);
+        return { ok: true };
+      },
+    });
+    expect(verified).toEqual([]);
+    expect(read.present).toBe(false);
+    expect(read.unsafe).toEqual([]);
+  });
+
+  it("確かめる関数が投げたら、その候補は unsafe（確かめられないものは信じない）", async () => {
+    fs.writeFileSync(path.join(primary, `${H1}.json`), body());
+    const read = await discoverRegistry([primary], {
+      platform: "win32",
+      verifyWindowsDir: async () => {
+        throw new Error("icacls timed out");
+      },
+    });
+    expect(read.entries).toEqual([]);
+    expect(read.unsafe[0]?.reason).toContain("icacls timed out");
+  });
+
+  it("SMB のパイプを指す登録は、通った候補にあっても捨てる（D105）", async () => {
+    fs.writeFileSync(
+      path.join(primary, `${H1}.json`),
+      body({ socketPath: `\\\\attacker\\pipe\\vscode-showme-${H1}` }),
+    );
+    const read = await discoverRegistry([primary], {
+      platform: "win32",
+      verifyWindowsDir: async () => ({ ok: true }),
+    });
+    expect(read.entries).toEqual([]);
+  });
+
+  it("win32 の登録ファイルは通常のファイルだけ（symlink・ディレクトリは読まない）", async () => {
+    const real = path.join(root, `${H2}.json`);
+    fs.writeFileSync(real, body());
+    fs.symlinkSync(real, path.join(primary, `${H1}.json`));
+    fs.mkdirSync(path.join(fallback, `${H1}.json`));
+    const read = await discoverRegistry([primary, fallback], {
+      platform: "win32",
+      verifyWindowsDir: async () => ({ ok: true }),
+    });
+    expect(read.entries).toEqual([]);
+  });
+
+  it("判定の無い候補を win32 で開くと unsafe（確かめていないものは読まない）", () => {
+    const io = createNodeRegistryFileSystem({ platform: "win32" });
+    const state = io.openDir(primary);
+    expect(state.kind).toBe("unsafe");
+    expect(state.kind === "unsafe" ? state.reason : "").toContain("not verified");
+  });
+
+  it.skipIf(onWindows)(
+    "POSIX では DACL を確かめず、今までどおり所有者とモードで決める",
+    async () => {
+      fs.writeFileSync(
+        path.join(primary, `${H1}.json`),
+        body({ socketPath: `${primary}/${H1}.sock` }),
+        { mode: 0o600 },
+      );
+      const read = await discoverRegistry([primary, fallback], {
+        verifyWindowsDir: async () => {
+          throw new Error("POSIX で呼ばれた");
+        },
+      });
+      expect(read.entries.map((e) => e.windowId)).toEqual(["w-1"]);
+    },
+  );
+});
 
 describe("describeSelectionFailure", () => {
   const present = { dirs: ["/run/user/1000/vscode-showme"], present: true };
@@ -623,6 +1048,31 @@ describe("describeSelectionFailure", () => {
     dirs: ["/run/user/1000/vscode-showme", "/tmp/vscode-showme-1000"],
     present: false,
   };
+
+  it("登録を捨てただけで1件も無いときは、捨てたファイルと理由を言う（D105）", () => {
+    const message = describeSelectionFailure(
+      { ok: false, reason: "no-entries" },
+      {
+        ...present,
+        rejected: [
+          {
+            file: `/run/user/1000/vscode-showme/${"0".repeat(16)}.json`,
+            reason: "its socketPath is not a path the extension creates",
+          },
+        ],
+      },
+    );
+    expect(message).toContain(`${"0".repeat(16)}.json`);
+    expect(message).toContain("its socketPath is not a path the extension creates");
+  });
+
+  it("捨てた登録が無ければ、今までの言葉のまま", () => {
+    const withEmpty = describeSelectionFailure(
+      { ok: false, reason: "no-entries" },
+      { ...present, rejected: [] },
+    );
+    expect(withEmpty).toBe(describeSelectionFailure({ ok: false, reason: "no-entries" }, present));
+  });
 
   it("ディレクトリごと無いときは、走査した候補を全部名指しする", () => {
     const message = describeSelectionFailure({ ok: false, reason: "no-entries" }, absent);

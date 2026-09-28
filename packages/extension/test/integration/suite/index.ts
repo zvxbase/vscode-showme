@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import Mocha from "mocha";
+import * as vscode from "vscode";
 
 /**
  * 拡張ホストの中で走る側の入口。
@@ -9,12 +10,36 @@ import Mocha from "mocha";
  * 壊れたときに制限モードの回が黙って信頼モードの節を走らせ、両方 PASS したまま
  * 「制限モードで確かめた」と言えてしまう。分からないなら落ちる。
  */
-export function run(): Promise<void> {
+/**
+ * macOS では窓を前面に出してから走らせる。
+ *
+ * runTest.ts は VS Code の実行ファイルを子プロセスとして直接起動する。macOS ではそうして起動した
+ * アプリは前面（アクティブなアプリ）にならず、`window.state.focused` が最後まで false のままになる
+ * （実測: GitHub の macOS の CI で、選択を返す検査が全部 `not-focused` で落ちた）。人間の選択を
+ * 返すかどうかは窓が前面にあるかで決まる（D95・`editor-surface.ts`）ので、前面でない窓では
+ * 「返らない」を確かめる検査しか意味を持たない。Linux（xvfb）と Windows では起動した窓がそのまま
+ * 前面になる。`workbench.action.focusWindow` は macOS では `app.focus({ steal: true })` で
+ * アプリごと前面に出す（VS Code の main）。出なかったときは理由を出力に残して先へ進む ――
+ * 前面を前提にする検査は、自分の assert で落ちる。
+ */
+async function bringWindowToFront(): Promise<void> {
+  if (process.platform !== "darwin" || vscode.window.state.focused) return;
+  await vscode.commands.executeCommand("workbench.action.focusWindow");
+  const deadline = Date.now() + 10_000;
+  while (!vscode.window.state.focused && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  console.log(
+    `[showme] macOS: 窓を前面に出した後の window.state.focused = ${vscode.window.state.focused}`,
+  );
+}
+
+export async function run(): Promise<void> {
   const mode = process.env.SHOWME_TEST_MODE;
-  if (mode !== "trusted" && mode !== "restricted" && mode !== "locale-ja" && mode !== "windows") {
+  if (mode !== "trusted" && mode !== "restricted" && mode !== "locale-ja") {
     return Promise.reject(
       new Error(
-        `SHOWME_TEST_MODE が trusted / restricted / locale-ja / windows のどれでもない: ${String(mode)}`,
+        `SHOWME_TEST_MODE が trusted / restricted / locale-ja のどれでもない: ${String(mode)}`,
       ),
     );
   }
@@ -29,16 +54,17 @@ export function run(): Promise<void> {
     );
     mocha.grep(grep);
   }
-  if (mode === "windows") {
-    // ネイティブの Windows の回（runTest.ts）。拡張が起動を断ることだけを見る。
-    mocha.addFile(path.resolve(__dirname, "./windows.test.js"));
-    return runMocha(mocha);
-  }
+  await bringWindowToFront();
   if (mode === "locale-ja") {
     // `--locale=ja` の回（runLocaleJa.ts）。**日本語になることだけ**を見る。振る舞いの
     // 検査は trusted / restricted の回が持ち、この回では増やさない。
     mocha.addFile(path.resolve(__dirname, "./locale-ja.test.js"));
     return runMocha(mocha);
+  }
+  if (mode === "trusted" && process.platform === "win32") {
+    // ネイティブの Windows の信頼の回だけ: 実行時ディレクトリの DACL が本人と trusted だけであること
+    // （D104 / D110）。ほかの検査が登録やパイプを増やす前に見るので、最初に置く。
+    mocha.addFile(path.resolve(__dirname, "./windows.test.js"));
   }
   mocha.addFile(path.resolve(__dirname, `./${mode}.test.js`));
   // 増分2C の前提測定（webview / CSP / 名前なしドキュメント）。**両方の回で走らせる。**

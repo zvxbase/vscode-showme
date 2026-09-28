@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isRedactedPath } from "@zvx/vscode-showme-protocol";
+import { identityUnverifiable } from "./file-identity.js";
 
 /**
  * 秘匿ファイルへのハードリンクを見分ける（D91）。
@@ -235,7 +236,7 @@ export function isLinkToRedacted(
   patterns: readonly string[],
 ): boolean {
   if (BigInt(stat.nlink) <= 1n) return false;
-  if (BigInt(stat.ino) === 0n) return true;
+  if (identityUnverifiable(stat)) return true;
   const set = index.lookup(rootPath, patterns);
   if (!set.complete) return true;
   return set.inodes.has(inodeKey(stat.dev, stat.ino));

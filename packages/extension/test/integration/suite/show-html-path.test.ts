@@ -203,9 +203,12 @@ suite("show_html の path（D52 / C4）", () => {
   });
 
   test("glob の記号を含む名前は描くが見張らない（1ファイルより広い集合を見張らない）", async () => {
-    const starRel = "docs/star*.html";
+    // Windows のファイル名には `*` と `?` が使えない（NTFS が断る）。`[ ]` は使えるので、その名前と、
+    // それを glob として読んだときに当たる隣（`star9.html`）の組で同じことを確かめる。
+    const onWindows = process.platform === "win32";
+    const starRel = onWindows ? "docs/star[9].html" : "docs/star*.html";
     const star = path.join(workspaceRoot().fsPath, starRel);
-    const siblingRel = "docs/sibling-9c1e.html";
+    const siblingRel = onWindows ? "docs/star9.html" : "docs/sibling-9c1e.html";
     const sibling = path.join(workspaceRoot().fsPath, siblingRel);
     try {
       fs.writeFileSync(star, "<p>star</p>", "utf8");
@@ -216,7 +219,7 @@ suite("show_html の path（D52 / C4）", () => {
       // そのファイル自身を書き換えても描き直らない（見張っていない）。
       fs.writeFileSync(star, `<p>star</p><p>${"s".repeat(300)}</p>`, "utf8");
       await assertLengthStays(before, "glob 名のファイルの保存");
-      // `docs/*.html` として張っていれば、隣のファイルの作成でも再描画が走る
+      // glob として張っていれば（`docs/*.html` / `docs/star[9].html`）、隣のファイルの作成でも再描画が走る
       // （閉包は star を読み直すので長さが増える）。それも起きない。
       fs.writeFileSync(sibling, "<p>sibling</p>", "utf8");
       await assertLengthStays(before, "隣のファイルの作成");

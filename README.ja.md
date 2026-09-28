@@ -3,7 +3,7 @@
   "What it does not do": "54fc2279eea3e95f",
   "Getting started": "33dfafe2e5bed82d",
   "1. Install the extension": "6e0dec079527c7f1",
-  "2. Register ShowMe with your agent": "b73d47eaf0a2fb1c",
+  "2. Register ShowMe with your agent": "5b3d1dd1462d4f4e",
   "3. Turn it on in the window you want the agent to use": "d6281735fa2ed5cf",
   "4. Ask your agent": "11e672ee91a4ab8b",
   "What you will see": "51658178ca4d1940",
@@ -11,12 +11,12 @@
   "Tools": "6d4a6e7b8349d01f",
   "Settings": "a674388fc1d37f0f",
   "Opening files outside the workspace": "908e3968f41fafdd",
-  "Troubleshooting": "4b34407f3e8abb52",
-  "Uninstall": "7ccc84caf11032ec",
+  "Troubleshooting": "998d7682a798f261",
+  "Uninstall": "ca746396cb15acdd",
   "Safety, in one table": "f9a300ab3deeaab9",
   "Packages": "548565c3d5677140",
   "Languages": "174627b9997a152c",
-  "Status": "3c29fde94d2ac826",
+  "Status": "a95219be71ef22c5",
   "How this was built": "cfd7cce72c3841b1",
   "License": "1e5e273a2aae7f48"
 } -->
@@ -64,6 +64,8 @@ Copilot CLI 向けの、そのまま貼れる断片（実際のインストー�
   登録する（制限モードでは効かない）
 
 断片は「入っている中でいちばん新しい ShowMe」を起動するので、拡張を更新しても貼り直さなくてよい。
+Windows では、`claude mcp add` の行だけは入っている版のフォルダを名指す（PowerShell とコマンド
+プロンプトのどちらでも動く形にするため）。拡張を更新したら打ち直す。
 
 Claude Code の許可ルールに `arrange_editors` を入れていないのは意図的で、タブを閉じうる唯一の
 ツールだから。使いたければ `"mcp__showme__arrange_editors"` を自分で1行足す。
@@ -82,7 +84,8 @@ Claude Code と Copilot CLI の両方に使える。断片にはこの機械の�
 使う人にある。先にプロンプトを読むこと。
 
 エージェントと VS Code は同じマシンの同じ環境で動いている必要がある。devcontainer なら両方
-コンテナの中、Remote-SSH なら両方リモート側。
+コンテナの中、Remote-SSH なら両方リモート側、WSL に繋いだ VS Code ならエージェントも WSL の中。
+Windows で動くエージェントは WSL に繋いだ VS Code の窓に届かず、その逆も届かない。
 
 ### 3. エージェントに使わせる窓でオンにする
 
@@ -229,13 +232,17 @@ Windows では、`NAME~1` のような部分（8.3 形式の短い名前の形�
 | `ShowMe: 接続中`（`ShowMe: Connected`） | 動いている |
 | 警告の印と警告色の付いた `ShowMe: オン`（`ShowMe: On`）/ `ShowMe: 接続中`（`ShowMe: Connected`） | `showme.allowOutsideWorkspace` がオン。エージェントはワークスペースの外のファイルも開ける。要らないときはオフにする |
 | `ShowMe: 停止中`（`ShowMe: Stopped`） | 拡張が止まっている。**ShowMe: 拡張を停止する／再開する**（`ShowMe: Stop / Resume the extension`）で再開 |
-| `ShowMe: 起動できません`（`ShowMe: Failed to start`） | 理由は tooltip に出る。ディレクトリが出ていたら `ls -ld` で所有者と権限を確かめる |
+| `ShowMe: 起動できません`（`ShowMe: Failed to start`） | 理由は tooltip に出る。ディレクトリが出ていたら `ls -ld`（Windows では `icacls`）で所有者と権限を確かめる |
 | `ShowMe: 2本目の接続を拒否`（`ShowMe: second connection refused`） | 同時に繋げるエージェントは1つまで。もう片方を止める。2つ目を動かした覚えが無いなら、あなたの別のプロセスが先に繋いでいる。何かを確かめること |
 | `ShowMe: 見つからず …`（`ShowMe: not found …`）/ `ShowMe: 複数一致 …`（`ShowMe: multiple matches …`） | エージェントが場所を探して、ちょうど1つに決まらなかった。エージェント側で指定を絞る必要がある |
 | `ShowMe: 回数制限 …`（`ShowMe: rate limited …`） | エージェントが同じ要求を短時間に繰り返した |
 
 **エージェントが「VS Code ウィンドウが見つからない」と言う。** どこかの窓で ShowMe がオンか、
-エージェントが VS Code と同じ環境で動いているか（手順2）、両方が同じ `$TMPDIR` を見ているかを確かめる。
+エージェントが VS Code と同じ環境で動いているか（手順2）、両方が同じ `$TMPDIR`（Windows では同じ
+`TEMP`）を見ているかを確かめる。
+
+**Windows で ShowMe が起動せず、理由に TEMP/TMP が出る。** `TEMP` か `TMP` が、他の利用者も書ける
+フォルダを指している。直し方は下の「現在地と開発の場所」にある。
 
 **`.env` や鍵ファイルが「見つからない」と言われる。** 仕様。ShowMe はそれらのパスを隠し、
 場所も教えない。
@@ -256,7 +263,8 @@ Windows では、`NAME~1` のような部分（8.3 形式の短い名前の形�
    - repo に置いた設定: `.mcp.json` か `.github/mcp.json` の `"showme"` の項目を消す
 2. 拡張をアンインストールする: `code --uninstall-extension zvxbase.vscode-showme`。ソケットと
    登録ファイルは拡張が自分で消す。ユーザー設定に書いた `showme.*` は、消すまで残る
-3. 既に開いていたターミナルは開き直す（または `unset SHOWME_SOCK`）
+3. 既に開いていたターミナルは開き直す（または変数を外す: bash / zsh は `unset SHOWME_SOCK`、
+   PowerShell は `Remove-Item Env:SHOWME_SOCK`、コマンド プロンプトは `set SHOWME_SOCK=`）
 
 拡張だけ消してエージェント側の登録が残っても、エージェントが ShowMe の起動に失敗して
 `ShowMe is not installed in …` と出るだけで、ほかには何も起きない。エラーを止めるには登録を消す。
@@ -297,10 +305,15 @@ VS Code の表示言語が日本語なら日本語になる。
 
 ## 現在地と開発の場所
 
-**プレビュー版。** Linux で確認済み（単体テストと、実 VS Code での統合テスト）。macOS は同じ
-Unix socket の経路だがまだ確かめていない。**ネイティブの Windows ではまだ起動しない**: Windows では、
-接続のトークンを置くフォルダを誰が読めるかを Node が確かめられないので、推測で動かさずに起動を断る。
-WSL か dev container の VS Code を使う。単体テストは CI で Windows でも回している。
+**プレビュー版。** Linux・macOS・Windows で確認済み（それぞれ単体テストと、実 VS Code での統合テスト）。
+
+**Windows ではネイティブで動く。** ShowMe は接続のトークンを `%TEMP%` の下のフォルダに置き、その
+フォルダを読めるのが自分・SYSTEM・Administrators だけであることを確かめる。`TEMP` か `TMP` が、他の
+利用者も書けるフォルダを指していると、理由を出して起動を断る。たとえば共有の `C:\Temp` や、
+`D:\Temp` のようなシステムドライブ以外のフォルダ（そのドライブの既定の権限のままで、他の利用者も中に
+作れる）。直すには、`TEMP` と `TMP` を自分だけが書けるフォルダ（既定の `%LOCALAPPDATA%\Temp` など）に
+向けて、VS Code を起動し直す。WSL や dev container の VS Code も今までどおり使える。エージェントと
+VS Code は同じ環境で動いている必要がある（手順2）。
 
 GitHub の公開 repo は**リリースのミラー**である。開発は private の repo で行い、リリースごとに
 1 コミットとしてそこに載せる（`CONTRIBUTING.md`）。個人のプロジェクトで、対応の期限の約束は無い。

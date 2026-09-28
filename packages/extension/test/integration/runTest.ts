@@ -34,24 +34,19 @@ const EXTENSION_ROOT = path.resolve(HERE, "..");
 
 interface Pass {
   readonly label: string;
-  readonly mode: "trusted" | "restricted" | "windows";
+  readonly mode: "trusted" | "restricted";
   readonly disableWorkspaceTrust: boolean;
 }
 
 /**
- * ネイティブの Windows では拡張がソケットサーバを立てない（`prepareRuntimeDir`。Node が ACL を
- * 読めず、トークンを置くディレクトリを誰が読めるかを確かめられないため）。信頼・制限の回は
- * どちらも最初に登録ファイルとソケットの実在を確かめるので、全部が同じ理由で落ちる。
- * Windows では「本当に立たないこと」を確かめる回（suite/windows.test.ts）だけを走らせる。
- * Windows に対応するときは、ここを戻して2つの回を走らせる。
+ * どの OS でも信頼・制限の2回を走らせる（D110）。ネイティブの Windows でも拡張は立つ（実行時
+ * ディレクトリを DACL で確かめる。D104）。Windows の信頼の回では、それに加えて「実行時ディレクトリが
+ * 本人と trusted だけのもの」を確かめる検査（suite/windows.test.ts）も走る（suite/index.ts）。
  */
-const PASSES: readonly Pass[] =
-  process.platform === "win32"
-    ? [{ label: "ネイティブの Windows", mode: "windows", disableWorkspaceTrust: true }]
-    : [
-        { label: "信頼モード", mode: "trusted", disableWorkspaceTrust: true },
-        { label: "制限モード", mode: "restricted", disableWorkspaceTrust: false },
-      ];
+const PASSES: readonly Pass[] = [
+  { label: "信頼モード", mode: "trusted", disableWorkspaceTrust: true },
+  { label: "制限モード", mode: "restricted", disableWorkspaceTrust: false },
+];
 
 /** ユーザ設定を書く。更新確認・テレメトリ・ウィンドウ復元・信頼ダイアログを止める。 */
 function prepareUserDataDir(mode: string): string {

@@ -1,4 +1,5 @@
 import * as os from "node:os";
+import * as path from "node:path";
 import {
   type PanelSlot,
   SOCKET_ENV_VAR,
@@ -710,8 +711,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 同梱したブリッジの実体（esbuild が `bridge/index.js` に束ねる。不変条件12）。
     // **1回だけ決めて**、エージェント設定の文書と MCP 提供者の両方に渡す。
     // 2箇所で `joinPath` を書くと、片方だけ直したときに文書と提供者が別の
-    // ファイルを指す（不変条件14）。
-    const bridgePath = vscode.Uri.joinPath(context.extensionUri, "bridge", "index.js").fsPath;
+    // ファイルを指す（不変条件14）。`extensionUri.fsPath` ではなく `extensionPath` から作る ――
+    // Windows で `Uri.fsPath` はドライブ文字を小文字にし（`d:\…`）、`extensionPath` や
+    // `os.homedir()` の綴り（`D:\…`）とずれる（D109）。
+    const bridgePath = path.join(context.extensionPath, "bridge", "index.js");
 
     /**
      * 設定の案内・撤去手順を、読み取り専用の仮想文書として開く（D98）。
@@ -732,7 +735,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const buildDocContent = (id: ShowMeDocId): string => {
       switch (id) {
         case "agent-configuration":
-          return buildAgentConfigDocument(bridgePath, uiLanguage(), os.homedir());
+          return buildAgentConfigDocument(bridgePath, uiLanguage(), os.homedir(), process.platform);
         case "teardown":
           return buildTeardownDocument(
             { runtimeDirs, extensionId: context.extension.id },

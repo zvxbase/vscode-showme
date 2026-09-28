@@ -1,6 +1,12 @@
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { SOCKET_ENV_VAR, processUid, runtimeDirCandidates, runtimeDirPath } from "./runtime-dir.js";
+import {
+  SOCKET_ENV_VAR,
+  isRuntimeDirName,
+  processUid,
+  runtimeDirCandidates,
+  runtimeDirPath,
+} from "./runtime-dir.js";
 
 /**
  * **期待値の区切り文字は `path` が決める。** 実装は `path.join` を使っており、それは
@@ -137,5 +143,29 @@ describe("processUid", () => {
     // os.userInfo().uid は Windows で -1 を返すが、片方がそれを使うと
     // ディレクトリ名がすれ違う。無いときの値をここで1つに決める。
     expect(processUid({})).toBe(0);
+  });
+});
+
+describe("isRuntimeDirName（D105）", () => {
+  it("runtimeDirPath が作る名前（XDG の下・tmpdir の下の uid 付き）は通す", () => {
+    for (const env of [{ XDG_RUNTIME_DIR: "/run/user/1000" }, {}]) {
+      expect(isRuntimeDirName(path.basename(runtimeDirPath(env, "/tmp", 1000)))).toBe(true);
+    }
+    expect(isRuntimeDirName("vscode-showme-0")).toBe(true);
+  });
+
+  it("それ以外の名前は通さない", () => {
+    for (const bad of [
+      "",
+      "vscode-showme-",
+      "vscode-showme-x",
+      "vscode-showme-1a",
+      "xvscode-showme",
+      "vscode-showme-1/..",
+      "VSCODE-SHOWME",
+      "tmp",
+    ]) {
+      expect(isRuntimeDirName(bad), bad).toBe(false);
+    }
   });
 });

@@ -52,7 +52,7 @@ import { type RedactionPolicy, agentPathKey, observedPathName } from "./workspac
  *
  * ## なぜ要るか（4回目のレビューで見つかった）
  *
- * `relativizeToRoot` は綴りしか見ない（`path.relative` ＋ 正規化）。VS Code は
+ * `relativizeToRoot` は対象の綴りのリンクを辿らない（`path.relative` ＋ 正規化。辿るのは根の実体だけ）。VS Code は
  * ドキュメントの URI にシンボリックリンクを**解決しないまま**入れるので、
  * ワークスペースの中に `notes.md -> ~/.ssh/id_rsa` があると:
  *

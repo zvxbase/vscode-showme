@@ -4,6 +4,7 @@ import {
   TOOL_ANNOTATIONS,
   TOOL_DESCRIPTIONS,
   TOOL_NAMES,
+  WIRE_PROTOCOL_VERSION,
   type WireRequest,
   requestSchema,
 } from "@zvx/vscode-showme-protocol";
@@ -441,9 +442,9 @@ describe("createShowMeServer", () => {
  */
 describe("run → invokeOnce → 拡張の入口 を本物で組む（transform は各側で1回だけ）", () => {
   const stage: RegistryEntry = {
-    protocolVersion: 1,
+    protocolVersion: WIRE_PROTOCOL_VERSION,
     workspacePath: "/w/stage",
-    pid: 1,
+    pid: process.pid,
     startedAt: "2026-09-09T00:00:00Z",
     socketPath: "/rt/stage.sock",
     authToken: "a".repeat(64),

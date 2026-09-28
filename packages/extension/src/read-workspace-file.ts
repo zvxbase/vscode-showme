@@ -1,6 +1,4 @@
-import * as fs from "node:fs";
-import { MAX_RESOLVE_BYTES } from "@zvx/vscode-showme-protocol";
-import { readAcceptedOutsideFile } from "./stage-mirror.js";
+import { readAcceptedInsideFile, readAcceptedOutsideFile } from "./stage-mirror.js";
 import {
   type RedactionPolicy,
   type WorkspacePathVerdict,
@@ -53,16 +51,8 @@ export function readAgentFile(
 /** 関門の答えから中身を読む（2つの口が共有する。読み方を2つに書かない）。 */
 function readVerdict(verdict: WorkspacePathVerdict): string | undefined {
   if (!verdict.ok) return undefined;
+  // どちらも判定した実体（dev / ino）だけを開いて読む。パスで読み直さない（差し替えで秘匿の中身・
+  // FIFO を掴む）。上限は protocol の `MAX_RESOLVE_BYTES`。読めない理由は外へ出さない。
   if (verdict.kind === "outside") return readAcceptedOutsideFile(verdict);
-
-  try {
-    const stat = fs.statSync(verdict.realPath);
-    if (!stat.isFile()) return undefined;
-    // 上限は protocol が宣言する（2プロセスが共有する契約なので定義元は1つ）。
-    if (stat.size > MAX_RESOLVE_BYTES) return undefined;
-    return fs.readFileSync(verdict.realPath, "utf8");
-  } catch {
-    // 読めない理由をここから外へ出さない。呼び出し側は「読めなかった」だけを見る。
-    return undefined;
-  }
+  return readAcceptedInsideFile(verdict.realPath);
 }
