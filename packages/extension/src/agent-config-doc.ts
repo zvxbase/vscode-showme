@@ -84,7 +84,20 @@ export function bridgeLaunchArgs(bridgePath: string): string[] {
   const m = VERSIONED_BRIDGE.exec(bridgePath);
   if (m === null) return [bridgePath];
   const [, dir = "", prefix = ""] = m;
-  return ["-e", newestLauncher(JSON.stringify(dir), prefix)];
+  return ["-e", newestLauncher(JSON.stringify(slashedWindowsPath(dir)), prefix)];
+}
+
+/**
+ * Windows のパス（`C:\…`）なら区切りを `/` にする。それ以外はそのまま。
+ *
+ * 1行はシェルと、シェルから node.exe への引数の受け渡しを通る。Windows ではそこで
+ * バックスラッシュが食われうる（Git Bash の `sh -c` を通して node.exe に渡すと `\\` が `\` になり、
+ * `C:\Users` が `C:Users` になって拡張フォルダが見つからない。CI の Windows で実測）。
+ * Windows の node は `/` 区切りも読むので、1行にバックスラッシュを入れない。
+ * POSIX のパスは `\` を名前の文字として持ちうるので変えない（単一引用符の中なら壊れない）。
+ */
+function slashedWindowsPath(p: string): string {
+  return /^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p;
 }
 const VERSIONED_BRIDGE = /^(.*)[\\/]([^\\/]+-)(\d+\.\d+\.\d+)[\\/]bridge[\\/]index\.js$/;
 
@@ -118,9 +131,10 @@ function newestLauncher(dirExpr: string, prefix: string): string {
   return [
     `const fs=require("fs"),path=require("path"),dir=${dirExpr},pre=${JSON.stringify(prefix)};`,
     `const ver=(n)=>n.slice(pre.length).split(".").map(Number);`,
-    "const hit=fs.readdirSync(dir).filter((n)=>n.startsWith(pre)&&/^\\d+\\.\\d+\\.\\d+$/.test(n.slice(pre.length)))",
+    // 正規表現と改行もバックスラッシュ無しで書く（`slashedWindowsPath` と同じ理由）
+    "const hit=fs.readdirSync(dir).filter((n)=>n.startsWith(pre)&&/^[0-9]+[.][0-9]+[.][0-9]+$/.test(n.slice(pre.length)))",
     ".sort((a,b)=>{const x=ver(a),y=ver(b);return x[0]-y[0]||x[1]-y[1]||x[2]-y[2];}).pop();",
-    `if(!hit){process.stderr.write("ShowMe is not installed in "+dir+"\\n");process.exit(1);}`,
+    `if(!hit){process.stderr.write("ShowMe is not installed in "+dir+require("os").EOL);process.exit(1);}`,
     `require(path.join(dir,hit,"bridge","index.js"));`,
   ].join("");
 }

@@ -78,6 +78,19 @@ describe("bridgeLaunchArgs: 更新しても貼り直さなくてよい起動の�
     expect(out).toBe("0.1.1");
   });
 
+  it("Windows のインストール先でも、起動の1行にバックスラッシュを1つも入れない", () => {
+    // Windows のシェルとその間の引数の受け渡し（Git Bash が node.exe に渡すときなど）は
+    // バックスラッシュを食う。JSON の `\\` が1本になると `C:\Users` は `C:Users` になり、
+    // 拡張フォルダが見つからない（CI の Windows で実測）。Windows の node は `/` 区切りも読むので、
+    // フォルダは `/` で書き、正規表現と改行もバックスラッシュ無しで書く。
+    const bridge =
+      "C:\\Users\\Me Too\\.vscode\\extensions\\zvxbase.vscode-showme-0.1.0\\bridge\\index.js";
+    const args = bridgeLaunchArgs(bridge);
+    expect(args[0]).toBe("-e");
+    expect(args[1]).not.toContain("\\");
+    expect(args[1]).toContain('dir="C:/Users/Me Too/.vscode/extensions"');
+  });
+
   it("開発中（拡張フォルダの外・版番号の無い置き場）は、そのパスを直接起動する", () => {
     const dev = "/work/vscode-showme/packages/extension/bridge/index.js";
     expect(bridgeLaunchArgs(dev)).toEqual([dev]);

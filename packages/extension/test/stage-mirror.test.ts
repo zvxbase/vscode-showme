@@ -53,7 +53,7 @@ describe("StageMirror", () => {
 
   beforeEach(() => {
     // realpath を取るのは /tmp 自体がシンボリックリンクの環境があるため。
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-mirror-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-mirror-")));
     root = path.join(base, "workspace");
     outside = path.join(base, "outside");
     fs.mkdirSync(root);
@@ -502,7 +502,7 @@ describe("StageMirror（外の映し。D102）", () => {
   const bytesOf = (s: string) => new TextEncoder().encode(s);
 
   beforeEach(() => {
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-mirror-out-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-mirror-out-")));
     root = path.join(base, "workspace");
     outside = path.join(base, "outside");
     fs.mkdirSync(root);

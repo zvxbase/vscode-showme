@@ -3,8 +3,10 @@
 // 写した先は .gitignore 済み ―― ルートを直せば次の package で追従する。
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = path.resolve(new URL(".", import.meta.url).pathname, "..", "..");
+// `new URL(…).pathname` は Windows で `/D:/…` になり、パスとして読めない
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ext = path.join(root, "packages", "extension");
 for (const name of ["README.md", "CHANGELOG.md", "LICENSE"]) {
   fs.copyFileSync(path.join(root, name), path.join(ext, name));

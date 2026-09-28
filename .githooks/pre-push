@@ -12,10 +12,10 @@ else
 fi
 node "$ROOT/scripts/release/scan-public-tree.mjs" --root "$ROOT" "${EXTRA_ARGS[@]}"
 
-case "$REMOTE_URL" in
-  *github.com/zvxbase/*|*github.com:zvxbase/*) ;;
-  *) exit 0 ;;
-esac
+# 公開 repo かの判定は public-remote.sh の1つ（org の接頭辞で決めない）
+# shellcheck source=public-remote.sh
+. "$ROOT/.githooks/public-remote.sh"
+is_public_remote "$REMOTE_URL" || exit 0
 ZERO="0000000000000000000000000000000000000000"
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 while read -r _local_ref local_sha _remote_ref remote_sha; do

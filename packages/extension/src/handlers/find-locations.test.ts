@@ -138,7 +138,7 @@ describe("find_references", () => {
     let base: string;
     let root: string;
     beforeEach(() => {
-      base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-find-links-")));
+      base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-find-links-")));
       root = path.join(base, "workspace");
       fs.mkdirSync(path.join(root, "src"), { recursive: true });
       fs.writeFileSync(path.join(root, ".env"), "SECRET=1\n");

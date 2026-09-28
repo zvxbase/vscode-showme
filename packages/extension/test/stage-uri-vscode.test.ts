@@ -129,33 +129,33 @@ describe("stageUriFor と relOfStageUri の往復（映しのスキームだけ�
 
 describe("外の映し（D102）", () => {
   const root = { scheme: "file", authority: "", path: "/ws" } as unknown as vscode.Uri;
+  // 外の鍵は、動いている OS のパスの流儀で正規化した絶対パス（`normalizeAbsolutePath`）。
+  // Windows ではドライブ文字を小文字にした `c:\…` で、映しの path は `/c:/…` になる。
+  // 流儀ごとの綴りの規則そのものは `stage-uri.test.ts` が path.posix / path.win32 の両方で見ている。
+  const win = process.platform === "win32";
+  const key = win ? "c:\\tmp\\x\\a.ts" : "/tmp/x/a.ts";
+  const keyPath = win ? "/c:/tmp/x/a.ts" : "/tmp/x/a.ts";
+  const doubled = win ? "/c:/tmp//a.ts" : "/tmp//a.ts";
+  const other = win ? "/c:/tmp/a.ts" : "/tmp/a.ts";
   it("外の鍵は authority outside の映しに、file なら本物のファイルの URI になる", () => {
-    const ro = stageUriFor(root, "/tmp/x/a.ts", STAGE_SCHEME_READONLY);
-    expect([ro.scheme, ro.authority, ro.path]).toEqual([
-      STAGE_SCHEME_READONLY,
-      "outside",
-      "/tmp/x/a.ts",
-    ]);
-    const rw = stageMirrorUri("/tmp/x/a.ts", STAGE_SCHEME_EDITABLE);
-    expect([rw.scheme, rw.authority, rw.path]).toEqual([
-      STAGE_SCHEME_EDITABLE,
-      "outside",
-      "/tmp/x/a.ts",
-    ]);
-    const file = stageUriFor(root, "/tmp/x/a.ts", "file");
-    expect([file.scheme, file.path]).toEqual(["file", "/tmp/x/a.ts"]);
+    const ro = stageUriFor(root, key, STAGE_SCHEME_READONLY);
+    expect([ro.scheme, ro.authority, ro.path]).toEqual([STAGE_SCHEME_READONLY, "outside", keyPath]);
+    const rw = stageMirrorUri(key, STAGE_SCHEME_EDITABLE);
+    expect([rw.scheme, rw.authority, rw.path]).toEqual([STAGE_SCHEME_EDITABLE, "outside", keyPath]);
+    const file = stageUriFor(root, key, "file");
+    expect([file.scheme, file.path]).toEqual(["file", key]);
   });
 
   it("所有と印は中と外の両方の正準形を認め、別綴りは認めない", () => {
-    expect(isAgentStageUri(uriOf(STAGE_SCHEME_READONLY, "/tmp/x/a.ts", "outside"))).toBe(true);
+    expect(isAgentStageUri(uriOf(STAGE_SCHEME_READONLY, keyPath, "outside"))).toBe(true);
     expect(isAgentStageUri(uriOf(STAGE_SCHEME_READONLY, "/src/a.ts"))).toBe(true);
-    expect(isAgentStageUri(uriOf(STAGE_SCHEME_READONLY, "/tmp//a.ts", "outside"))).toBe(false);
-    expect(isAgentStageUri(uriOf(STAGE_SCHEME_READONLY, "/tmp/a.ts", "x"))).toBe(false);
+    expect(isAgentStageUri(uriOf(STAGE_SCHEME_READONLY, doubled, "outside"))).toBe(false);
+    expect(isAgentStageUri(uriOf(STAGE_SCHEME_READONLY, other, "x"))).toBe(false);
   });
 
   it("鍵に戻す口は外も読み、中だけを読む口は外を読まない", () => {
-    const outside = uriOf(STAGE_SCHEME_READONLY, "/tmp/x/a.ts", "outside");
-    expect(stageKeyOfUri(outside)).toBe("/tmp/x/a.ts");
+    const outside = uriOf(STAGE_SCHEME_READONLY, keyPath, "outside");
+    expect(stageKeyOfUri(outside)).toBe(key);
     expect(relOfStageUri(outside)).toBeUndefined();
     expect(stageKeyOfUri(uriOf(STAGE_SCHEME_READONLY, "/src/a.ts"))).toBe("src/a.ts");
   });

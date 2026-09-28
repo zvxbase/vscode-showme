@@ -17,7 +17,7 @@ describe("readWorkspaceFile", () => {
   beforeEach(() => {
     // realpath を取るのは /tmp 自体がシンボリックリンクの環境があるため
     // （macOS の /tmp -> /private/tmp）。取らないと相対計算が常に外れる。
-    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-read-")));
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-read-")));
     root = path.join(base, "workspace");
     outside = path.join(base, "outside");
     fs.mkdirSync(root);
@@ -136,7 +136,7 @@ describe("readWorkspaceFile", () => {
 describe("外のファイルを読む口は分ける（D102）", () => {
   let base: string;
   beforeEach(() => {
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-read-out-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-read-out-")));
     fs.mkdirSync(path.join(base, "ws"));
     fs.writeFileSync(path.join(base, "page.html"), "<p>outside</p>\n");
   });

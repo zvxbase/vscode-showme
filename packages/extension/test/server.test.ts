@@ -9,6 +9,7 @@ import {
   SECOND_CONNECTION_REASON,
   ShowMeSocketServer,
   ToolError,
+  WINDOWS_UNSUPPORTED_REASON,
   cleanStaleRegistrations,
   prepareRuntimeDir,
 } from "../src/server.js";
@@ -58,7 +59,31 @@ function registryOf(info: { registryPaths: readonly string[] }): string {
   return String(first);
 }
 
-describe("prepareRuntimeDir", () => {
+/**
+ * Windows ではソケットサーバを立てない（`prepareRuntimeDir` が閉じる側に倒す。設計書 §3.5）。
+ * 実行時ディレクトリの 0700・ソケットの 0600・その上で動くサーバの検査は POSIX の上でだけ走らせる。
+ * Windows で走らせても、確かめられるのは「立たない」ことだけで、それは下の検査が見ている。
+ */
+const onWindows = process.platform === "win32";
+
+describe("prepareRuntimeDir: Windows では作らずに断る", () => {
+  it("win32 なら、ディレクトリを作らずに理由を返す（確かめられない権限を確かめたことにしない）", () => {
+    const dir = path.join(tmpRoot(), "vscode-showme-0");
+    const r = prepareRuntimeDir(dir, "win32");
+    expect(r).toEqual({ ok: false, reason: WINDOWS_UNSUPPORTED_REASON });
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it.runIf(onWindows)("本物の Windows でも既定の引数で断り、サーバは立たない", async () => {
+    const dir = path.join(tmpRoot(), "vscode-showme-0");
+    expect(prepareRuntimeDir(dir)).toEqual({ ok: false, reason: WINDOWS_UNSUPPORTED_REASON });
+    const server = new ShowMeSocketServer([dir], async () => ({}));
+    await expect(server.start()).rejects.toThrow(WINDOWS_UNSUPPORTED_REASON);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+});
+
+describe.skipIf(onWindows)("prepareRuntimeDir", () => {
   it("0700 のディレクトリを作る", () => {
     const dir = path.join(tmpRoot(), "vscode-showme-1000");
     const r = prepareRuntimeDir(dir);
@@ -204,7 +229,7 @@ describe("cleanStaleRegistrations", () => {
   });
 });
 
-describe("ShowMeSocketServer", () => {
+describe.skipIf(onWindows)("ShowMeSocketServer", () => {
   it("正しいトークンなら受け付ける", async () => {
     const dir = path.join(tmpRoot(), "rt");
     const server = new ShowMeSocketServer([dir], async () => ({ hello: "world" }));
@@ -831,7 +856,7 @@ function connectTo(socketPath: string): Promise<void> {
  * 預けたように見えて、エージェントからは見えない窓」になる。extension.ts は
  * vscode を値 import するので単体では読めない。ここで組み立てだけを写す。
  */
-describe("役割の変化が登録ファイルに届く（拡張の配線と同じ組み立て）", () => {
+describe.skipIf(onWindows)("役割の変化が登録ファイルに届く（拡張の配線と同じ組み立て）", () => {
   it("トグル1回で、ファイルの役割が stage になる", async () => {
     const dir = path.join(tmpRoot(), "rt");
     const roleState = new WindowRoleState();
@@ -873,7 +898,7 @@ describe("役割の変化が登録ファイルに届く（拡張の配線と同�
  * **inode を見る**: 同じファイルを truncate して書き直せば inode は変わらず、
  * 別名で書いて rename すれば必ず変わる。この2つは実装の違いそのものである。
  */
-describe("登録ファイルの置き換えは原子的である", () => {
+describe.skipIf(onWindows)("登録ファイルの置き換えは原子的である", () => {
   it("書き直すと inode が変わる（in-place の truncate ではない）", async () => {
     const dir = path.join(tmpRoot(), "rt");
     const server = new ShowMeSocketServer([dir], async () => ({}), "", undefined, {
@@ -1004,7 +1029,7 @@ function sendRawWithoutNewline(
   });
 }
 
-describe("ハンドシェイクの終わりは1箇所で決まる（不変条件14 の4件目）", () => {
+describe.skipIf(onWindows)("ハンドシェイクの終わりは1箇所で決まる（不変条件14 の4件目）", () => {
   /** 20 KiB の要求。宣言上の上限（MAX_HTML_CHARS = 256 KiB）よりずっと小さい。 */
   const bigRequest = {
     id: "1",
@@ -1059,7 +1084,7 @@ describe("ハンドシェイクの終わりは1箇所で決まる（不変条件
   });
 });
 
-describe("拒否の理由を返すのは、認証と無関係なときだけ（設計 D28）", () => {
+describe.skipIf(onWindows)("拒否の理由を返すのは、認証と無関係なときだけ（設計 D28）", () => {
   it("大きすぎる要求には理由が返ってから切られる", async () => {
     const dir = path.join(tmpRoot(), "rt");
     const server = new ShowMeSocketServer([dir], async () => ({}));
@@ -1093,7 +1118,7 @@ describe("拒否の理由を返すのは、認証と無関係なときだけ（�
   });
 });
 
-describe("スキーマを通る入力は線も通る（不変条件14 の5件目）", () => {
+describe.skipIf(onWindows)("スキーマを通る入力は線も通る（不変条件14 の5件目）", () => {
   it("上限いっぱいの日本語 HTML が線で落ちない", async () => {
     // **これが逆向きの検査である。** 既存の「行長の上限はバイト数で測る」は
     // 大きすぎる入力が**正しく落ちる**ことしか見ていなかった。

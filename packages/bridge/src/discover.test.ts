@@ -11,6 +11,7 @@ import {
   describeSelectionFailure,
   describeUnsafeRuntimeDir,
   nodeRegistryFileSystem,
+  ownedAndPrivate,
   parseRegistryEntry,
   readRegistryEntries,
   scanRegistry,
@@ -442,7 +443,36 @@ describe("defaultRuntimeDirs", () => {
   });
 });
 
-describe("nodeRegistryFileSystem（本物のファイルシステムで検査する）", () => {
+/**
+ * Windows では登録を信じない（`ownedAndPrivate` が閉じる側に倒す。拡張も書かない）。
+ * 0700 / 0600 の本物のファイルシステムでの検査は POSIX の上でだけ走らせ、Windows では
+ * 「本物のディレクトリでも unsafe になる」ことを確かめる。
+ */
+const onWindows = process.platform === "win32";
+
+describe("ownedAndPrivate: Windows では確かめられないので信じない", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "showme-discover-win-"));
+    fs.chmodSync(dir, 0o700);
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("win32 なら、モードが 0700 に見えても理由を返す", () => {
+    const st = fs.lstatSync(dir);
+    expect(ownedAndPrivate(st, "runtime dir", dir, "win32")).toContain("native Windows");
+  });
+
+  it.runIf(onWindows)("本物の Windows では、実行時ディレクトリも登録ファイルも読まない", () => {
+    fs.writeFileSync(path.join(dir, "a.json"), "{}");
+    expect(nodeRegistryFileSystem.openDir(dir).kind).toBe("unsafe");
+    expect(nodeRegistryFileSystem.read(dir, "a.json")).toBeUndefined();
+  });
+});
+
+describe.skipIf(onWindows)("nodeRegistryFileSystem（本物のファイルシステムで検査する）", () => {
   let dir: string;
 
   beforeEach(() => {
@@ -502,87 +532,90 @@ describe("nodeRegistryFileSystem（本物のファイルシステムで検査す
   });
 });
 
-describe("readRegistryEntries（本物のファイルシステムで両候補を走査する）", () => {
-  let root: string;
-  let primary: string;
-  let fallback: string;
+describe.skipIf(onWindows)(
+  "readRegistryEntries（本物のファイルシステムで両候補を走査する）",
+  () => {
+    let root: string;
+    let primary: string;
+    let fallback: string;
 
-  const TOKEN3 = "c".repeat(64);
-  const entry = (over: Record<string, unknown>) =>
-    JSON.stringify({
-      protocolVersion: 1,
-      workspacePath: "/w/alpha",
-      pid: 1,
-      startedAt: "2026-09-09T00:00:00Z",
-      authToken: TOKEN3,
-      role: "stage",
-      ...over,
+    const TOKEN3 = "c".repeat(64);
+    const entry = (over: Record<string, unknown>) =>
+      JSON.stringify({
+        protocolVersion: 1,
+        workspacePath: "/w/alpha",
+        pid: 1,
+        startedAt: "2026-09-09T00:00:00Z",
+        authToken: TOKEN3,
+        role: "stage",
+        ...over,
+      });
+
+    function place(dir: string, name: string, body: string, mode = 0o600): void {
+      fs.writeFileSync(path.join(dir, name), body, { mode });
+      fs.chmodSync(path.join(dir, name), mode);
+    }
+
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "showme-candidates-"));
+      primary = path.join(root, "xdg");
+      fallback = path.join(root, "tmp");
+      for (const dir of [primary, fallback]) fs.mkdirSync(dir, { mode: 0o700 });
     });
 
-  function place(dir: string, name: string, body: string, mode = 0o600): void {
-    fs.writeFileSync(path.join(dir, name), body, { mode });
-    fs.chmodSync(path.join(dir, name), mode);
-  }
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
 
-  beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "showme-candidates-"));
-    primary = path.join(root, "xdg");
-    fallback = path.join(root, "tmp");
-    for (const dir of [primary, fallback]) fs.mkdirSync(dir, { mode: 0o700 });
-  });
+    it("同じ窓が両方のディレクトリに書いていても1件になる", () => {
+      place(primary, "w.json", entry({ windowId: "same", socketPath: `${primary}/w.sock` }));
+      place(fallback, "w.json", entry({ windowId: "same", socketPath: `${fallback}/w.sock` }));
 
-  afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
-  });
+      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      expect(read.entries).toHaveLength(1);
+      // 預けられた窓は1つ。畳めていなければ multiple-stages になる。
+      const selection = selectWindow(read.entries, {});
+      expect(selection.ok).toBe(true);
+    });
 
-  it("同じ窓が両方のディレクトリに書いていても1件になる", () => {
-    place(primary, "w.json", entry({ windowId: "same", socketPath: `${primary}/w.sock` }));
-    place(fallback, "w.json", entry({ windowId: "same", socketPath: `${fallback}/w.sock` }));
+    it("片方のディレクトリにしか無い窓も見つかる(XDG の食い違いで黙って見失わない)", () => {
+      place(fallback, "w.json", entry({ windowId: "only", socketPath: `${fallback}/w.sock` }));
+      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      expect(read.entries.map((e) => e.windowId)).toEqual(["only"]);
+    });
 
-    const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
-    expect(read.entries).toHaveLength(1);
-    // 預けられた窓は1つ。畳めていなければ multiple-stages になる。
-    const selection = selectWindow(read.entries, {});
-    expect(selection.ok).toBe(true);
-  });
+    it("読めない登録が混ざっても、読める登録は読む(全体が落ちない)", () => {
+      place(primary, "broken.json", "{{{ not json");
+      place(primary, "leaky.json", entry({ windowId: "leaky", socketPath: "/x.sock" }), 0o644);
+      fs.symlinkSync(path.join(primary, "broken.json"), path.join(primary, "link.json"));
+      fs.mkdirSync(path.join(primary, "dir.json"), { mode: 0o700 });
+      place(fallback, "good.json", entry({ windowId: "good", socketPath: `${fallback}/g.sock` }));
 
-  it("片方のディレクトリにしか無い窓も見つかる(XDG の食い違いで黙って見失わない)", () => {
-    place(fallback, "w.json", entry({ windowId: "only", socketPath: `${fallback}/w.sock` }));
-    const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
-    expect(read.entries.map((e) => e.windowId)).toEqual(["only"]);
-  });
+      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      expect(read.entries.map((e) => e.windowId)).toEqual(["good"]);
+      expect(read.unsafe).toEqual([]);
+    });
 
-  it("読めない登録が混ざっても、読める登録は読む(全体が落ちない)", () => {
-    place(primary, "broken.json", "{{{ not json");
-    place(primary, "leaky.json", entry({ windowId: "leaky", socketPath: "/x.sock" }), 0o644);
-    fs.symlinkSync(path.join(primary, "broken.json"), path.join(primary, "link.json"));
-    fs.mkdirSync(path.join(primary, "dir.json"), { mode: 0o700 });
-    place(fallback, "good.json", entry({ windowId: "good", socketPath: `${fallback}/g.sock` }));
+    it("後退先が他人にも書ける状態で先回りされていても、正規の候補は読める", () => {
+      // /tmp は 1777。ここで全体を止めると、誰でも疎通を止められる。
+      fs.chmodSync(fallback, 0o777);
+      place(primary, "w.json", entry({ windowId: "ok", socketPath: `${primary}/w.sock` }));
 
-    const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
-    expect(read.entries.map((e) => e.windowId)).toEqual(["good"]);
-    expect(read.unsafe).toEqual([]);
-  });
+      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      expect(read.entries.map((e) => e.windowId)).toEqual(["ok"]);
+      expect(read.unsafe.map((u) => u.dir)).toEqual([fallback]);
+    });
 
-  it("後退先が他人にも書ける状態で先回りされていても、正規の候補は読める", () => {
-    // /tmp は 1777。ここで全体を止めると、誰でも疎通を止められる。
-    fs.chmodSync(fallback, 0o777);
-    place(primary, "w.json", entry({ windowId: "ok", socketPath: `${primary}/w.sock` }));
+    it("危ないディレクトリの中身は1件も読まない", () => {
+      place(fallback, "w.json", entry({ windowId: "planted", socketPath: `${fallback}/w.sock` }));
+      fs.chmodSync(fallback, 0o777);
 
-    const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
-    expect(read.entries.map((e) => e.windowId)).toEqual(["ok"]);
-    expect(read.unsafe.map((u) => u.dir)).toEqual([fallback]);
-  });
-
-  it("危ないディレクトリの中身は1件も読まない", () => {
-    place(fallback, "w.json", entry({ windowId: "planted", socketPath: `${fallback}/w.sock` }));
-    fs.chmodSync(fallback, 0o777);
-
-    const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
-    expect(read.entries).toEqual([]);
-    expect(read.unsafe).toHaveLength(1);
-  });
-});
+      const read = readRegistryEntries([primary, fallback], nodeRegistryFileSystem);
+      expect(read.entries).toEqual([]);
+      expect(read.unsafe).toHaveLength(1);
+    });
+  },
+);
 
 describe("describeSelectionFailure", () => {
   const present = { dirs: ["/run/user/1000/vscode-showme"], present: true };

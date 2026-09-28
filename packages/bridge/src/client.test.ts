@@ -33,12 +33,23 @@ const okResult = {
 let dir: string;
 let servers: net.Server[];
 
+/**
+ * 偽の拡張が listen する場所。Windows の `net` はファイルシステムの上に Unix socket を
+ * 作れない（EACCES）ので、拡張と同じく名前付きパイプにする（`server.ts` の `\\.\pipe\…`）。
+ * 名前は一時ディレクトリの名前から作り、並行に走る他のテストとぶつけない。
+ */
+function socketPathOf(name: string): string {
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\${path.basename(dir)}-${name}`
+    : path.join(dir, `${name}.sock`);
+}
+
 /** 偽の拡張。1行目(hello)を受け取り、2行目(要求)に `reply` の答えを返す。 */
 function fakeExtension(
   reply: (line: string, socket: net.Socket) => void,
   onHello?: (line: string) => void,
 ): Promise<string> {
-  const socketPath = path.join(dir, `fake-${servers.length}.sock`);
+  const socketPath = socketPathOf(`fake-${servers.length}`);
   const server = net.createServer((socket) => {
     let buffer = "";
     let sawHello = false;
@@ -135,7 +146,7 @@ describe("callExtension", () => {
   });
 
   it("繋がらないパスは NoWindowError(起動を止めない失敗)", async () => {
-    const dead = path.join(dir, "nobody-here.sock");
+    const dead = socketPathOf("nobody-here");
     await expect(callExtension(dead, TOKEN, request)).rejects.toThrow(NoWindowError);
   });
 
@@ -234,7 +245,7 @@ describe("callExtension", () => {
 
 describe("NoWindowError の stale", () => {
   it("ソケットに触れもしなかったときは stale（その候補を外す）", async () => {
-    const dead = path.join(dir, "nobody-here.sock");
+    const dead = socketPathOf("nobody-here");
     await expect(callExtension(dead, TOKEN, request)).rejects.toMatchObject({ stale: true });
   });
 

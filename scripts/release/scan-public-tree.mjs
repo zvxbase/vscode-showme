@@ -14,6 +14,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 /**
  * 公開ツリーに入らないパスは走査しない。一覧は private の repo にだけある
  * 。公開 repo には落とす対象そのものが無いので、無くてよい。
@@ -146,6 +147,9 @@ function main(argv) {
   return hits.length === 0 ? 0 : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+// 直接起動されたときだけ走る。`new URL(import.meta.url).pathname` と比べてはいけない ――
+// Windows では `/D:/…` になり `D:\…` と一致せず、**何も走査しないまま 0 で終わる**（フックも
+// 公開前の走査も素通りする。CI の Windows で実測）。
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exit(main(process.argv.slice(2)));
 }

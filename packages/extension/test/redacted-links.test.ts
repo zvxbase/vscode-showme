@@ -20,7 +20,7 @@ describe("redacted-links", () => {
 
   beforeEach(() => {
     // /tmp 自体がシンボリックリンクの環境（macOS）があるので realpath を取る。
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-links-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-links-")));
     root = path.join(base, "workspace");
     fs.mkdirSync(root);
     fs.mkdirSync(path.join(root, "docs"));

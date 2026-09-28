@@ -195,6 +195,9 @@ status bar shows `ShowMe: On` / `ShowMe: Connected` with a warning icon on a war
 
 HTML files for `show_html` and **Reveal in Explorer** stay workspace-only. The agent's tab of an
 outside file is not refreshed when the file changes on disk; ask the agent to show it again.
+On Windows, a path with a part like `NAME~1` in it (the 8.3 short-name form, such as `C:\PROGRA~1\…`) is
+refused even when the file itself is allowed, because a short name is a second spelling of the same file;
+use the long name.
 
 ## Troubleshooting
 
@@ -279,8 +282,10 @@ documents) are **English by default**, and Japanese when VS Code's display langu
 ## Status
 
 **Preview.** Verified on Linux (unit + integration tests in a real VS Code). macOS uses the same
-Unix-socket path but has not been verified yet; Windows named-pipe support is written but not yet
-verified. CI runs both as non-blocking observations.
+Unix-socket path but has not been verified yet. **ShowMe does not start on native Windows yet**:
+there, Node cannot check who may read the folder that holds the connection token, so the extension
+refuses to start rather than guess. Use VS Code with WSL or a dev container. The unit tests also run
+on Windows in CI.
 
 The public repository on GitHub is a **release mirror**: development happens in a private repository, and
 each release is published there as one commit — see `CONTRIBUTING.md`. This is a personal project

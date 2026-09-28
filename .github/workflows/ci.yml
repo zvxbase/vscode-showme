@@ -90,19 +90,15 @@ jobs:
       # SHOWME_SOCK は制限モードと tmux で死ぬ経路なので、CI では必ず外して走らせる
       - run: env -u SHOWME_SOCK npm run -w packages/extension ${{ matrix.suite }}:xvfb
 
-  # 単体も Windows では**非ブロッキングの観測**である。
-  # 2026-09-23 に実測して、前提のほうを改めた: 区切り文字の決め打ち（11 件）を直して
-  # dist を作って走らせたら、残り **67 件**が落ちた。中身は POSIX の権限モデルと
-  # Unix socket に束縛された検査（実行時ディレクトリの 0700、ソケットの 0600、
-  # `mode 777` の断りの文言、ソケットサーバの受け入れ/拒否）で、Windows には
-  # その概念が無い。設計書が Windows を「達成済みと数えない」と書いているのと同じ面である。
-  # したがってここは門ではなく、**何がどこで落ちるかを記録する場所**として走らせる。
+  # Windows の単体も門である（2026-09-28 から）。ネイティブの Windows では拡張がソケットサーバを
+  # 立てない（Node が ACL を読めず、実行時ディレクトリを誰が読めるかを確かめられない）ので、
+  # POSIX の権限とソケットサーバの検査は Windows では飛ばし、代わりに「立たない」ことを検査する。
+  # それ以外（パスの関門・ワークスペースの外・映し・起動の1行など）は Windows でも同じ検査が走る。
   unit-windows:
     if: github.event_name != 'push'
     needs: check
     runs-on: windows-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -118,13 +114,13 @@ jobs:
       - run: npm run test
 
   integration-windows:
-    # 設計書が Windows を「達成済みと数えない」と書いている間は**非ブロッキングの観測**。
-    # 何がどこで壊れるかを、推測ではなく記録するために走らせる。
+    # ネイティブの Windows では拡張が起動を断る（上の unit-windows と同じ理由）。実 VS Code の上で
+    # 「拡張は有効になるが、実行時ディレクトリも名前付きパイプも作らない」ことを確かめる回だけを
+    # 走らせる（runTest.ts）。Windows に対応するときは、信頼・制限の回に戻す。
     if: github.event_name != 'push'
     needs: check
     runs-on: windows-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

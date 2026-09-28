@@ -56,6 +56,7 @@ import {
   placeOfResult,
 } from "../src/stage-language.js";
 import { STAGE_SCHEME_EDITABLE, STAGE_SCHEME_READONLY } from "../src/stage-uri.js";
+import { agentSpelling, outsideMirrorPath } from "./outside-spelling.js";
 
 const ROOT = "/ws";
 const root = vscode.Uri.file(ROOT);
@@ -211,7 +212,7 @@ describe("placeOfResult（結果の URI がワークスペースのどこか。�
   let rootUri: vscode.Uri;
 
   beforeAll(() => {
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-lang-")));
+    dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-lang-")));
     ws = path.join(dir, "ws");
     fs.mkdirSync(path.join(ws, "src"), { recursive: true });
     fs.writeFileSync(path.join(ws, "src", "a.ts"), "export const a = 1;\n");
@@ -348,7 +349,7 @@ describe("外の結果（D102）", () => {
   let ws: string;
   let rootUri: vscode.Uri;
   beforeAll(() => {
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-lang-out-")));
+    dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-lang-out-")));
     ws = path.join(dir, "ws");
     fs.mkdirSync(ws, { recursive: true });
     fs.writeFileSync(path.join(dir, "lib.ts"), "export const o = 1;\n");
@@ -365,7 +366,7 @@ describe("外の結果（D102）", () => {
     const lib = vscode.Uri.file(path.join(dir, "lib.ts"));
     expect(placeOfResult(rootUri, lib, on)).toEqual({
       kind: "outside-accepted",
-      rel: path.join(dir, "lib.ts"),
+      rel: agentSpelling(path.join(dir, "lib.ts")),
       canonical: path.join(dir, "lib.ts"),
     });
     expect(placeOfResult(rootUri, lib, off)).toEqual({ kind: "outside" });
@@ -386,7 +387,7 @@ describe("外の結果（D102）", () => {
       place: (u) => placeOfResult(rootUri, u, on),
     }) as vscode.Location[];
     expect(mapped.map((l) => [l.uri.scheme, l.uri.authority, l.uri.path])).toEqual([
-      [STAGE_SCHEME_READONLY, "outside", path.join(dir, "lib.ts")],
+      [STAGE_SCHEME_READONLY, "outside", outsideMirrorPath(path.join(dir, "lib.ts"))],
     ]);
     expect(
       mapMirrorLocations([new vscode.Location(lib, range as never)], {

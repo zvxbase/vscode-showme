@@ -362,7 +362,7 @@ describe("秘匿ファイルへのハードリンク（D91）", () => {
   let base: string;
   let root: string;
   beforeEach(() => {
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-state-links-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-state-links-")));
     root = path.join(base, "workspace");
     fs.mkdirSync(path.join(root, "docs"), { recursive: true });
     fs.writeFileSync(path.join(root, ".env"), "SECRET=1\n");
@@ -882,7 +882,7 @@ describe("annotations（D72）", () => {
 describe("外のファイルの選択（D102）", () => {
   let base: string;
   beforeEach(() => {
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-ges-out-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-ges-out-")));
     fs.mkdirSync(path.join(base, "ws"));
     fs.writeFileSync(path.join(base, "b.ts"), "const secret = compute();\n");
   });

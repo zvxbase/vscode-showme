@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.1.3 — preview
+## 0.1.4 — preview
 
+- **Native Windows:** ShowMe now says plainly that it does not start on native Windows yet (Node cannot check who may read the folder that holds the connection token there), instead of failing with `runtime dir mode is 666`, and it no longer leaves an empty folder behind. Use VS Code with WSL or a dev container.
+- The snippets from **ShowMe: Show agent configuration** no longer contain backslashes, so they will work as pasted once ShowMe runs on native Windows (today it does not; see above). Snippets you pasted before keep working.
+- README: on Windows, paths with a part like `NAME~1` (the 8.3 short-name form, such as `C:\PROGRA~1\…`) are refused when opening files outside the workspace; use the long name.
 - New opt-in `showme.allowOutsideWorkspace` setting (default off): the agent can show, annotate and search files outside the workspace by absolute path. Turning it on is at your own risk — it lets the agent get around the folder restrictions you gave it (contents are never returned, but repeated searches can reveal them), and a malicious instruction in a repository you are reading could put your secret files on screen. Credential locations (`~/.ssh`, `~/.aws`, `~/.config/gh`, browser profiles, shell history and more) and redacted files stay refused even when it is on, and the status bar shows a warning while it is on. `list_workspaces` reports it as `outsideWorkspace`.
 - New `showme.blockLinksToRedactedFiles` setting (default `true`): a hard link to a redacted file (such as `.env`) is now treated as redacted too, even under a harmless name, so the agent can't open, search, or read its selection. Ordinary hard links (e.g. pnpm's `node_modules`) still work, except in very large workspaces (over 50,000 entries outside skipped folders), where they're refused and the operations log says so.
 - **Behavior change:** `arrange_editors` may now close or move the agent's own tab even while you are currently viewing it. New `showme.layout.protectViewingTab` setting (default `false`) restores the old protection when turned on; your own tabs and unsaved tabs are unaffected either way.
@@ -13,6 +16,10 @@
 - The agent configuration document now explains how to set ShowMe up for one repository only (Claude Code scopes, Codex CLI's `.codex/config.toml`, Copilot CLI's `.github/mcp.json` or `.mcp.json`), with the caveats: the snippets contain this machine's install path, repository configuration should be checked before you approve it, and Copilot in VS Code may list ShowMe twice. It ends with an optional prompt you can give your agent to do the setup; you are responsible for what the agent changes. The teardown steps (and the README) now cover these places and scopes too, and the Copilot CLI snippet includes the required `"tools": ["*"]`.
 - README: new command table. The Japanese README gives each command's English name next to the Japanese one (VS Code shows the English names when the Japanese language pack is not installed). The command and settings tables are now generated from the extension's declarations, so they no longer drift, and the Japanese README records which version of the English README it was translated from.
 - Setting descriptions (shown in the Settings UI and in the README) are rewritten in plain language, and the README now lists every setting, including `showme.enabled` and `showme.html.maxPanels`.
+
+## 0.1.3 — withdrawn
+
+Tagged but never published: it was tagged while tests on Windows were failing. Everything it contained is in 0.1.4.
 
 ## 0.1.2 — preview
 

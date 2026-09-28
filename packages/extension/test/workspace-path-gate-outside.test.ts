@@ -15,6 +15,7 @@ import {
   insideOnly,
   isRedactedEntity,
 } from "../src/workspace-path-gate.js";
+import { agentSpelling } from "./outside-spelling.js";
 
 /**
  * ワークスペースの外のパス（D101）。`showme.allowOutsideWorkspace` がオンのときだけ、絶対パスで
@@ -79,7 +80,7 @@ interface Fixture {
   home: string;
 }
 function fixture(): Fixture {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-")));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-")));
   made.push(base);
   const root = path.join(base, "workspace");
   const outside = path.join(base, "outside");
@@ -307,7 +308,9 @@ describe("設定がオン", () => {
     },
   );
 
-  it("/proc・/sys・/dev は断る", () => {
+  // POSIX のシステムの置き場所（`SYSTEM_DENIED_ROOTS` は posix だけ）。Windows にはこの置き場所が無く、
+  // ドライブの無い根（`\proc`）は綴りの段で invalid-path に落ちる（`normalizeAbsolutePath`）。
+  it.skipIf(process.platform === "win32")("/proc・/sys・/dev は断る", () => {
     const { root, home } = fixture();
     for (const abs of ["/proc/self/environ", "/dev/null", "/sys/kernel/notes"]) {
       expect(acceptWorkspacePath(root, abs, policy(true), { home }), abs).toEqual(EXCLUDED);
@@ -374,9 +377,13 @@ describe("設定がオン", () => {
     const abs = path.join(outside, "a.txt");
     fsTouches.calls.length = 0;
     expect(acceptWorkspacePath(root, abs, policy(true), { home }).ok).toBe(true);
-    // 実体は realpath.native で求め、その後は lstat だけ（stat はリンクを辿る）。
-    const onTarget = fsTouches.calls.filter((c) => c.endsWith(` ${abs}`));
-    expect(onTarget).toEqual([`realpathSync.native ${abs}`, `lstatSync ${abs}`]);
+    // 実体は realpath.native で求め、その後は lstat だけ（stat はリンクを辿る）。realpath に渡すのは
+    // 正規化した綴り（Windows ではドライブ文字が小文字）、lstat に渡すのは realpath の答え。
+    const spelled = agentSpelling(abs);
+    const onTarget = fsTouches.calls.filter(
+      (c) => c.endsWith(` ${abs}`) || c.endsWith(` ${spelled}`),
+    );
+    expect(onTarget).toEqual([`realpathSync.native ${spelled}`, `lstatSync ${abs}`]);
   });
 
   it("ワークスペースが無いときは今と同じく invalid-path", () => {
@@ -477,7 +484,7 @@ describe("観測の側の名前と秘匿（D102）", () => {
     fs.symlinkSync(path.join(outside, "a.txt"), path.join(outside, "alias.txt"));
     expect(
       acceptObservablePath(root, `${outside}//alias.txt`, policy(true), { home }),
-    ).toMatchObject({ ok: true, canonical: path.join(outside, "alias.txt") });
+    ).toMatchObject({ ok: true, canonical: agentSpelling(path.join(outside, "alias.txt")) });
     expect(
       acceptObservablePath(root, path.join(root, "docs", "notes.md"), policy(true), { home }),
     ).toMatchObject({ ok: true, canonical: "docs/notes.md" });

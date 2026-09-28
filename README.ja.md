@@ -10,13 +10,13 @@
   "Commands": "b21b96b0fd1e39bd",
   "Tools": "6d4a6e7b8349d01f",
   "Settings": "a674388fc1d37f0f",
-  "Opening files outside the workspace": "5ce6a29ead9bb201",
+  "Opening files outside the workspace": "908e3968f41fafdd",
   "Troubleshooting": "4b34407f3e8abb52",
   "Uninstall": "7ccc84caf11032ec",
   "Safety, in one table": "f9a300ab3deeaab9",
   "Packages": "548565c3d5677140",
   "Languages": "174627b9997a152c",
-  "Status": "ebf02ac27d9e83be",
+  "Status": "3c29fde94d2ac826",
   "How this was built": "cfd7cce72c3841b1",
   "License": "1e5e273a2aae7f48"
 } -->
@@ -215,6 +215,8 @@ VS Code では英語名で出る。
 `show_html` の HTML ファイルと **エクスプローラーで表示**（Reveal in Explorer）はワークスペースの中だけの
 まま。外のファイルのエージェントのタブは、ディスクの変更では読み直されない。エージェントにもう一度
 見せてもらう。
+Windows では、`NAME~1` のような部分（8.3 形式の短い名前の形。`C:\PROGRA~1\…` など）を含むパスは、
+ファイル自体が許されていても断る。短い名前は同じファイルの別の綴りだから。長い名前で指す。
 
 ## 動かないとき
 
@@ -296,8 +298,9 @@ VS Code の表示言語が日本語なら日本語になる。
 ## 現在地と開発の場所
 
 **プレビュー版。** Linux で確認済み（単体テストと、実 VS Code での統合テスト）。macOS は同じ
-Unix socket の経路だがまだ確かめていない。Windows の名前付きパイプは実装済みで未確認。CI は
-どちらも、失敗しても止めない観測として回している。
+Unix socket の経路だがまだ確かめていない。**ネイティブの Windows ではまだ起動しない**: Windows では、
+接続のトークンを置くフォルダを誰が読めるかを Node が確かめられないので、推測で動かさずに起動を断る。
+WSL か dev container の VS Code を使う。単体テストは CI で Windows でも回している。
 
 GitHub の公開 repo は**リリースのミラー**である。開発は private の repo で行い、リリースごとに
 1 コミットとしてそこに載せる（`CONTRIBUTING.md`）。個人のプロジェクトで、対応の期限の約束は無い。

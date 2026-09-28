@@ -300,8 +300,19 @@ export function readRegistryEntries(dirs: readonly string[], io: RegistryFileSys
  * モードは「グループ・その他に一切許可が無い」で見る。拡張は 0700 ちょうどを
  * 要求するが、ここで見たいのは「他人が書き込めないこと」そのもの。
  */
-function ownedAndPrivate(st: fs.Stats, what: string, target: string): string | undefined {
+export function ownedAndPrivate(
+  st: fs.Stats,
+  what: string,
+  target: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
   if (st.isSymbolicLink()) return `${what} is a symlink: ${target}`;
+  // Windows では所有者もモードも確かめられない（Node は ACL を読まず、`st.uid` は 0、`st.mode` は
+  // 読み取り専用の属性から作った値）。確かめられないものは信じない ―― 拡張も Windows では
+  // 登録を書かない（`prepareRuntimeDir`）。モードが偶然 0700 に見えても通さないよう、先に断る。
+  if (platform === "win32") {
+    return `${what} cannot be verified on native Windows (ShowMe does not run there yet): ${target}`;
+  }
   if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
     return `${what} is owned by another user (uid ${st.uid}): ${target}`;
   }

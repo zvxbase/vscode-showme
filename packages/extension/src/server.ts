@@ -50,6 +50,11 @@ export const SECOND_CONNECTION_REASON = "second concurrent connection";
 
 export type PrepareResult = { ok: true } | { ok: false; reason: string };
 
+/** Windows でソケットサーバを立てない理由（人間が読む。拡張の通知とステータスバーに出る）。 */
+export const WINDOWS_UNSUPPORTED_REASON =
+  "ShowMe does not run on native Windows yet: Node cannot verify who may read the runtime directory " +
+  "there, and that directory holds the connection token. Use VS Code with WSL or a dev container.";
+
 /**
  * 実行時ディレクトリを用意し、安全性を検証する。
  *
@@ -59,7 +64,16 @@ export type PrepareResult = { ok: true } | { ok: false; reason: string };
  * **拒否する。既存を消さない**(共有ディレクトリでの無検査 unlink は
  * 任意ファイル削除になる)。
  */
-export function prepareRuntimeDir(dir: string): PrepareResult {
+export function prepareRuntimeDir(
+  dir: string,
+  platform: NodeJS.Platform = process.platform,
+): PrepareResult {
+  // Windows では上の検証（所有者と 0700）が意味を持たない。Node は ACL を読まず、`st.mode` は
+  // 読み取り専用の属性から作った 666 / 444 を返し、`st.uid` は 0 である。確かめられないものを
+  // 「確かめた」にしないため、ディレクトリを作る前に閉じる側に倒す（設計書 §3.5 の Windows の行）。
+  // 以前は作ってから 666 で落ちていた ―― 結果は同じ拒否だが、理由が人間に読めず、空の
+  // ディレクトリを残していた（不変条件13）。
+  if (platform === "win32") return { ok: false, reason: WINDOWS_UNSUPPORTED_REASON };
   const parent = path.dirname(dir);
   if (!fs.existsSync(parent)) {
     return { ok: false, reason: `parent directory does not exist: ${parent}` };

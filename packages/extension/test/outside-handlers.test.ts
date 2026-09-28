@@ -8,6 +8,7 @@ import { type AnnotateDeps, handleAnnotate } from "../src/handlers/annotate.js";
 import { type ShowCodeDeps, handleShowCode } from "../src/handlers/show-code.js";
 import type { SymbolSurface } from "../src/handlers/symbol-prefetch.js";
 import { NO_CANONICAL_PATH_KEY, RateLimiter, UNNORMALIZED_PATH_KEY } from "../src/rate-limit.js";
+import { agentSpelling } from "./outside-spelling.js";
 
 /**
  * `show_code` / `annotate` がワークスペースの外のファイルを扱う（D102）。
@@ -20,7 +21,7 @@ import { NO_CANONICAL_PATH_KEY, RateLimiter, UNNORMALIZED_PATH_KEY } from "../sr
 
 const made: string[] = [];
 function dirs(): { root: string; outside: string } {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-h-")));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-h-")));
   made.push(base);
   const root = path.join(base, "workspace");
   const outside = path.join(base, "outside");
@@ -106,10 +107,10 @@ describe("show_code とワークスペースの外（D102）", () => {
         resolvedBy: "text",
         match: "one",
         range: { startLine: 2, endLine: 2 },
-        normalizedPath: abs,
+        normalizedPath: agentSpelling(abs),
       },
     ]);
-    expect(s.revealed).toEqual([abs]);
+    expect(s.revealed).toEqual([agentSpelling(abs)]);
   });
 
   it("シンボリックリンクの綴りで指したら、normalizedPath はリンクの綴りのまま（指す先を返さない）", async () => {
@@ -118,8 +119,10 @@ describe("show_code とワークスペースの外（D102）", () => {
     fs.symlinkSync(path.join(outside, "b.ts"), alias);
     const s = showCodeSpy(root, true);
     const out = await handleShowCode({ locations: [{ path: alias, text: "NEEDLE" }] }, s.deps);
-    expect((out.resolutions as { normalizedPath?: string }[])[0]?.normalizedPath).toBe(alias);
-    expect(s.revealed).toEqual([alias]);
+    expect((out.resolutions as { normalizedPath?: string }[])[0]?.normalizedPath).toBe(
+      agentSpelling(alias),
+    );
+    expect(s.revealed).toEqual([agentSpelling(alias)]);
   });
 
   it("中のファイルを絶対パスで指したら、相対パスとして扱う", async () => {
@@ -226,8 +229,10 @@ describe("annotate とワークスペースの外（D102）", () => {
       { items: [{ location: { path: abs, text: "NEEDLE" }, text: "here" }] },
       on.deps,
     );
-    expect(on.added).toEqual([abs]);
-    expect((outOn.resolutions as { normalizedPath?: string }[])[0]?.normalizedPath).toBe(abs);
+    expect(on.added).toEqual([agentSpelling(abs)]);
+    expect((outOn.resolutions as { normalizedPath?: string }[])[0]?.normalizedPath).toBe(
+      agentSpelling(abs),
+    );
 
     const off = annotateSpy(root, false);
     const outOff = await handleAnnotate(
@@ -260,6 +265,6 @@ describe("symbol で外のファイルを引く（D102）", () => {
       { ...s.deps, symbols },
     );
     expect(asked).toEqual([path.join(outside, "b.ts")]);
-    expect(s.revealed).toEqual([path.join(outside, "b.ts")]);
+    expect(s.revealed).toEqual([agentSpelling(path.join(outside, "b.ts"))]);
   });
 });

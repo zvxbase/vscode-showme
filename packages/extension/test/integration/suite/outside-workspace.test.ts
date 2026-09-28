@@ -57,7 +57,7 @@ suite("ワークスペースの外のファイル（D101 / D102）", () => {
   suiteSetup(async () => {
     await activateExtension();
     await lendWindow();
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-it-")));
+    dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-it-")));
     file = path.join(dir, "outside.ts");
     fs.writeFileSync(file, `export const a = 1;\n// ${MARKER}\nexport const b = 2;\n`);
     fs.writeFileSync(

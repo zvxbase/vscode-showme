@@ -11,10 +11,10 @@ import Mocha from "mocha";
  */
 export function run(): Promise<void> {
   const mode = process.env.SHOWME_TEST_MODE;
-  if (mode !== "trusted" && mode !== "restricted" && mode !== "locale-ja") {
+  if (mode !== "trusted" && mode !== "restricted" && mode !== "locale-ja" && mode !== "windows") {
     return Promise.reject(
       new Error(
-        `SHOWME_TEST_MODE が trusted / restricted / locale-ja のどれでもない: ${String(mode)}`,
+        `SHOWME_TEST_MODE が trusted / restricted / locale-ja / windows のどれでもない: ${String(mode)}`,
       ),
     );
   }
@@ -28,6 +28,11 @@ export function run(): Promise<void> {
       `[showme] SHOWME_TEST_GREP=${JSON.stringify(grep)}: 名前が一致する検査だけを走らせる`,
     );
     mocha.grep(grep);
+  }
+  if (mode === "windows") {
+    // ネイティブの Windows の回（runTest.ts）。拡張が起動を断ることだけを見る。
+    mocha.addFile(path.resolve(__dirname, "./windows.test.js"));
+    return runMocha(mocha);
   }
   if (mode === "locale-ja") {
     // `--locale=ja` の回（runLocaleJa.ts）。**日本語になることだけ**を見る。振る舞いの

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -33,6 +34,23 @@ describe("scan-public-tree", () => {
       "e.md",
       "f.md",
     ]);
+  });
+
+  it("CLI として起動すると本当に走査する（当たれば 1、無ければ 0）", () => {
+    // 直接起動の判定が OS によって外れると、何も走査せずに 0 で終わる（Windows で実際に起きた）。
+    // フックと公開前の走査はこの終了コードだけを見るので、起動の経路そのものを検査する。
+    const root = tmpTree({ "hit.md": "see /workspaces/foo/bar", "ok.md": "nothing here" });
+    const cli = path.join(__dirname, "scan-public-tree.mjs");
+    const hit = spawnSync(process.execPath, [cli, "--text", path.join(root, "hit.md")], {
+      encoding: "utf8",
+    });
+    expect(hit.status).toBe(1);
+    expect(hit.stdout).toContain("hit.md:1:");
+    const ok = spawnSync(process.execPath, [cli, "--text", path.join(root, "ok.md")], {
+      encoding: "utf8",
+    });
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toContain("0 hit(s)");
   });
 
   it("良性の入力には当たらない（両方向の検査）", () => {

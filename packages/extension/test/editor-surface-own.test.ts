@@ -25,6 +25,7 @@ import * as vscode from "vscode";
 import { isOwnTab, observedRelPath } from "../src/editor-surface.js";
 import { OpenedByAgent } from "../src/opened-by-agent.js";
 import { STAGE_SCHEME_EDITABLE, STAGE_SCHEME_READONLY } from "../src/stage-uri.js";
+import { agentSpelling, outsideMirrorPath } from "./outside-spelling.js";
 
 type FakeUri = {
   scheme: string;
@@ -58,8 +59,8 @@ describe("observedRelPath（D83: 映しも file: と同じ1つの尾で正準化
   let outside: string;
 
   beforeAll(() => {
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-observed-")));
-    outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-observed-")));
+    outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-")));
     fs.mkdirSync(path.join(base, "src"));
     fs.writeFileSync(path.join(base, "src", "a.ts"), "a\n");
     fs.writeFileSync(path.join(outside, "secret.txt"), "s\n");
@@ -234,8 +235,8 @@ describe("observedRelPath と外のタブ（D102）", () => {
   const off = { patterns: [], blockLinksToRedacted: true };
 
   beforeAll(() => {
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-observed-o-")));
-    outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-o-")));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-observed-o-")));
+    outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "showme-outside-o-")));
     fs.mkdirSync(path.join(base, "src"));
     fs.writeFileSync(path.join(base, "src", "a.ts"), "a\n");
     fs.writeFileSync(path.join(outside, "b.ts"), "b\n");
@@ -250,14 +251,15 @@ describe("observedRelPath と外のタブ（D102）", () => {
 
   it("file: の外のタブは、オンなら絶対パス、オフ（既定）なら undefined", () => {
     const b = asUri(fileUri(path.join(outside, "b.ts")));
-    expect(observedRelPath(asUri(root), b, on)).toBe(path.join(outside, "b.ts"));
+    expect(observedRelPath(asUri(root), b, on)).toBe(agentSpelling(path.join(outside, "b.ts")));
     expect(observedRelPath(asUri(root), b, off)).toBeUndefined();
     expect(observedRelPath(asUri(root), b)).toBeUndefined();
   });
 
   it("外の映しは、オンなら絶対パス、オフなら undefined", () => {
-    const m = asUri(mirrorUri(STAGE_SCHEME_READONLY, path.join(outside, "b.ts"), "outside"));
-    expect(observedRelPath(asUri(root), m, on)).toBe(path.join(outside, "b.ts"));
+    const b = path.join(outside, "b.ts");
+    const m = asUri(mirrorUri(STAGE_SCHEME_READONLY, outsideMirrorPath(b), "outside"));
+    expect(observedRelPath(asUri(root), m, on)).toBe(agentSpelling(b));
     expect(observedRelPath(asUri(root), m, off)).toBeUndefined();
   });
 
