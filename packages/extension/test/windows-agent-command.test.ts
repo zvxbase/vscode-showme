@@ -13,6 +13,14 @@ import { buildAgentConfigDocument } from "../src/agent-config-doc.js";
  * それがシェルを通って `claude` に1引数のまま届くかは、シェルに打たせないと分からない。`claude` は
  * 本物と同じく `claude.cmd`（npm が作る形の shim。受けた引数を `%*` で node に渡す）で、node の
  * 記録係が受け取った argv をファイルに書く。ホームには空白を入れる（`C:\Users\Jane Doe` の形）。
+ *
+ * 増分12（D114）で行は `-e ELECTRON_RUN_AS_NODE=1 --transport stdio showme -- "<実行ファイル>" "<ブリッジ>"` になった。実行ファイルも
+ * 空白入りの場所（`…\Microsoft VS Code\Code.exe` の形）に置いた本物の node.exe の写しで、記録した argv を
+ * そのまま起動して、`/` 区切りのパスで実際に起動できることまで確かめる。
+ *
+ * D114 の改訂で、各スコープに `node` の形の行（`--transport stdio showme -- node "<ブリッジ>"`）も並ぶ。
+ * こちらも3つのシェルに打たせ、届いた argv の `node` を `PATH` から（シェル無しで）起動して、
+ * 本物の node として動くことまで確かめる。`ELECTRON_RUN_AS_NODE` は外して起動する（node の形は要らない）。
  */
 const onWindows = process.platform === "win32";
 const execFileAsync = promisify(execFile);
@@ -24,6 +32,7 @@ describe.runIf(onWindows)(
     let base: string;
     let bin: string;
     let bridge: string;
+    let runtime: string;
     let lines: string[];
 
     beforeAll(() => {
@@ -37,6 +46,16 @@ describe.runIf(onWindows)(
         "bridge",
         "index.js",
       );
+      // ブリッジの偽物は、自分が Node として動いたことを書くだけ
+      fs.mkdirSync(path.dirname(bridge), { recursive: true });
+      fs.writeFileSync(
+        bridge,
+        'process.stdout.write("bridge ran as node " + (process.env.ELECTRON_RUN_AS_NODE ?? "-"));\n',
+      );
+      // 実行ファイルは空白を含む場所に置いた node.exe の写し（VS Code のユーザー インストールの形）
+      runtime = path.join(home, "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe");
+      fs.mkdirSync(path.dirname(runtime), { recursive: true });
+      fs.copyFileSync(process.execPath, runtime);
       bin = path.join(base, "bin");
       fs.mkdirSync(bin);
       const recorder = path.join(bin, "record.js");
@@ -49,23 +68,58 @@ describe.runIf(onWindows)(
         path.join(bin, "claude.cmd"),
         `@ECHO off\r\n"${process.execPath}" "${recorder}" %*\r\n`,
       );
-      const doc = buildAgentConfigDocument(bridge, "en", home, "win32");
+      const doc = buildAgentConfigDocument(bridge, "en", home, "win32", {
+        executable: runtime,
+        remote: false,
+      });
       lines = doc.split("\n").filter((l) => l.startsWith("claude mcp add"));
     });
     afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
 
+    const isNodeForm = (line: string): boolean => line.includes(" -- node ");
     const expected = (line: string): string[] => {
       const scope = /--scope (\w+)/.exec(line)?.[1];
       return [
         "mcp",
         "add",
         ...(scope === undefined ? [] : ["--scope", scope]),
+        ...(isNodeForm(line) ? [] : ["-e", "ELECTRON_RUN_AS_NODE=1"]),
+        "--transport",
+        "stdio",
         "showme",
         "--",
-        "node",
+        isNodeForm(line) ? "node" : runtime.replace(/\\/g, "/"),
         bridge.replace(/\\/g, "/"),
       ];
     };
+    /** 起動したブリッジの偽物が書く1行。node の形は ELECTRON_RUN_AS_NODE 無しで動く */
+    const ran = (line: string): string => `bridge ran as node ${isNodeForm(line) ? "-" : "1"}`;
+
+    /**
+     * 記録した argv の `--` の後ろ（実行ファイルと引数）を、`-e` の環境変数を立てて実際に起動する。
+     * Claude Code が後でする起動と同じく、シェルを通さない。
+     */
+    async function runRecorded(argv: string[]): Promise<string> {
+      const dash = argv.indexOf("--");
+      const [command, ...args] = argv.slice(dash + 1);
+      // `-e KEY=VALUE` は `--` より前にあるときだけ（node の形には無い）
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      for (const k of Object.keys(env)) {
+        if (k.toUpperCase() === "ELECTRON_RUN_AS_NODE") delete env[k];
+      }
+      const e = argv.indexOf("-e");
+      if (e !== -1 && e < dash) {
+        const [key = "", value = ""] = (argv[e + 1] ?? "").split("=");
+        env[key] = value;
+      }
+      // node の形の `node` は、エージェントと同じく PATH から探す（シェルは通さない）
+      const { stdout } = await execFileAsync(command ?? "", args, {
+        env,
+        windowsHide: true,
+        timeout: 30_000,
+      });
+      return stdout;
+    }
 
     function envFor(out: string): NodeJS.ProcessEnv {
       const env: NodeJS.ProcessEnv = { ...process.env };
@@ -79,9 +133,13 @@ describe.runIf(onWindows)(
       return env;
     }
 
-    it("文書に claude mcp add の行が3つある（空白を含むホームの下）", () => {
-      expect(lines).toHaveLength(3);
-      for (const l of lines) expect(l).toContain("Jane Doe");
+    it("文書に claude mcp add の行が6つある（2つの形 × 3つのスコープ。空白を含むホームの下）", () => {
+      expect(lines).toHaveLength(6);
+      expect(lines.filter(isNodeForm)).toHaveLength(3);
+      for (const l of lines) {
+        expect(l).toContain("Jane Doe");
+        if (!isNodeForm(l)) expect(l).toContain("Microsoft VS Code/Code.exe");
+      }
     });
 
     it("コマンド プロンプト（cmd.exe /d /s /c）", async () => {
@@ -94,7 +152,9 @@ describe.runIf(onWindows)(
           windowsVerbatimArguments: true,
           timeout: 30_000,
         });
-        expect(JSON.parse(fs.readFileSync(out, "utf8")), line).toEqual(expected(line));
+        const argv = JSON.parse(fs.readFileSync(out, "utf8")) as string[];
+        expect(argv, line).toEqual(expected(line));
+        expect(await runRecorded(argv), line).toBe(ran(line));
       }
     });
 
@@ -111,7 +171,9 @@ describe.runIf(onWindows)(
           ],
           { env: envFor(out), windowsHide: true, timeout: 60_000 },
         );
-        expect(JSON.parse(fs.readFileSync(out, "utf8")), line).toEqual(expected(line));
+        const argv = JSON.parse(fs.readFileSync(out, "utf8")) as string[];
+        expect(argv, line).toEqual(expected(line));
+        expect(await runRecorded(argv), line).toBe(ran(line));
       }
     });
 
@@ -137,7 +199,9 @@ describe.runIf(onWindows)(
           ],
           { env: envFor(out), windowsHide: true, timeout: 60_000 },
         );
-        expect(JSON.parse(fs.readFileSync(out, "utf8")), line).toEqual(expected(line));
+        const argv = JSON.parse(fs.readFileSync(out, "utf8")) as string[];
+        expect(argv, line).toEqual(expected(line));
+        expect(await runRecorded(argv), line).toBe(ran(line));
       }
     });
   },

@@ -22,16 +22,32 @@ import * as vscode from "vscode";
  * アプリごと前面に出す（VS Code の main）。出なかったときは理由を出力に残して先へ進む ――
  * 前面を前提にする検査は、自分の assert で落ちる。
  */
-async function bringWindowToFront(): Promise<void> {
-  if (process.platform !== "darwin" || vscode.window.state.focused) return;
+async function bringWindowToFront(timeoutMs: number, when: string): Promise<boolean> {
+  if (process.platform !== "darwin" || vscode.window.state.focused) return true;
   await vscode.commands.executeCommand("workbench.action.focusWindow");
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + timeoutMs;
   while (!vscode.window.state.focused && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  console.log(
-    `[showme] macOS: 窓を前面に出した後の window.state.focused = ${vscode.window.state.focused}`,
-  );
+  const focused = vscode.window.state.focused;
+  console.log(`[showme] macOS: 窓を前面に出した後の window.state.focused = ${focused}（${when}）`);
+  return focused;
+}
+
+/**
+ * macOS では、各検査の前にも窓を前面に戻す（ルートの beforeEach）。
+ *
+ * 最初に1度前面に出しても、GitHub の macOS の runner では実行の途中で窓が前面から外れることがある
+ * （実測: 走り出しの後で選択を返す検査が16件 `not-focused` で落ちた。run 36589919048）。
+ * 前面を戻すのは検査の**前**だけで、検査の中の前提（`window.state.focused` の assert）は弱めない ――
+ * 3秒待っても前面にならなければ、出力に残して検査に進み、前面を前提にする検査は自分の assert で落ちる。
+ * 前面にあるときは何もしない（コマンドも呼ばない）。
+ */
+function refocusBeforeEachTestOnDarwin(mocha: Mocha): void {
+  if (process.platform !== "darwin") return;
+  mocha.suite.beforeEach("macOS: 窓を前面に戻す", async function () {
+    await bringWindowToFront(3_000, this.currentTest?.fullTitle() ?? "beforeEach");
+  });
 }
 
 export async function run(): Promise<void> {
@@ -54,7 +70,8 @@ export async function run(): Promise<void> {
     );
     mocha.grep(grep);
   }
-  await bringWindowToFront();
+  await bringWindowToFront(10_000, "起動の直後");
+  refocusBeforeEachTestOnDarwin(mocha);
   if (mode === "locale-ja") {
     // `--locale=ja` の回（runLocaleJa.ts）。**日本語になることだけ**を見る。振る舞いの
     // 検査は trusted / restricted の回が持ち、この回では増やさない。

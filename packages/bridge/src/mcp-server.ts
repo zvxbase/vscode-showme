@@ -61,7 +61,10 @@ const ARG_SCHEMAS: Record<ToolName, z.ZodTypeAny> = {
  * 登録し忘れる、という食い違いが起こらない。
  */
 export function createShowMeServer(invoke: ToolInvoker): McpServer {
-  const server = new McpServer({ name: "vscode-showme", version: BRIDGE_VERSION });
+  // `title` は人間向けの表示名。VS Code の Copilot は、ツールが分かる前は定義の label（ShowMe）を、
+  // 分かった後は `title || name` を見出しにする。揃えないと起動の前後で見出しが変わる（D113）。
+  // `name` は変えない（プログラム向けの識別子）
+  const server = new McpServer({ name: "vscode-showme", title: "ShowMe", version: BRIDGE_VERSION });
 
   for (const tool of TOOL_NAMES) {
     server.registerTool(

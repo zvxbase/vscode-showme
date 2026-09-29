@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6 — preview
+
+- **Copilot in VS Code no longer needs Node.js.** ShowMe now starts its bridge with VS Code's own runtime instead of `node` from the `PATH`. Before, the bridge failed to start with `spawn node ENOENT` when Node.js was not installed, was installed after VS Code started, or was only set up in your shell (fnm, nvm).
+- **ShowMe: Show agent configuration:** the snippets for Claude Code, Codex CLI and Copilot CLI now use VS Code's runtime too (with `ELECTRON_RUN_AS_NODE=1`), so they do not need Node.js. Snippets you pasted before keep working as long as `node` is on your `PATH`. When VS Code is connected to a remote (WSL, SSH or a dev container), the runtime path changes with every VS Code update: the document says so and also shows a `node` form. The entry that works for everyone on the team still starts with `node`, because VS Code is in a different place on each machine. With the Snap build of VS Code the snippets point at `/snap/code/current/`, which follows updates. With the Flatpak build they start ShowMe with `node` (Node.js 20 or later), because agents outside the sandbox cannot start VS Code's runtime. With an AppImage or, on macOS, a VS Code started where it was downloaded, the runtime path changes when VS Code restarts (and with VS Code from the Nix store, on every upgrade): the document says so and shows the `node` form first. On Windows, a VS Code update stops a ShowMe that an agent started with VS Code's runtime; reconnect it in your agent (in Claude Code, `/mcp`).
+- **ShowMe: Show agent configuration** now gives every agent (Claude Code, Codex CLI, Copilot CLI) both complete forms: VS Code's runtime (no Node.js needed) and `node` (Node.js 20 or later on your `PATH`), with how to check for Node.js and when to choose each. Where the runtime path does not last (remote, AppImage, App Translocation, Nix), the `node` form comes first; with Flatpak, only the `node` form is shown.
+- The server now calls itself **ShowMe** (MCP server title), so Configure Tools shows the same name before and after the tools are loaded. In Copilot in VS Code this changes the prefix of the tool references: tool selections or prompt files that name ShowMe's tools may need to be selected again. The names in Claude Code and other agents (`mcp__showme__…`) do not change.
+- Copilot in VS Code now refreshes ShowMe's tool list after the extension updates (the server definition carries the extension's version).
+- README: a new Requirements section, and troubleshooting for `spawn node ENOENT`, for Configure Tools showing only "Update Tools" in a new workspace, and for the agent losing ShowMe after a VS Code update on Windows.
+
 ## 0.1.5 — preview
 
 **After updating, restart your agent (or reconnect its MCP servers).** The extension and the bridge now authenticate each other with a new connection protocol, so a bridge that is still running from 0.1.4 reports a version mismatch.

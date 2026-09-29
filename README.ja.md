@@ -1,9 +1,10 @@
 <!-- translated-from README.md: {
   "vscode-showme": "5c97e3a5b36f49a7",
   "What it does not do": "54fc2279eea3e95f",
+  "Requirements": "2671b44a4de69b3e",
   "Getting started": "33dfafe2e5bed82d",
   "1. Install the extension": "6e0dec079527c7f1",
-  "2. Register ShowMe with your agent": "5b3d1dd1462d4f4e",
+  "2. Register ShowMe with your agent": "cac6fb551ea1fe84",
   "3. Turn it on in the window you want the agent to use": "d6281735fa2ed5cf",
   "4. Ask your agent": "11e672ee91a4ab8b",
   "What you will see": "51658178ca4d1940",
@@ -11,7 +12,7 @@
   "Tools": "6d4a6e7b8349d01f",
   "Settings": "a674388fc1d37f0f",
   "Opening files outside the workspace": "908e3968f41fafdd",
-  "Troubleshooting": "998d7682a798f261",
+  "Troubleshooting": "dae156e1eb981b23",
   "Uninstall": "ca746396cb15acdd",
   "Safety, in one table": "f9a300ab3deeaab9",
   "Packages": "548565c3d5677140",
@@ -36,6 +37,22 @@ vscode-showme はその隙間だけを埋める。見慣れないリポジトリ
 - コード編集・シェル実行・診断/LSP は提供しない。エージェントが既に持っている
 - ツアーの事前生成も、独自の LLM 呼び出しもしない。教え方はエージェントが持っている
 
+## 必要なもの
+
+- VS Code 1.101 以上。
+- **VS Code 内蔵の Copilot（エージェントモード）:** ほかに要るものは無い。ShowMe は VS Code 自身の
+  実行環境でブリッジを起動するので、Node.js は要らない。
+- **Claude Code・Codex CLI・Copilot CLI:** ShowMe が示す設定は、どのエージェントにも同じ項目の
+  完全な形を2つ示す。どちらか1つを使う:
+  - **VS Code の実行環境**は Node.js が要らない。Node.js を入れていなければこちらを選ぶ。パスは
+    VS Code の入れ方に属するので、一部の環境（リモート・AppImage・Nix）では VS Code の更新や再起動の後に
+    設定し直す。Flatpak 版の VS Code ではこの形は出ない（その実行環境は砂箱の外のエージェントからは
+    起動できない）。
+  - **`node`** は `PATH` に Node.js 20 以上が要る。エージェントを起動する端末で `which node`（Windows では
+    `where.exe node`）を実行して確かめる。Node.js を入れた後は、VS Code とその端末を完全に終了して
+    起動し直す。Node.js が入っていればこちらを選ぶ。VS Code の場所に依らないので VS Code を更新しても
+    動き続け、Windows では VS Code の更新の仕組みにも止められない。
+
 ## 使い始める
 
 要るものは2つ。拡張（VS Code の中の「手」）と、エージェント側への一度だけの登録（エージェントが
@@ -54,17 +71,27 @@ VS Code Marketplace か Open VSX から入れる（`zvxbase.vscode-showme`）。
 Copilot CLI 向けの、そのまま貼れる断片（実際のインストール先入り）が読み取り専用の文書で開くので、
 使っているエージェントの分を写す。ShowMe が他のツールの設定ファイルを書き換えることはない。
 
-- **Claude Code** — `claude mcp add showme -- node …` の1行と、`.claude/settings.json` の
+- **Claude Code** — 形ごとに `claude mcp add` の1行（`claude mcp add -e ELECTRON_RUN_AS_NODE=1 --transport stdio showme -- …` と `claude mcp add --transport stdio showme -- node …`）と、`.claude/settings.json` の
   `permissions.allow` に足す許可ルールの一覧。許可ルールが無いと、表示するだけのツールでも
   毎回確認が出る
-- **Codex CLI** — `~/.codex/config.toml` に足す `[mcp_servers.showme]` の節。許可の設定は要らない
-- **Copilot CLI** — `~/.copilot/mcp-config.json` に足す `"showme"` の項目。起動時に
+- **Codex CLI** — `~/.codex/config.toml` に足す、形ごとの `[mcp_servers.showme]` の節。許可の設定は要らない
+- **Copilot CLI** — `~/.copilot/mcp-config.json` に足す、形ごとの `"showme"` の項目。起動時に
   `--allow-tool 'showme'` を付ける
 - **VS Code 内蔵の Copilot（エージェントモード）** — 設定不要。拡張が MCP サーバとして自分を
   登録する（制限モードでは効かない）
 
+各エージェントの断片は2つの形で出る: VS Code 自身の実行環境（文書にそのパスが出る。Node.js は要らない）と
+`node`（Node.js 20 以上）。文書は実行環境の形を先に示す。VS Code の場所が変わったら、
+**ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を開き直すと今のパスが出る。
+VS Code をリモート（WSL・SSH・dev container）に繋いでいるときは、実行環境のパスは VS Code Server の
+もので、VS Code を更新するたびに変わるので、文書は `node` の形を先に示す。実行環境の形を使うなら、
+更新したら設定し直す。AppImage で動かしている VS Code と、
+macOS でダウンロードした場所から開いた VS Code（App Translocation）も同じで、こちらは VS Code を起動し直す
+たびにパスが変わる。Nix のストアに入れた VS Code では、更新のたびにパスが変わる。Flatpak 版の VS Code では、砂箱の外のエージェントは VS Code の実行環境を起動できないので、
+文書は `node` の形だけを示す。Snap 版では、断片は更新に追従する `/snap/code/current/` を指す。
+
 断片は「入っている中でいちばん新しい ShowMe」を起動するので、拡張を更新しても貼り直さなくてよい。
-Windows では、`claude mcp add` の行だけは入っている版のフォルダを名指す（PowerShell とコマンド
+Windows では、`claude mcp add` の行は入っている版のフォルダを名指す（PowerShell とコマンド
 プロンプトのどちらでも動く形にするため）。拡張を更新したら打ち直す。
 
 Claude Code の許可ルールに `arrange_editors` を入れていないのは意図的で、タブを閉じうる唯一の
@@ -77,7 +104,8 @@ trusted にした project だけ repo の `.codex/config.toml` を読む。Copil
 信頼すると `.mcp.json` か `.github/mcp.json`（`"tools": ["*"]` 付き）を読む。`.mcp.json` の項目1つで
 Claude Code と Copilot CLI の両方に使える。断片にはこの機械のインストール先のパスが入るので、
 コミットしたファイルは他の人の機械ではそのままでは動かない ―― ShowMe がホームのフォルダの下に
-入っていれば、文書は人ごとのホームの下から ShowMe を探す項目も示す。他人の repo にある MCP の設定は、
+入っていれば、文書は人ごとのホームの下から ShowMe を探す項目も示す（この項目は `node` で起動するので、
+Node.js 20 以上が要る）。他人の repo にある MCP の設定は、
 承認する前に中身を確かめる。
 
 文書の最後には、設定をエージェントに頼むためのプロンプトがある。エージェントが行う変更の責任は
@@ -240,6 +268,21 @@ Windows では、`NAME~1` のような部分（8.3 形式の短い名前の形�
 **エージェントが「VS Code ウィンドウが見つからない」と言う。** どこかの窓で ShowMe がオンか、
 エージェントが VS Code と同じ環境で動いているか（手順2）、両方が同じ `$TMPDIR`（Windows では同じ
 `TEMP`）を見ているかを確かめる。
+
+**VS Code の Copilot で ShowMe に `spawn node ENOENT` が出る。** ShowMe 0.1.5 以前は、VS Code が
+起動したときの `PATH` にある `node` でブリッジを起動していた。VS Code 自身の実行環境を使う 0.1.6
+以降に更新する。0.1.5 のまま使うなら、Node.js を入れてから VS Code を完全に終了して起動し直す
+（新しい窓を開くだけでは足りない）。
+
+**Windows で VS Code を更新すると、エージェントから ShowMe が切れる。** VS Code の更新の仕組みは、
+VS Code のフォルダから動いているプログラムをすべて止める。エージェントが VS Code の実行環境で起動した
+ShowMe もその1つ。エージェントで ShowMe を繋ぎ直す（Claude Code なら `/mcp`）。ShowMe を `node`
+（Node.js 20 以上）で起動すれば、これは起きない。
+
+**Configure Tools で ShowMe の下に「Update Tools」しか出ない。** ShowMe をまだ動かしていない
+ワークスペースでは、VS Code はサーバを起動するまでツールを知らず、最初のチャットを送ったときに
+起動する。VS Code の仕組みどおりで、エラーではない。すぐ見たいなら **Update Tools** を押す。
+ShowMe を更新した後も、同じように一覧が取り直される。
 
 **Windows で ShowMe が起動せず、理由に TEMP/TMP が出る。** `TEMP` か `TMP` が、他の利用者も書ける
 フォルダを指している。直し方は下の「現在地と開発の場所」にある。

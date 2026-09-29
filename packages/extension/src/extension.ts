@@ -18,7 +18,7 @@ import {
   showViewArgsSchema,
 } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
-import { buildAgentConfigDocument } from "./agent-config-doc.js";
+import { buildAgentConfigDocument, builtInServerDefinition } from "./agent-config-doc.js";
 import { annotationUiSurface } from "./annotation-ui-observation.js";
 import { Annotations, isCommentThreadLike } from "./annotations.js";
 import { ARRANGE_COMMANDS, createArrangeSurface } from "./arrange-surface.js";
@@ -735,7 +735,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const buildDocContent = (id: ShowMeDocId): string => {
       switch (id) {
         case "agent-configuration":
-          return buildAgentConfigDocument(bridgePath, uiLanguage(), os.homedir(), process.platform);
+          return buildAgentConfigDocument(
+            bridgePath,
+            uiLanguage(),
+            os.homedir(),
+            process.platform,
+            {
+              executable: process.execPath,
+              remote: vscode.env.remoteName !== undefined,
+              // 入れ方の見分け（Snap の版のフォルダ・Flatpak の砂箱・AppImage。snippetRuntime）
+              env: {
+                FLATPAK_ID: process.env.FLATPAK_ID,
+                APPIMAGE: process.env.APPIMAGE,
+                SNAP: process.env.SNAP,
+              },
+            },
+          );
         case "teardown":
           return buildTeardownDocument(
             { runtimeDirs, extensionId: context.extension.id },
@@ -775,10 +790,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      *
      * オブジェクトを1つ作って、登録と統合テストの観測（`showme.test.mcpDefinitions`）の
      * 両方に同じものを使う。
+     *
+     * **`node` ではなくエディタの実行環境で起動する**（D112）。`node` は拡張ホストの `PATH` で探され、
+     * Node が無い・VS Code を起動した後で入れた・fnm / nvm でシェルの設定にしか無い、のどれでも
+     * `spawn node ENOENT` で起動しなかった。起動の形（command / args / env）は外のエージェントの
+     * 断片と同じ関数（`editorRuntimeLaunch`）から作る（不変条件14）。`version` は拡張の版 ――
+     * 更新したら VS Code がツールの一覧を取り直す。
      */
+    const extensionVersion: unknown = context.extension.packageJSON?.version;
+    const builtIn = builtInServerDefinition(
+      process.execPath,
+      bridgePath,
+      typeof extensionVersion === "string" ? extensionVersion : "0.0.0",
+    );
     const mcpProvider: vscode.McpServerDefinitionProvider<vscode.McpStdioServerDefinition> = {
       provideMcpServerDefinitions: () => [
-        new vscode.McpStdioServerDefinition("ShowMe", "node", [bridgePath]),
+        new vscode.McpStdioServerDefinition(
+          builtIn.label,
+          builtIn.command,
+          builtIn.args,
+          builtIn.env,
+          builtIn.version,
+        ),
       ],
     };
 
@@ -1161,16 +1194,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
         /**
          * MCP 提供者が返す定義。`vscode.lm` には登録済みの提供者を列挙する口が
-         * 無いので、登録したのと**同じオブジェクト**を呼ぶ。返すのはブリッジの
-         * パスだけ（トークンもソケットのパスも含まない）。
+         * 無いので、登録したのと**同じオブジェクト**を呼ぶ。返すのは起動の形（実行ファイル・
+         * ブリッジのパス・`ELECTRON_RUN_AS_NODE`）と題と版だけ（トークンもソケットのパスも含まない）。
          */
         vscode.commands.registerCommand("showme.test.mcpDefinitions", () => {
           const defs = mcpProvider.provideMcpServerDefinitions(
             new vscode.CancellationTokenSource().token,
           );
           return (Array.isArray(defs) ? defs : []).map((d) => ({
+            label: d.label,
             command: d.command,
             args: [...d.args],
+            env: { ...d.env },
+            version: d.version,
           }));
         }),
       );

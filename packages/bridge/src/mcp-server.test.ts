@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { NoWindowError } from "./client.js";
 import type { RegistryEntry } from "./discover.js";
 import { type InvokerDeps, createSocketInvoker } from "./invoke.js";
-import { type ToolInvoker, createShowMeServer } from "./mcp-server.js";
+import { BRIDGE_VERSION, type ToolInvoker, createShowMeServer } from "./mcp-server.js";
 
 const listWorkspacesResult = {
   isTrusted: true,
@@ -56,6 +56,15 @@ function isError(result: unknown): boolean {
 }
 
 describe("createShowMeServer", () => {
+  it("名乗り: name は vscode-showme、title は ShowMe（VS Code の Configure Tools の見出し。D113）", async () => {
+    const client = await connect(noWindow);
+    expect(client.getServerVersion()).toEqual({
+      name: "vscode-showme",
+      title: "ShowMe",
+      version: BRIDGE_VERSION,
+    });
+  });
+
   it("VS Code が居なくても tools/list は返る（エージェントの起動を止めない）", async () => {
     const client = await connect(noWindow);
     const { tools } = await client.listTools();

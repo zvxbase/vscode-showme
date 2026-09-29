@@ -1,4 +1,5 @@
 import * as assert from "node:assert";
+import * as cp from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -286,26 +287,185 @@ export async function arrangeEditors(
   return raw as Record<string, unknown>;
 }
 
+/** MCP 提供者が返す定義（`showme.test.mcpDefinitions` の1件）。 */
+export interface ObservedMcpDefinition {
+  label: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  version: string | undefined;
+}
+
 /**
  * MCP 提供者が返す定義（統合テスト専用の観測点）。
  *
  * `vscode.lm` には「登録済みの提供者を列挙する」口が無いので、拡張が登録した
  * **同じ提供者オブジェクト**の `provideMcpServerDefinitions` を呼んだ結果を返して
- * もらう。ここで返るのはブリッジのパスだけで、トークンもソケットのパスも含まない。
+ * もらう。ここで返るのは起動の形（実行ファイル・ブリッジのパス・env）と題と版だけで、
+ * トークンもソケットのパスも含まない。
  */
-export async function mcpDefinitions(): Promise<{ command: string; args: string[] }[]> {
+export async function mcpDefinitions(): Promise<ObservedMcpDefinition[]> {
   const raw = await vscode.commands.executeCommand("showme.test.mcpDefinitions");
   assert.ok(Array.isArray(raw), "mcpDefinitions が配列を返さなかった");
   return raw.map((d: unknown) => {
     assert.ok(d && typeof d === "object", "定義が object でない");
-    const { command, args } = d as { command?: unknown; args?: unknown };
+    const { label, command, args, env, version } = d as Record<string, unknown>;
+    assert.strictEqual(typeof label, "string", "label が string でない");
     assert.strictEqual(typeof command, "string", "command が string でない");
     assert.ok(
       Array.isArray(args) && args.every((a) => typeof a === "string"),
       "args が string[] でない",
     );
-    return { command: command as string, args: args as string[] };
+    assert.ok(env && typeof env === "object", "env が object でない");
+    for (const v of Object.values(env)) assert.strictEqual(typeof v, "string", "env の値");
+    assert.ok(version === undefined || typeof version === "string", "version");
+    return {
+      label: label as string,
+      command: command as string,
+      args: args as string[],
+      env: env as Record<string, string>,
+      version: version as string | undefined,
+    };
   });
+}
+
+/** `node` として起動できる実行ファイルの名前（Windows は拡張子つきで探される）。 */
+const NODE_NAMES =
+  process.platform === "win32"
+    ? ["node.exe", "node.cmd", "node.bat", "node.com", "node"]
+    : ["node"];
+
+function hasNode(dir: string): boolean {
+  return NODE_NAMES.some((n) => {
+    try {
+      return fs.statSync(path.join(dir, n)).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Node の無い機械を模した環境（D112 の「Node 無しの証拠」）。
+ *
+ * - `PATH` から `node`（Windows は `node.exe` など）を持つディレクトリを全部外す。テストを走らせている
+ *   のは拡張ホスト（VS Code の実行ファイル）で、`PATH` の `node` には頼っていない
+ * - 拡張ホストが自分に立てている `ELECTRON_RUN_AS_NODE` を外す。継承ではなく、定義（あるいは断片）が
+ *   持つ `env` だけで Node として動くことを見るため
+ *
+ * Windows の環境変数の名前は大小を区別しない（`Path` のこともある）。
+ */
+export function envWithoutNode(): { env: NodeJS.ProcessEnv; removedDirs: string[] } {
+  const env: NodeJS.ProcessEnv = {};
+  const removedDirs: string[] = [];
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.toUpperCase() === "ELECTRON_RUN_AS_NODE") continue;
+    if (k.toUpperCase() === "PATH" && v !== undefined) {
+      const kept: string[] = [];
+      for (const dir of v.split(path.delimiter)) {
+        if (dir !== "" && hasNode(dir)) removedDirs.push(dir);
+        else kept.push(dir);
+      }
+      env[k] = kept.join(path.delimiter);
+      continue;
+    }
+    env[k] = v;
+  }
+  return { env, removedDirs };
+}
+
+/** ブリッジが `initialize` と `tools/list` に答えた内容。 */
+export interface BridgeHello {
+  serverInfo: { name?: string; title?: string; version?: string };
+  tools: string[];
+}
+
+/**
+ * `command` / `args` / `env` でブリッジを起動し、stdio で MCP を話す（`initialize` → `tools/list`）。
+ * シェルは通さない（VS Code も Claude Code も配列で起動する）。答えが来なければ stderr ごと失敗にする。
+ */
+export async function speakMcpOverStdio(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): Promise<BridgeHello> {
+  const child = cp.spawn(command, [...args], {
+    env,
+    cwd,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stderr = "";
+  child.stderr.on("data", (d: Buffer) => {
+    stderr += d.toString("utf8");
+  });
+  const pending = new Map<number, (msg: Record<string, unknown>) => void>();
+  let buf = "";
+  child.stdout.on("data", (d: Buffer) => {
+    buf += d.toString("utf8");
+    for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line === "") continue;
+      const msg = JSON.parse(line) as Record<string, unknown>;
+      const id = msg.id;
+      if (typeof id === "number") pending.get(id)?.(msg);
+    }
+  });
+  const exited = new Promise<never>((_, reject) => {
+    child.on("error", (e) => reject(new Error(`起動できない: ${String(e)}`)));
+    child.on("exit", (code, signal) =>
+      reject(
+        new Error(`ブリッジが答える前に終わった: code=${code} signal=${signal} stderr=${stderr}`),
+      ),
+    );
+  });
+  // 答えを待っていない間に終わっても、未処理の reject にしない（待っている request が race で拾う）
+  exited.catch(() => undefined);
+  const request = (
+    id: number,
+    method: string,
+    params: unknown,
+  ): Promise<Record<string, unknown>> => {
+    const answer = new Promise<Record<string, unknown>>((resolve) => pending.set(id, resolve));
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${method} に 30 秒答えない。stderr=${stderr}`)),
+        30_000,
+      );
+    });
+    return Promise.race([answer, exited, timeout]).finally(() => clearTimeout(timer));
+  };
+  try {
+    const init = await request(1, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "showme-integration", version: "0" },
+    });
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
+    );
+    const list = await request(2, "tools/list", {});
+    const serverInfo = ((init.result as Record<string, unknown> | undefined)?.serverInfo ??
+      {}) as BridgeHello["serverInfo"];
+    const tools = (
+      ((list.result as Record<string, unknown> | undefined)?.tools ?? []) as {
+        name: string;
+      }[]
+    ).map((t) => t.name);
+    return { serverInfo, tools };
+  } finally {
+    // 終わるまで待つ。Windows では、生きているプロセスの作業ディレクトリは消せない
+    // （呼び出し側が cwd を片付けると EPERM になる。CI の Windows で実測）
+    if (child.exitCode === null && child.signalCode === null) {
+      const gone = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      child.kill();
+      await Promise.race([gone, new Promise<void>((resolve) => setTimeout(resolve, 10_000))]);
+    }
+  }
 }
 
 /**

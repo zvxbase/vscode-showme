@@ -137,7 +137,10 @@ describe("ブリッジが名乗る版", () => {
         })}\n`,
       );
     }).finally(() => child.kill());
-    const res = JSON.parse(line) as { result: { serverInfo: { name: string; version: string } } };
-    expect(res.result.serverInfo).toEqual({ name: "vscode-showme", version });
+    const res = JSON.parse(line) as {
+      result: { serverInfo: { name: string; title?: string; version: string } };
+    };
+    // title は VS Code の Configure Tools の見出し（起動の前は定義の label「ShowMe」、後はこれ。D113）
+    expect(res.result.serverInfo).toEqual({ name: "vscode-showme", title: "ShowMe", version });
   });
 });

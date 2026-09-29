@@ -14,6 +14,23 @@ annotations, draw a diagram and pin a note — the way a colleague sitting next 
 - No code editing, no shell, no diagnostics/LSP — your agent already has those.
 - No pre-generated tours, no LLM calls of its own. The teaching is the agent's job.
 
+## Requirements
+
+- VS Code 1.101 or later.
+- **Copilot in VS Code (agent mode):** nothing else. ShowMe starts its bridge with VS Code's own
+  runtime, so you do not need Node.js.
+- **Claude Code, Codex CLI and Copilot CLI:** the configuration that ShowMe shows you gives every
+  agent two complete forms of the same entry. Use one of them:
+  - **VS Code's runtime** needs no Node.js. Choose it when Node.js is not installed. Its path belongs
+    to your VS Code installation, so in some setups (remote, AppImage, Nix) you set it up again after
+    VS Code updates or restarts. The Flatpak build of VS Code does not offer this form, because agents
+    outside the sandbox cannot start its runtime.
+  - **`node`** needs Node.js 20 or later on your `PATH`. Check with `which node` (on Windows,
+    `where.exe node`) in the terminal where you start your agent; after you install Node.js, quit VS
+    Code and that terminal completely and start them again. Choose it when Node.js is installed: it
+    does not depend on where VS Code is, so it keeps working when VS Code updates, and on Windows
+    the VS Code updater does not stop it.
+
 ## Getting started
 
 You need two things: the extension (the "hands" inside VS Code) and a one-time registration in
@@ -33,18 +50,30 @@ with ready-to-paste snippets for Claude Code, Codex CLI and Copilot CLI, filled 
 install path. Copy the one for your agent. ShowMe never edits other tools' configuration files
 itself.
 
-- **Claude Code** — one `claude mcp add showme -- node …` line, plus a list of permission rules to
+- **Claude Code** — one `claude mcp add` line for each form (`claude mcp add -e ELECTRON_RUN_AS_NODE=1 --transport stdio showme -- …` and `claude mcp add --transport stdio showme -- node …`), plus a list of permission rules to
   add to `permissions.allow` in `.claude/settings.json`. Without those rules, Claude Code asks for
   confirmation on every call, even for display-only tools.
-- **Codex CLI** — a `[mcp_servers.showme]` section for `~/.codex/config.toml`. No permission
+- **Codex CLI** — a `[mcp_servers.showme]` section in each form for `~/.codex/config.toml`. No permission
   setup is needed.
-- **Copilot CLI** — a `"showme"` entry for `~/.copilot/mcp-config.json`; start it with
+- **Copilot CLI** — a `"showme"` entry in each form for `~/.copilot/mcp-config.json`; start it with
   `--allow-tool 'showme'`.
 - **Copilot agent mode inside VS Code** — nothing to do. The extension registers itself as an
   MCP server (this does not work in Restricted Mode).
 
+Each agent's snippets come in both forms: VS Code's own runtime (the document shows its path; no
+Node.js needed) and `node` (Node.js 20 or later). The document lists the runtime form first. If VS
+Code moves to another folder, open **ShowMe: Show agent configuration** again for the current path.
+When VS Code is connected to a remote (WSL, SSH or a dev container), the runtime path belongs to the
+VS Code Server and changes every time VS Code updates, so the document lists the `node` form first
+there; with the runtime form, set it up again after an update. The same goes for
+VS Code run as an AppImage and, on macOS, for VS Code started where it was downloaded (App
+Translocation): there the path changes every time VS Code restarts. For VS Code from the Nix store,
+the path changes on every upgrade. With the Flatpak build of VS Code,
+the document shows only the `node` form, because an agent outside the sandbox cannot start VS Code's
+runtime. With the Snap build, the snippets point at `/snap/code/current/`, which follows updates.
+
 The snippets start the newest ShowMe installed, so you do not need to paste them again after the
-extension updates. On Windows, the `claude mcp add` line names the installed version's folder instead,
+extension updates. On Windows, the `claude mcp add` lines name the installed version's folder instead,
 so that it works in both PowerShell and Command Prompt; run it again after the extension updates.
 
 `arrange_editors` is left out of the Claude Code allow list on purpose: it is the only tool that
@@ -58,7 +87,7 @@ Codex CLI reads `.codex/config.toml` in the repository for trusted projects. Cop
 `.mcp.json` entry can serve both Claude Code and Copilot CLI. The snippets contain this machine's
 install path, so a committed file does not work as is on other people's machines — when ShowMe is
 installed under your home folder, the document also shows an entry that finds it under each
-person's home folder. Check the MCP configuration in someone else's repository before you approve
+person's home folder (that entry starts ShowMe with `node`, so it needs Node.js 20 or later). Check the MCP configuration in someone else's repository before you approve
 it.
 
 The document ends with a prompt you can give your agent so that it does the setup for you. You are
@@ -221,6 +250,21 @@ Look at the status bar first — ShowMe shows what it is doing there.
 **The agent says it cannot find a VS Code window.** Check that ShowMe is `On` in a window, that
 the agent runs in the same environment as VS Code (see step 2), and that both see the same
 `$TMPDIR` (on Windows, the same `TEMP`).
+
+**VS Code's Copilot shows `spawn node ENOENT` for ShowMe.** ShowMe 0.1.5 and earlier started the
+bridge with `node` from the `PATH` that VS Code had when it started. Update ShowMe to 0.1.6 or later,
+which uses VS Code's own runtime. If you stay on 0.1.5, install Node.js and then quit VS Code
+completely and start it again (opening a new window is not enough).
+
+**Windows: the agent loses ShowMe after VS Code updates.** The VS Code updater stops every program
+running from VS Code's folder, including a ShowMe that your agent started with VS Code's runtime.
+Reconnect ShowMe in your agent (in Claude Code, `/mcp`). Starting ShowMe with `node` (Node.js 20 or
+later) avoids this.
+
+**Configure Tools shows only "Update Tools" under ShowMe.** In a workspace where ShowMe has not run
+yet, VS Code does not know its tools until it starts the server, and it starts it when you send your
+first chat message. This is how VS Code works, not an error. To see the tools right away, press
+**Update Tools**. After an update of ShowMe, the list is refreshed the same way.
 
 **Windows: ShowMe fails to start and the reason mentions TEMP/TMP.** `TEMP` or `TMP` points at a
 folder other users can write to. How to fix it is under Status below.

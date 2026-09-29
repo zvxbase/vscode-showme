@@ -1,9 +1,11 @@
 import * as assert from "node:assert";
+import * as cp from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  TOOL_NAMES,
   annotateResultSchema,
   getEditorStateResultSchema,
   processUid,
@@ -69,6 +71,7 @@ import {
   assertSocketIsListening,
   currentRole,
   deleteInWorkspace,
+  envWithoutNode,
   getEditorState,
   inspectVisuals,
   layoutGroups,
@@ -87,6 +90,7 @@ import {
   showCode,
   showOne,
   showsLine,
+  speakMcpOverStdio,
   stageUri,
   stageUriString,
   tabGroupCount,
@@ -5778,7 +5782,11 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     ]) {
       assert.ok(text.includes(`\n${heading}\n`), `節が無い: ${heading}`);
     }
-    assert.ok(text.includes("claude mcp add --scope project showme -- node "));
+    assert.ok(
+      text.includes(
+        "claude mcp add --scope project -e ELECTRON_RUN_AS_NODE=1 --transport stdio showme -- ",
+      ),
+    );
     // 他の人の機械でも動く形は、版番号入りの置き場が実際のホームの下にあるときだけ出る
     // （この回は開発中の置き場なので、断片は直接のパスで、共有の形は出ない）。
     const underHome = bridgePath.startsWith(`${os.homedir().replace(/\/+$/, "")}/`);
@@ -5804,12 +5812,20 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     assert.ok(text.includes("SHOWME_SOCK"));
   });
 
-  test("MCP 提供者が登録され、ブリッジのパスを返す", async () => {
+  test("MCP 提供者が登録され、エディタの実行環境・ブリッジのパス・拡張の版を返す（D112）", async () => {
     const defs = await mcpDefinitions();
     assert.strictEqual(defs.length, 1);
     const def = defs[0];
     assert.ok(def);
-    assert.strictEqual(def.command, "node");
+    // CI の記録に OS ごとの実行ファイルを残す（設計書の「実機で確かめたこと」の材料）
+    console.log(`[D112] ${process.platform} execPath: ${def.command}`);
+    assert.strictEqual(def.label, "ShowMe");
+    // node ではなく拡張ホストの実行ファイル（テストもその拡張ホストの中で走っている）
+    assert.strictEqual(def.command, process.execPath);
+    assert.deepStrictEqual(def.env, { ELECTRON_RUN_AS_NODE: "1" });
+    const ext = vscode.extensions.getExtension(EXTENSION_ID);
+    assert.ok(ext);
+    assert.strictEqual(def.version, (ext.packageJSON as { version: string }).version);
     assert.strictEqual(def.args.length, 1);
     const bridgePath = def.args[0];
     assert.ok(bridgePath);
@@ -5818,6 +5834,120 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     // 文書に書いたパスと**同じ値**（同じ式から作っている。不変条件14）。
     const { text } = await openShowMeDocBy("showme.showAgentConfig", "/agent-configuration.md");
     assert.ok(text.includes(bridgePath), "文書のパスと提供者のパスが違う");
+  });
+
+  /**
+   * **Node の無い機械でも動く**ことの実機の証拠（D112 / D114）。
+   *
+   * `PATH` から `node` を持つディレクトリを全部外し、拡張ホストが自分に立てている
+   * `ELECTRON_RUN_AS_NODE` も外した環境で、定義（または断片）の command / args / env だけで
+   * ブリッジを起動して MCP を話す。対照として、同じ環境では `node` が起動できないことも確かめる
+   * （外し損ねていたら、この検査は Node のある機械の検査になる）。
+   */
+  async function assertBridgeAnswersWithoutNode(
+    what: string,
+    command: string,
+    args: readonly string[],
+    env: Record<string, string>,
+  ): Promise<void> {
+    const { env: base, removedDirs } = envWithoutNode();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "showme-nonode-"));
+    try {
+      console.log(`[D112] ${what}: removed ${removedDirs.length} PATH dir(s) holding node`);
+      const probe = cp.spawnSync("node", ["--version"], { env: base, cwd, windowsHide: true });
+      assert.strictEqual(
+        (probe.error as NodeJS.ErrnoException | undefined)?.code,
+        "ENOENT",
+        `PATH から node を外せていない（status=${probe.status}）`,
+      );
+      const hello = await speakMcpOverStdio(command, args, { ...base, ...env }, cwd);
+      assert.strictEqual(hello.serverInfo.name, "vscode-showme", what);
+      assert.strictEqual(hello.serverInfo.title, "ShowMe", what);
+      assert.deepStrictEqual([...hello.tools].sort(), [...TOOL_NAMES].sort(), what);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+
+  test("提供者の定義の command / args / env で、Node の無い環境でもブリッジが MCP に答える（D112）", async () => {
+    const [def] = await mcpDefinitions();
+    assert.ok(def);
+    await assertBridgeAnswersWithoutNode("provider", def.command, def.args, def.env);
+  });
+
+  test("設定の断片（JSON）の command / args / env でも、Node の無い環境でブリッジが MCP に答える（D114）", async () => {
+    const { text } = await openShowMeDocBy("showme.showAgentConfig", "/agent-configuration.md");
+    const block = /```json\n(\{[\s\S]*?\})\n```/.exec(text);
+    assert.ok(block?.[1], "JSON の断片が読めない");
+    const server = (
+      JSON.parse(block[1]) as {
+        mcpServers: { showme: { command: string; args: string[]; env?: Record<string, string> } };
+      }
+    ).mcpServers.showme;
+    assert.strictEqual(server.command, process.execPath);
+    assert.deepStrictEqual(server.env, { ELECTRON_RUN_AS_NODE: "1" });
+    // 文書の「実行環境:」の行も同じ値
+    assert.ok(
+      text.includes(`\nRuntime: ${process.execPath}\n`),
+      "Runtime の行が実行ファイルと違う",
+    );
+    await assertBridgeAnswersWithoutNode("snippet", server.command, server.args, server.env ?? {});
+  });
+
+  /**
+   * node の形の断片（D114 の改訂）も、書いたとおりに起動して MCP に答える（肯定の対照）。
+   * `PATH` の `node` をそのまま使い、拡張ホストが自分に立てている `ELECTRON_RUN_AS_NODE` は外す
+   * （node の形は env を持たない。それで動くことを見る）。CI の runner には Node.js 20 以上が `PATH` にある。
+   * 手元に node が無ければ飛ばすが、CI では失敗にする（飛ばしたまま緑にしない）。
+   */
+  test("設定の断片（JSON）の node の形でも、PATH の node でブリッジが MCP に答える（D114）", async function () {
+    const { text } = await openShowMeDocBy("showme.showAgentConfig", "/agent-configuration.md");
+    const servers = [...text.matchAll(/```json\n(\{[\s\S]*?\})\n```/g)].map(
+      (m) =>
+        (
+          JSON.parse(m[1] ?? "") as {
+            mcpServers: {
+              showme: { command: string; args: string[]; env?: Record<string, string> };
+            };
+          }
+        ).mcpServers.showme,
+    );
+    // 共有の項目（homedir()）でない node の形は、Copilot CLI の節の1つだけ
+    const nodeForms = servers.filter(
+      (s) => s.command === "node" && !s.args.join().includes("homedir()"),
+    );
+    assert.strictEqual(nodeForms.length, 1, `node の形の断片の数: ${nodeForms.length}`);
+    const server = nodeForms[0];
+    assert.ok(server);
+    assert.strictEqual(server.env, undefined, "node の形に env がある");
+
+    const env: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (k.toUpperCase() !== "ELECTRON_RUN_AS_NODE") env[k] = v;
+    }
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "showme-node-"));
+    try {
+      const probe = cp.spawnSync("node", ["--version"], {
+        env,
+        cwd,
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      if (probe.error !== undefined) {
+        assert.ok(process.env.CI !== "true", `CI の PATH に node が無い: ${String(probe.error)}`);
+        console.log("[D114] skipped: node is not on PATH");
+        this.skip();
+      }
+      const major = Number(/^v(\d+)\./.exec(probe.stdout.trim())?.[1]);
+      console.log(`[D114] node form: PATH node ${probe.stdout.trim()}`);
+      assert.ok(major >= 20, `PATH の node が 20 より古い: ${probe.stdout}`);
+      const hello = await speakMcpOverStdio(server.command, server.args, env, cwd);
+      assert.strictEqual(hello.serverInfo.name, "vscode-showme");
+      assert.strictEqual(hello.serverInfo.title, "ShowMe");
+      assert.deepStrictEqual([...hello.tools].sort(), [...TOOL_NAMES].sort());
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   });
 
   test("showme-doc は読み取り専用: ディスクに書く口が無く、開き直すと中身が作り直される", async () => {
