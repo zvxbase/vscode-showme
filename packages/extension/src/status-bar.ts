@@ -244,10 +244,10 @@ export class ShowMeStatusBar {
   }
 
   /**
-   * `stage` を切っているので開かずに印だけ付けたことを人間に見せる（増分6 D76）。
+   * `stage` を切っているので開かずに位置だけ解決したことを人間に見せる（増分6 D76 / 増分13 D116）。
    *
    * 開かない結果はすべて画面に出す ―― 空振りと同じく、これが人間に残る唯一の
-   * 痕跡である（開いたファイルは無く、見えていないファイルの塗りは開くまで出ない）。
+   * 痕跡である（開いたファイルは無く、`show_code` はもう塗らない）。
    * `path:line` は人間が自分で場所を探すための手がかりで、`line` は1始まり。
    * 文全体を `forDisplay` に通す（パスはエージェント由来。D58）。
    */
@@ -256,7 +256,7 @@ export class ShowMeStatusBar {
     void getVSCode().window.setStatusBarMessage(
       forDisplay(
         t(
-          "ShowMe: the agent marked {0}:{1} (open the file to see the highlight)",
+          "ShowMe: the agent pointed at {0}:{1} (not opened: opening files is turned off)",
           path,
           String(line),
         ),

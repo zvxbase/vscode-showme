@@ -3,7 +3,7 @@
   "private": true,
   "displayName": "ShowMe",
   "description": "Give AI agents hands in VS Code: show, annotate and diagram code alongside a human reader.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "preview": true,
   "license": "MIT",
   "publisher": "zvxbase",
@@ -71,10 +71,6 @@
       {
         "command": "showme.teardown",
         "title": "%showme.command.teardown%"
-      },
-      {
-        "command": "showme.clearHighlights",
-        "title": "%showme.command.clearHighlights%"
       },
       {
         "command": "showme.clearAnnotations",

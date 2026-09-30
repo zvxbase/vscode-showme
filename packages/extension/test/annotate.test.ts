@@ -13,9 +13,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ANNOTATION_AUTHOR, ANNOTATION_AUTHOR_DEFAULT } from "../src/annotation-author.js";
 import type { ShowMeConfig } from "../src/config.js";
 import { type AnnotateDeps, handleAnnotate } from "../src/handlers/annotate.js";
-import type { LineRange } from "../src/handlers/show-code.js";
+import type { LineRange, StagePlacement } from "../src/handlers/show-code.js";
 import type { SymbolSurface } from "../src/handlers/symbol-prefetch.js";
+import { MIN_MS_SINCE_OWN_TOOL_CALL, OwnToolCallClock } from "../src/human-selection.js";
 import { RATE_LIMIT_MAX_HITS, RateLimiter } from "../src/rate-limit.js";
+import { ToolError } from "../src/tool-error.js";
 
 /**
  * `handleAnnotate` の単体テスト。
@@ -75,11 +77,21 @@ interface Spy {
   many: { path: string; needle: string }[];
   limited: string[];
   logged: string[];
+  /** 開く面（`show_code` と同じ `EditorSurface`）に渡った呼び出し（増分13 D117）。 */
+  revealed: { relPath: string; range: LineRange; placement: StagePlacement }[];
 }
 
 function spy(
   root: string | undefined,
-  options: { limiter?: RateLimiter; symbols?: SymbolSurface; maxThreads?: number } = {},
+  options: {
+    limiter?: RateLimiter;
+    symbols?: SymbolSurface;
+    maxThreads?: number;
+    /** 開く面の振る舞い（既定は開ける）。`refuse` は舞台の列が無い（D90）、`fail` はそれ以外の失敗。 */
+    reveal?: "ok" | "refuse" | "fail";
+    config?: ShowMeConfig;
+    clock?: OwnToolCallClock;
+  } = {},
 ): Spy {
   const live: Bubble[] = [];
   const liveIds: number[] = [];
@@ -90,6 +102,8 @@ function spy(
   const logged: string[] = [];
   let cleared = 0;
   const limiter = options.limiter ?? new RateLimiter();
+  const revealed: Spy["revealed"] = [];
+  const cfg = options.config ?? config;
 
   const self: Spy = {
     live,
@@ -102,11 +116,21 @@ function spy(
     many,
     limited,
     logged,
+    revealed,
     deps: {
-      config: () => config,
+      config: () => cfg,
       workspaceRoot: root,
       limiter,
+      // 刻みを見ない検査でもモジュールの共有時計を汚さない。
+      clock: options.clock ?? new OwnToolCallClock(),
       ...(options.symbols === undefined ? {} : { symbols: options.symbols }),
+      editor: {
+        reveal: async (relPath, range, placement) => {
+          if (options.reveal === "refuse") throw new ToolError("no-stage-column", "no column");
+          if (options.reveal === "fail") throw new Error("エディタを開けない");
+          revealed.push({ relPath, range, placement });
+        },
+      },
       annotations: {
         clearAll: () => {
           cleared += 1;
@@ -165,13 +189,48 @@ describe("handleAnnotate", () => {
       s.deps,
     );
 
-    expect(s.live).toEqual([
-      { relPath: "src/a.ts", range: { startLine: 2, endLine: 2 }, body: "ここが入口" },
-    ]);
+    // text で指したら一致した文字列の列だけ（D118）。吹き出しの行は今どおりその行。
+    const range = { startLine: 2, endLine: 2, startColumn: 0, endColumn: 12 };
+    expect(s.live).toEqual([{ relPath: "src/a.ts", range, body: "ここが入口" }]);
     const [first] = resolutions(result);
     expect(first?.match).toBe("one");
     expect(first?.resolvedBy).toBe("text");
-    expect(first?.range).toEqual({ startLine: 2, endLine: 2 });
+    expect(first?.range).toEqual(range);
+  });
+
+  it("text の一致の列は全角・サロゲートペアの後でも UTF-16 の単位で面に届く（D118）", async () => {
+    const line = `  // 日本語${"\u{1F600}"} needle here`;
+    const root = workspace({ "src/a.ts": `x\n${line}\n` });
+    const s = spy(root);
+    await handleAnnotate(
+      { items: [{ location: { path: "src/a.ts", text: "needle" }, text: "ここ", color: "red" }] },
+      s.deps,
+    );
+    // "  // " = 5, "日本語" = 3, 絵文字 = 2, " " = 1 → 11
+    expect(line.indexOf("needle")).toBe(11);
+    expect(s.live[0]?.range).toEqual({ startLine: 2, endLine: 2, startColumn: 11, endColumn: 17 });
+  });
+
+  it("symbol と列なしの lines は行全体のまま（列を付けない。D118）", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, {
+      symbols: {
+        lookup: async () => ({ kind: "resolved", ranges: [{ startLine: 2, endLine: 3 }] }),
+      },
+    });
+    await handleAnnotate(
+      {
+        items: [
+          { location: { path: "src/a.ts", symbol: "target" }, text: "s" },
+          { location: { path: "src/a.ts", lines: { start: 1, end: 1 } }, text: "l" },
+        ],
+      },
+      s.deps,
+    );
+    expect(s.live.map((b) => b.range)).toEqual([
+      { startLine: 2, endLine: 3 },
+      { startLine: 1, endLine: 1 },
+    ]);
   });
 
   it("返り値にファイルの内容も注釈の本文も入らない（不変条件2）", async () => {
@@ -524,6 +583,135 @@ describe("handleAnnotate", () => {
  * 順序（先に `clearAll()`）に依存した経路で、次に誰かが「1件も解決しなければ
  * 消さない」に直したら消す手段が無くなる。
  */
+/**
+ * `reveal`（増分13 D117）。既定は開かない。`true` なら、吹き出しが出た最初の項目のファイルを
+ * `show_code` と**同じ関数**（`revealResolved` → `EditorSurface.reveal`）で開き、その吹き出しの行まで
+ * スクロールする。開けなかった理由は `show_code` と同じ語彙で結果に載る。
+ */
+describe("reveal（D117）", () => {
+  const stageOff: ShowMeConfig = {
+    ...config,
+    features: { stage: false, html: true, layout: true },
+  } as ShowMeConfig;
+  const stageOn: ShowMeConfig = {
+    ...config,
+    features: { stage: true, html: true, layout: true },
+  } as ShowMeConfig;
+  const item = (text: string, note = "説明") => ({
+    location: { path: "src/a.ts", text },
+    text: note,
+  });
+
+  it("既定では開かない（面に触らない）。結果に reveal の鍵も無い", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const clock = new OwnToolCallClock();
+    const s = spy(root, { config: stageOn, clock });
+    const result = await handleAnnotate({ items: [item("const target")] }, s.deps);
+    expect(s.revealed).toEqual([]);
+    expect(result).not.toHaveProperty("reveal");
+    // 開かないので時計は刻まない（直後の待ちは `recordFrontChanges` の窓が別に持つ）。
+    expect(clock.msSince()).toBe(Number.POSITIVE_INFINITY);
+    // 吹き出しは出ている。
+    expect(s.live).toHaveLength(1);
+  });
+
+  it("reveal: false も開かない", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, { config: stageOn });
+    const result = await handleAnnotate({ items: [item("const target")], reveal: false }, s.deps);
+    expect(s.revealed).toEqual([]);
+    expect(result).not.toHaveProperty("reveal");
+  });
+
+  it("reveal: true は最初の吹き出しのファイルを、その範囲で、舞台の1枠目（show_code と同じ）に開く", async () => {
+    const root = workspace({ "src/a.ts": SOURCE, "src/b.ts": "other\n" });
+    const s = spy(root, { config: stageOn });
+    const result = await handleAnnotate(
+      {
+        items: [
+          item("const target", "1つ目"),
+          { location: { path: "src/b.ts", text: "other" }, text: "2つ目" },
+        ],
+        reveal: true,
+      },
+      s.deps,
+    );
+    // 開くのは1回だけ、1件目の項目の位置（吹き出しと同じ範囲）。
+    expect(s.revealed).toEqual([
+      {
+        relPath: "src/a.ts",
+        range: { startLine: 2, endLine: 2, startColumn: 0, endColumn: 12 },
+        placement: { slot: 0, layout: "single" },
+      },
+    ]);
+    expect(s.live.map((b) => b.relPath)).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(result.reveal).toEqual({ opened: true });
+    expect(annotateResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it("reveal: true はエディタを動かすので時計を刻む（get_editor_state の too-soon-after-tool）", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const clock = new OwnToolCallClock();
+    const s = spy(root, { config: stageOn, clock });
+    await handleAnnotate({ items: [item("const target")], reveal: true }, s.deps);
+    expect(clock.msSince()).toBeLessThan(MIN_MS_SINCE_OWN_TOOL_CALL);
+  });
+
+  it("1件目が出なければ、吹き出しが出た最初の項目を開く", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, { config: stageOn });
+    const result = await handleAnnotate(
+      { items: [item("NOPE"), item("const b", "出た")], reveal: true },
+      s.deps,
+    );
+    expect(s.revealed.map((r) => r.range.startLine)).toEqual([3]);
+    expect(result.reveal).toEqual({ opened: true });
+  });
+
+  it("吹き出しが1つも出なければ開かず、no-annotation", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, { config: stageOn });
+    const result = await handleAnnotate({ items: [item("NOPE")], reveal: true }, s.deps);
+    expect(s.revealed).toEqual([]);
+    expect(result.reveal).toEqual({ opened: false, reason: "no-annotation" });
+  });
+
+  it("舞台の列が無ければ no-stage-column（show_code と同じ理由）。吹き出しは残る", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, { config: stageOn, reveal: "refuse" });
+    const result = await handleAnnotate({ items: [item("const target")], reveal: true }, s.deps);
+    expect(result.reveal).toEqual({ opened: false, reason: "no-stage-column" });
+    // 吹き出しそのものが人間に残る痕跡なので、位置も id も返す。
+    expect(s.live).toHaveLength(1);
+    expect(resolutions(result)[0]).toMatchObject({ match: "one", id: 1, index: 1 });
+    expect(annotateResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it("それ以外の失敗は not-found に畳む（例外の中身を線に載せない）", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, { config: stageOn, reveal: "fail" });
+    const result = await handleAnnotate({ items: [item("const target")], reveal: true }, s.deps);
+    expect(result.reveal).toEqual({ opened: false, reason: "not-found" });
+    expect(JSON.stringify(result)).not.toContain("エディタを開けない");
+  });
+
+  it("stage を切っていたら開かず、stage-disabled（show_code と同じく開かない）", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, { config: stageOff });
+    const result = await handleAnnotate({ items: [item("const target")], reveal: true }, s.deps);
+    expect(s.revealed).toEqual([]);
+    expect(result.reveal).toEqual({ opened: false, reason: "stage-disabled" });
+    expect(s.live).toHaveLength(1);
+  });
+
+  it("ワークスペースが無ければ開かず、no-annotation", async () => {
+    const s = spy(undefined, { config: stageOn });
+    const result = await handleAnnotate({ items: [item("x")], reveal: true }, s.deps);
+    expect(s.revealed).toEqual([]);
+    expect(result.reveal).toEqual({ opened: false, reason: "no-annotation" });
+  });
+});
+
 describe("mode: clear（D54）", () => {
   it("全部消して、何も足さず、resolutions は空", async () => {
     const root = workspace({ "src/a.ts": SOURCE });
@@ -609,7 +797,13 @@ describe("色は面まで届く（設計 D47）", () => {
       s.deps,
     );
     expect(s.live).toEqual([
-      { relPath: "src/a.ts", range: { startLine: 1, endLine: 1 }, body: "赤", color: "red" },
+      {
+        relPath: "src/a.ts",
+        // text の一致の列（D118）。
+        range: { startLine: 1, endLine: 1, startColumn: 6, endColumn: 12 },
+        body: "赤",
+        color: "red",
+      },
     ]);
   });
 

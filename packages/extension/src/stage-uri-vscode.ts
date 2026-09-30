@@ -37,7 +37,7 @@ export function stageMirrorUri(rel: string, scheme: StageScheme): vscode.Uri {
  * 映しの2つのスキームなら `stageMirrorUri(rel, scheme)`（root は使わない ―― 映しの URI は
  * authority を持たず、window に1つのルートを前提にするので path だけで決まる）。
  *
- * 呼び出し側（`reveal` / `setSpotlight` / `annotations.add` など）は ここだけを通し、
+ * 呼び出し側（`reveal` / `annotations.add` など）は ここだけを通し、
  * `Uri.from` / `Uri.joinPath` を直接組まない（不変条件14: 舞台の URI を決める場所を
  * 2つにしない）。`notifyChanged`（`stage-fs-provider.ts`）は root を持たないので
  * ここを通さず、映しの URI だけを組む `stageMirrorUri` を直接呼ぶ ―― それでも

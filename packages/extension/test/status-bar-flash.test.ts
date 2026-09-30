@@ -170,8 +170,9 @@ describe("ShowMeStatusBar の点滅は攻撃文字列を無害化して載せる
   it("flashMarked は path:line（1始まり）を本文とメッセージの両方に出す", () => {
     bar.flashMarked("src/a.ts", 3);
     expect(fake.item.text).toBe("$(bookmark) ShowMe: marked src/a.ts:3");
+    // 塗りはもう無い（増分13 D116）ので「開くとハイライトが見える」とは言わない。
     expect(lastMessage()).toBe(
-      "ShowMe: the agent marked src/a.ts:3 (open the file to see the highlight)",
+      "ShowMe: the agent pointed at src/a.ts:3 (not opened: opening files is turned off)",
     );
     // **我々の** codicon は `t()` の外にあり、無害化で壊れていない。
     expect(fake.item.text.startsWith("$(bookmark) ")).toBe(true);

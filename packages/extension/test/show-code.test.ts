@@ -89,8 +89,11 @@ interface Spy {
   revealed: { relPath: string; range: LineRange; placement: StagePlacement }[];
   /** `reveal` に渡った枠（開けたかに依らない）。 */
   attempted: StagePlacement[];
-  /** `setSpotlight` の呼び出し1回ごとに、渡された窓を丸ごと記録する。 */
-  spotlights: ReadonlyMap<string, readonly LineRange[]>[];
+  /**
+   * ハンドラが面（`EditorSurface`）の**どの口に触ったか**（増分13 D116）。面は `reveal` だけを
+   * 持つ。塗る口を足し戻すと、ここに `reveal` 以外の名前が出る。
+   */
+  touched: string[];
   miss: { path: string; needle: string }[];
   many: { path: string; needle: string }[];
   limited: string[];
@@ -113,7 +116,7 @@ function spy(
 ): Spy {
   const revealed: Spy["revealed"] = [];
   const attempted: StagePlacement[] = [];
-  const spotlights: Spy["spotlights"] = [];
+  const touched: string[] = [];
   const miss: Spy["miss"] = [];
   const many: Spy["many"] = [];
   const limited: string[] = [];
@@ -124,7 +127,7 @@ function spy(
   return {
     revealed,
     attempted,
-    spotlights,
+    touched,
     miss,
     many,
     limited,
@@ -136,19 +139,25 @@ function spy(
       limiter,
       ...(options.clock === undefined ? {} : { clock: options.clock }),
       ...(options.symbols === undefined ? {} : { symbols: options.symbols }),
-      editor: {
-        reveal: async (relPath, range, placement) => {
-          if (options.revealFails === true) throw new Error("エディタを開けない");
-          attempted.push(placement);
-          if (options.revealRefuses === true) {
-            throw new ToolError("no-stage-column", "no stage column");
-          }
-          revealed.push({ relPath, range, placement });
+      // 面は `reveal` だけ。Proxy で**触った口の名前**を全部記録する（塗る口があれば名前が出る）。
+      editor: new Proxy(
+        {
+          reveal: async (relPath: string, range: LineRange, placement: StagePlacement) => {
+            if (options.revealFails === true) throw new Error("エディタを開けない");
+            attempted.push(placement);
+            if (options.revealRefuses === true) {
+              throw new ToolError("no-stage-column", "no stage column");
+            }
+            revealed.push({ relPath, range, placement });
+          },
         },
-        setSpotlight: (byPath) => {
-          spotlights.push(byPath);
+        {
+          get(target, key, receiver) {
+            if (typeof key === "string") touched.push(key);
+            return Reflect.get(target, key, receiver);
+          },
         },
-      },
+      ),
       log: { info: (message) => logged.push(message) },
       statusBar: {
         flashMiss: (p, needle) => miss.push({ path: p, needle }),
@@ -161,27 +170,29 @@ function spy(
 }
 
 describe("handleShowCode", () => {
-  it("1件当たったら、その行を人間の画面に見せてハイライトする", async () => {
-    const root = workspace({ "src/a.ts": "one\nTARGET\nthree\n" });
+  it("1件当たったら、その場所を人間の画面に開いて見せる。塗らない（増分13 D116）", async () => {
+    const root = workspace({ "src/a.ts": "one\n  x = TARGET;\nthree\n" });
     const s = spy(root);
     const out = await handleShowCode({ locations: [{ path: "src/a.ts", text: "TARGET" }] }, s.deps);
 
+    // 結果の形は変えない。`text` の一致は列を持つ（同じ解決関数の値。D118）。
     expect(out.resolutions).toEqual([
       {
         resolvedBy: "text",
         match: "one",
-        range: { startLine: 2, endLine: 2 },
+        range: { startLine: 2, endLine: 2, startColumn: 6, endColumn: 12 },
         normalizedPath: "src/a.ts",
       },
     ]);
     expect(s.revealed).toEqual([
       {
         relPath: "src/a.ts",
-        range: { startLine: 2, endLine: 2 },
+        range: { startLine: 2, endLine: 2, startColumn: 6, endColumn: 12 },
         placement: { slot: 0, layout: "single" },
       },
     ]);
-    expect(s.spotlights).toEqual([new Map([["src/a.ts", [{ startLine: 2, endLine: 2 }]]])]);
+    // **面に触ったのは `reveal` だけ**（塗る口は無い）。
+    expect(s.touched).toEqual(["reveal"]);
   });
 
   it("エディタに触りに来たことを時計に刻む（get_editor_state と対で意味を持つ）", async () => {
@@ -326,9 +337,6 @@ describe("handleShowCode", () => {
       { resolvedBy: "none", match: "none", reason: "not-found", normalizedPath: "src/a.ts" },
     ]);
     expect(s.miss).toEqual([{ path: "src/a.ts", needle: "TARGET" }]);
-    // **空の窓でも1回置き換える**（D67）。前回のスポットライトが残ると、開けなかった
-    // 位置の代わりに前の呼び出しの指差しが「今ここ」に見える。
-    expect(s.spotlights).toEqual([new Map()]);
   });
 
   it("舞台の列が無ければ no-stage-column を返し、位置は返さない（D90）", async () => {
@@ -356,73 +364,28 @@ describe("handleShowCode", () => {
       { slot: 0, layout: "split" },
       { slot: 0, layout: "split" },
     ]);
-    // 人間にも見せる（開かなかった結果を黙らせない）。塗りは登録しない。
+    // 人間にも見せる（開かなかった結果を黙らせない）。
     expect(s.miss).toEqual([
       { path: "src/a.ts", needle: "TARGET" },
       { path: "src/b.ts", needle: "OTHER" },
     ]);
-    expect(s.spotlights).toEqual([new Map()]);
   });
 
-  it("スポットライトは1回の呼び出しの全ファイルを1つの窓で渡す（D67: 窓ごと）", async () => {
-    const root = workspace({ "src/a.ts": "TARGET_A\n", "src/b.ts": "TARGET_B\n" });
-    const s = spy(root);
-    await handleShowCode(
-      {
-        locations: [
-          { path: "src/a.ts", text: "TARGET_A" },
-          { path: "src/b.ts", text: "TARGET_B" },
-        ],
-        layout: "split",
-      },
-      s.deps,
-    );
-    // **ちょうど1回。** ファイルごとに呼ぶと、後のファイルの窓が前のファイルの分を消す
-    // （窓ごとの置き換えは画家の契約で、ハンドラは1回の呼び出しを1つの窓にまとめる）。
-    expect(s.spotlights).toHaveLength(1);
-    expect(s.spotlights[0]).toEqual(
-      new Map([
-        ["src/a.ts", [{ startLine: 1, endLine: 1 }]],
-        ["src/b.ts", [{ startLine: 1, endLine: 1 }]],
-      ]),
-    );
-  });
-
-  it("何も解決できなくても、空の窓で1回置き換える（前回の指差しを残さない）", async () => {
-    const root = workspace({ "src/a.ts": "nothing here\n" });
-    const s = spy(root);
-    const out = await handleShowCode(
-      { locations: [{ path: "src/a.ts", text: "MISSING" }] },
-      s.deps,
-    );
-    expect(out.resolutions[0]?.match).toBe("none");
-    expect(s.revealed).toEqual([]);
-    expect(s.spotlights).toEqual([new Map()]);
-  });
-
-  it("同じファイルに2件当たったら、後の1件で前の1件を消さない", async () => {
-    const root = workspace({ "src/a.ts": "AAA\nBBB\n" });
+  it("何件開いても、面に触るのは reveal だけ（塗らない。D116）", async () => {
+    const root = workspace({ "src/a.ts": "AAA\nBBB\n", "src/b.ts": "CCC\n" });
     const s = spy(root);
     await handleShowCode(
       {
         locations: [
           { path: "src/a.ts", text: "AAA" },
           { path: "src/a.ts", text: "BBB" },
+          { path: "src/b.ts", text: "MISSING" },
         ],
       },
       s.deps,
     );
-    expect(s.spotlights).toEqual([
-      new Map([
-        [
-          "src/a.ts",
-          [
-            { startLine: 1, endLine: 1 },
-            { startLine: 2, endLine: 2 },
-          ],
-        ],
-      ]),
-    ]);
+    expect(s.revealed).toHaveLength(2);
+    expect(s.touched).toEqual(["reveal", "reveal"]);
   });
 
   it("ワークスペースが無ければ何も開かず not-found を返す", async () => {
@@ -550,7 +513,6 @@ describe("handleShowCode", () => {
             }
             revealed.push({ relPath, placement });
           },
-          setSpotlight: () => {},
         },
       };
       await handleShowCode(
@@ -569,15 +531,14 @@ describe("handleShowCode", () => {
 });
 
 /**
- * **`stage` を切ると `show_code` は印だけ**（増分6 §C4 / D76）。
+ * **`stage` を切ると `show_code` は位置を解決して返すだけ**（増分6 §C4 / D76、増分13 D116）。
  *
- * 設定が縛るのはエージェントであって人間ではない（§C5）。位置は解決して返し、
- * 塗りはスポットライトに登録する（見えていれば貼る。見えていなければ人間が
- * 開いたときに貼る）が、**開かない・スクロールしない・列を作らない**。
+ * 設定が縛るのはエージェントであって人間ではない（§C5）。位置は解決して返すが、
+ * **開かない・スクロールしない・列を作らない**（塗りも無い ―― `show_code` はもう塗らない）。
  * ステータスバーに `path:line` を出す ―― 開かない結果を黙らせない（§5.4）。
  */
-describe("handleShowCode — stage を切ったら印だけ（D76）", () => {
-  it("開かないが、位置は解決して返し、塗りは登録する", async () => {
+describe("handleShowCode — stage を切ったら解決して返すだけ（D76 / D116）", () => {
+  it("開かないが、位置は解決して返す（面には触らない）", async () => {
     const root = workspace({ "src/a.ts": "one\nTARGET\nthree\n" });
     const s = spy(root, { config: stageOff });
     const out = await handleShowCode({ locations: [{ path: "src/a.ts", text: "TARGET" }] }, s.deps);
@@ -587,18 +548,18 @@ describe("handleShowCode — stage を切ったら印だけ（D76）", () => {
       {
         resolvedBy: "text",
         match: "one",
-        range: { startLine: 2, endLine: 2 },
+        range: { startLine: 2, endLine: 2, startColumn: 0, endColumn: 6 },
         normalizedPath: "src/a.ts",
       },
     ]);
     expect(s.revealed).toEqual([]);
-    expect(s.spotlights).toEqual([new Map([["src/a.ts", [{ startLine: 2, endLine: 2 }]]])]);
+    expect(s.touched).toEqual([]);
     // 人間が場所を探せるように `path:line`（1始まり）。空振りの可視化と同じ経路。
     expect(s.marked).toEqual([{ path: "src/a.ts", line: 2 }]);
     expect(s.miss).toEqual([]);
   });
 
-  it("layout: split でも開かない（列を作らない）。2件とも登録し、2件とも案内する", async () => {
+  it("layout: split でも開かない（列を作らない）。2件とも案内する", async () => {
     const root = workspace({ "src/a.ts": "TARGET_A\n", "src/b.ts": "x\nx\nTARGET_B\n" });
     const s = spy(root, { config: stageOff });
     const out = await handleShowCode(
@@ -614,12 +575,7 @@ describe("handleShowCode — stage を切ったら印だけ（D76）", () => {
 
     expect((out.resolutions as { match: string }[]).map((r) => r.match)).toEqual(["one", "one"]);
     expect(s.revealed).toEqual([]);
-    expect(s.spotlights).toEqual([
-      new Map([
-        ["src/a.ts", [{ startLine: 1, endLine: 1 }]],
-        ["src/b.ts", [{ startLine: 3, endLine: 3 }]],
-      ]),
-    ]);
+    expect(s.touched).toEqual([]);
     expect(s.marked).toEqual([
       { path: "src/a.ts", line: 1 },
       { path: "src/b.ts", line: 3 },
@@ -635,8 +591,6 @@ describe("handleShowCode — stage を切ったら印だけ（D76）", () => {
     expect(s.miss).toEqual([{ path: "src/a.ts", needle: "NOPE" }]);
     expect(s.marked).toEqual([]);
     expect(s.revealed).toEqual([]);
-    // 空の窓でも1回置き換える（D67）。
-    expect(s.spotlights).toEqual([new Map()]);
   });
 
   it("多重一致も同じ（候補を返すだけで、印も案内も無い）", async () => {
@@ -647,7 +601,6 @@ describe("handleShowCode — stage を切ったら印だけ（D76）", () => {
     expect((out.resolutions as { match: string }[])[0]?.match).toBe("many");
     expect(s.many).toEqual([{ path: "src/a.ts", needle: "HIT" }]);
     expect(s.marked).toEqual([]);
-    expect(s.spotlights).toEqual([new Map()]);
   });
 
   it("stage が on なら開き、印の案内は出さない（既存の振る舞いのまま）", async () => {
@@ -660,7 +613,7 @@ describe("handleShowCode — stage を切ったら印だけ（D76）", () => {
   });
 
   it("印だけでも、エディタに触りに来たことは刻む", async () => {
-    // 塗りは人間のエディタに貼られる（見えていれば今、見えていなければ開いたとき）。
+    // 入口で刻む（開けたかに依らない。上の「空振りでも刻む」と同じ理由）。
     // 直後の `get_editor_state` に対する窓は開くときと同じに置く。
     const root = workspace({ "src/a.ts": "TARGET\n" });
     const clock = new OwnToolCallClock();

@@ -37,14 +37,38 @@ export interface ResolveDeps {
  */
 export const MAX_RESOLVE_BYTES = 5 * 1024 * 1024;
 
-/** 1始まりの行番号で、リテラル文字列が現れる行をすべて返す。 */
-function literalMatchLines(content: string, needle: string): number[] {
+/**
+ * リテラル文字列が現れる行をすべて返す。`line` は1始まり、`column` はその行の**最初の**一致の
+ * 0始まりの列（増分13 D118）。
+ *
+ * 列は JavaScript の文字列の添字、つまり **UTF-16 の単位**で数える。VS Code の
+ * `Position.character` も同じ単位なので、全角もサロゲートペア（絵文字）も手前にあってずれない
+ * （`resolve-location.test.ts` が両方を当てている）。行は `\n` で切るので、CRLF の `\r` は
+ * 行末に残るだけで列には効かない。
+ */
+function literalMatches(
+  content: string,
+  needle: string,
+): { line: number; column: number; again: boolean }[] {
   const lines = content.split("\n");
-  const hits: number[] = [];
+  const hits: { line: number; column: number; again: boolean }[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if ((lines[i] ?? "").includes(needle)) hits.push(i + 1);
+    const text = lines[i] ?? "";
+    const column = text.indexOf(needle);
+    // `again`: 同じ行にもう1つ一致がある（重なる一致も数える）。そのときは列を名乗らない ――
+    // `occurrence` は行を数えるので、同じ行の2つ目は指せず、1つ目の列を返すと黙って違う方を塗る。
+    if (column !== -1)
+      hits.push({ line: i + 1, column, again: text.indexOf(needle, column + 1) !== -1 });
   }
   return hits;
+}
+
+/**
+ * 先頭の BOM（U+FEFF）を外す。VS Code は文書の本文から BOM を外すので、残したまま数えると
+ * 1行目の列だけが1つずれる（拡張の読み出しは `Buffer#toString("utf8")` で BOM を残す）。
+ */
+function stripBom(content: string): string {
+  return content.startsWith("\uFEFF") ? content.slice(1) : content;
 }
 
 /**
@@ -99,34 +123,40 @@ export function resolveLocation(loc: Location, deps: ResolveDeps): Resolution {
     const content = read();
     if (content === undefined) return none("not-found", "text");
 
-    const hits = literalMatchLines(content, loc.text);
+    const needle = loc.text;
+    const hits = literalMatches(stripBom(content), needle);
     if (hits.length === 0) return none("not-found", "text");
+
+    // **一致した文字列の列範囲を返す**（増分13 D118）。塗りは文字列だけ、吹き出しはその行
+    // （`annotate`）。行が1つに決まったときだけ付く。終端は含まない（`startColumn + 長さ`）。
+    // **その行に一致が2つ以上あれば列を返さず行全体**（どちらを指したか決められない。`occurrence`
+    // は行を数える）。件数は返さない（不変条件4）。1つに絞るには `lines` の列を使う。
+    const exactly = (hit: { line: number; column: number; again: boolean }): Resolution => ({
+      resolvedBy: "text",
+      match: "one",
+      range: hit.again
+        ? { startLine: hit.line, endLine: hit.line }
+        : {
+            startLine: hit.line,
+            endLine: hit.line,
+            startColumn: hit.column,
+            endColumn: hit.column + needle.length,
+          },
+      normalizedPath: rel,
+    });
 
     if (loc.occurrence !== undefined) {
       const picked = hits[loc.occurrence - 1];
       if (picked === undefined) return none("not-found", "text");
-      return {
-        resolvedBy: "text",
-        match: "one",
-        range: { startLine: picked, endLine: picked },
-        normalizedPath: rel,
-      };
+      return exactly(picked);
     }
 
-    if (hits.length === 1) {
-      const line = hits[0] as number;
-      return {
-        resolvedBy: "text",
-        match: "one",
-        range: { startLine: line, endLine: line },
-        normalizedPath: rel,
-      };
-    }
+    if (hits.length === 1) return exactly(hits[0] as (typeof hits)[number]);
 
     return {
       resolvedBy: "text",
       match: "many",
-      candidates: hits.slice(0, MAX_CANDIDATES).map((line) => ({ line })),
+      candidates: hits.slice(0, MAX_CANDIDATES).map(({ line }) => ({ line })),
       normalizedPath: rel,
     };
   }

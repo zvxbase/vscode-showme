@@ -36,7 +36,20 @@ interface Visuals {
   }[];
 }
 
+/**
+ * 塗るのは注釈だけ（増分13 D116）。塗りの精度と色は `annotate` で見る。1件を置き換えで出す
+ * （`mode` 既定の replace）ので、前の検査の塗りは残らない。
+ */
+async function paint(
+  items: { location: Record<string, unknown>; text?: string; color?: string }[],
+): Promise<void> {
+  await vscode.commands.executeCommand("showme.test.annotate", {
+    items: items.map((item) => ({ text: "塗り", ...item })),
+  });
+}
+
 async function reset(): Promise<void> {
+  await vscode.commands.executeCommand("showme.test.annotate", { mode: "clear" });
   await vscode.commands.executeCommand("showme.test.resetRateLimits");
 }
 
@@ -226,9 +239,9 @@ suite("指す精度（増分3B）", () => {
   });
 
   test("列を指定すると装飾の範囲が文字単位になる", async () => {
-    await vscode.commands.executeCommand("showme.test.showCode", {
-      locations: [{ path: SAMPLE_REL, lines: { start: 1, end: 1, startColumn: 2, endColumn: 6 } }],
-    });
+    await paint([
+      { location: { path: SAMPLE_REL, lines: { start: 1, end: 1, startColumn: 2, endColumn: 6 } } },
+    ]);
     await waitFor("文字単位の装飾が貼られる", async () => {
       const visuals = (await vscode.commands.executeCommand(
         "showme.test.inspectVisuals",
@@ -244,9 +257,7 @@ suite("指す精度（増分3B）", () => {
   });
 
   test("列を省いた指定は今までどおり行全体", async () => {
-    await vscode.commands.executeCommand("showme.test.showCode", {
-      locations: [{ path: SAMPLE_REL, lines: { start: 2, end: 2 } }],
-    });
+    await paint([{ location: { path: SAMPLE_REL, lines: { start: 2, end: 2 } } }]);
     await waitFor("行全体の装飾が貼られる", async () => {
       const visuals = (await vscode.commands.executeCommand(
         "showme.test.inspectVisuals",
@@ -270,9 +281,7 @@ suite("見せる表現（増分3C）", () => {
   setup(reset);
 
   test("色を指定すると装飾にその色が使われる", async () => {
-    await vscode.commands.executeCommand("showme.test.showCode", {
-      locations: [{ path: SAMPLE_REL, lines: { start: 1, end: 1 }, color: "green" }],
-    });
+    await paint([{ location: { path: SAMPLE_REL, lines: { start: 1, end: 1 } }, color: "green" }]);
     await waitFor("緑の装飾が貼られる", async () => {
       const visuals = (await vscode.commands.executeCommand(
         "showme.test.inspectVisuals",
@@ -281,26 +290,22 @@ suite("見せる表現（増分3C）", () => {
     });
   });
 
-  test("色を指定しなければ既定（yellow）", async () => {
-    await vscode.commands.executeCommand("showme.test.showCode", {
-      locations: [{ path: SAMPLE_REL, lines: { start: 2, end: 2 } }],
-    });
-    await waitFor("既定の色で貼られる", async () => {
+  test("色を指定しなければ灰（無印の注釈。増分6.1 D78 / 増分13 D119）", async () => {
+    await paint([{ location: { path: SAMPLE_REL, lines: { start: 2, end: 2 } } }]);
+    await waitFor("灰で貼られる", async () => {
       const visuals = (await vscode.commands.executeCommand(
         "showme.test.inspectVisuals",
       )) as Visuals;
-      return (visuals.highlightRanges ?? []).some((r) => r.color === "yellow");
+      return (visuals.highlightRanges ?? []).some((r) => r.color === "grey");
     });
   });
 
-  test("1回の show_code で色を混ぜられる", async () => {
+  test("1回の annotate で色を混ぜられる", async () => {
     // **意味づけは呼ぶ側がする。** 機構は「別々の色で描ける」ことだけを保証する。
-    await vscode.commands.executeCommand("showme.test.showCode", {
-      locations: [
-        { path: SAMPLE_REL, lines: { start: 1, end: 1 }, color: "red" },
-        { path: SAMPLE_REL, lines: { start: 3, end: 3 }, color: "blue" },
-      ],
-    });
+    await paint([
+      { location: { path: SAMPLE_REL, lines: { start: 1, end: 1 } }, color: "red" },
+      { location: { path: SAMPLE_REL, lines: { start: 3, end: 3 } }, color: "blue" },
+    ]);
     await waitFor("2色が同時に貼られる", async () => {
       const visuals = (await vscode.commands.executeCommand(
         "showme.test.inspectVisuals",

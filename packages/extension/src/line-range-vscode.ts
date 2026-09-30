@@ -1,4 +1,4 @@
-import { DEFAULT_HIGHLIGHT_COLOR } from "@zvx/vscode-showme-protocol";
+import type { HighlightColor } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
 import type { HighlightRange } from "./decorations.js";
 import { type LineRange, hasColumns } from "./line-range.js";
@@ -6,11 +6,11 @@ import { type LineRange, hasColumns } from "./line-range.js";
 /**
  * 1始まりの行範囲を vscode の値に直す。**`vscode` を値として読む側の葉**。
  *
- * `editor-surface.ts`（`show_code` の塗りと位置合わせ）と `annotations.ts`（注釈の塗り。
- * 増分6 D65）の両方がここを通る。塗りの**種類**（行全体か文字だけか）と既定色を決める
- * 関数は `toHighlightRange` の1つだけで、`show_code` の塗りと注釈の塗りが別々に決めると
- * 同じ列指定が片方でだけ効く（不変条件14）。判定そのもの（`hasColumns`）は純関数のまま
- * `line-range.ts` に置き、ここは vscode の型に写すだけである。
+ * `editor-surface.ts`（`show_code` / `annotate` の `reveal` の位置合わせ）と `annotations.ts`
+ * （吹き出しの位置と塗り。増分6 D65）の両方がここを通る。塗りの**種類**（行全体か文字だけか）を
+ * 決める関数は `toHighlightRange` の1つだけで、位置合わせと塗りが別々に決めると同じ列指定が
+ * 片方でだけ効く（不変条件14）。判定そのもの（`hasColumns`）は純関数のまま `line-range.ts` に置き、
+ * ここは vscode の型に写すだけである。
  */
 
 /**
@@ -38,13 +38,16 @@ export function toRange(range: LineRange): vscode.Range {
   );
 }
 
-/** 貼る範囲と種類。**種類を知っているのはここだけ**（`decorations.ts` に推測させない）。 */
-export function toHighlightRange(range: LineRange): HighlightRange {
-  // **色はここで既定に落とす。** 貼る側に `undefined` を渡すと、そちらでも
-  // 既定を決めることになり、既定が2箇所になる（不変条件14）。
+/**
+ * 貼る範囲と種類。**種類を知っているのはここだけ**（`decorations.ts` に推測させない）。
+ *
+ * 色は必ず受け取る。塗るのは注釈だけで（増分13 D116）、無印の色（灰）は注釈ストアが
+ * `UNMARKED_ANNOTATION_PAINT` に倒して渡す ―― ここに既定を持つと既定が2箇所になる（不変条件14）。
+ */
+export function toHighlightRange(range: LineRange, color: HighlightColor): HighlightRange {
   return {
     range: toRange(range),
     wholeLine: !hasColumns(range),
-    color: range.color ?? DEFAULT_HIGHLIGHT_COLOR,
+    color,
   };
 }

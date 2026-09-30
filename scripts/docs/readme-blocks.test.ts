@@ -164,7 +164,7 @@ describe("生成範囲の書き換えと検出", () => {
 
   it("--check は手で書き換えた範囲を、範囲の名前で咎める", () => {
     const good = applyRegions(doc(""), "en", src).text;
-    const edited = good.replace("Remove the agent's highlight.", "Remove highlights.");
+    const edited = good.replace("Remove all of the agent's annotations.", "Remove annotations.");
     const errors = checkAll({ en: edited, ja: null }, src, { only: ["regions"] });
     expect(errors.join("\n")).toMatch(/README\.md.*commands.*--write/);
   });
@@ -172,7 +172,7 @@ describe("生成範囲の書き換えと検出", () => {
   it("--check は古い範囲（元の宣言が変わった）を咎める", () => {
     const good = applyRegions(doc(""), "en", src).text;
     const changed = structuredClone(src);
-    changed.nls.en["showme.command.clearHighlights"] = "ShowMe: Remove highlights";
+    changed.nls.en["showme.command.clearAnnotations"] = "ShowMe: Remove annotations";
     const errors = checkAll({ en: good, ja: null }, changed, { only: ["regions"] });
     expect(errors.join("\n")).toMatch(/commands/);
     expect(checkAll({ en: good, ja: null }, src, { only: ["regions"] })).toEqual([]);
@@ -229,11 +229,11 @@ describe("本文の `ShowMe: …` の照合", () => {
 
   it("日本語版: 組が一致しない（別の命令の英語名）は失敗する", () => {
     const errors = checkNames(
-      "**ShowMe: 注釈を消す**（`ShowMe: Clear highlights`）を実行する。",
+      "**ShowMe: 注釈を消す**（`ShowMe: Show the operations log`）を実行する。",
       "ja",
       src,
     );
-    expect(errors.join("\n")).toMatch(/ShowMe: Clear highlights/);
+    expect(errors.join("\n")).toMatch(/ShowMe: Show the operations log/);
   });
 
   it("日本語版: 実在しない日本語名は失敗する", () => {
@@ -493,8 +493,10 @@ describe("名前の照合が見る場所・見ない場所", () => {
   it("見出しの名前は （ かバッククォートで終わり、日本語版の組として照合する", () => {
     const pair = "## ShowMe: 注釈を消す（`ShowMe: Clear annotations`）";
     expect(checkNames(pair, "ja", src)).toEqual([]);
-    const wrong = "## ShowMe: 注釈を消す（`ShowMe: Clear highlights`）";
-    expect(checkNames(wrong, "ja", src).join()).toMatch(/paired with "ShowMe: Clear highlights"/);
+    const wrong = "## ShowMe: 注釈を消す（`ShowMe: Show the operations log`）";
+    expect(checkNames(wrong, "ja", src).join()).toMatch(
+      /paired with "ShowMe: Show the operations log"/,
+    );
     expect(checkNames("## ShowMe: 注釈を消す", "ja", src).join()).toMatch(/must be followed/);
   });
 
@@ -532,7 +534,7 @@ describe("コマンドの CLI", () => {
     const en = path.join(dir, "README.md");
     fs.writeFileSync(
       en,
-      fs.readFileSync(en, "utf8").replace("Remove the agent's highlight.", "Remove it."),
+      fs.readFileSync(en, "utf8").replace("Remove all of the agent's annotations.", "Remove it."),
     );
     const drift = run(dir, "--check");
     expect(drift.status).not.toBe(0);

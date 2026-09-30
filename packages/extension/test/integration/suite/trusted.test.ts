@@ -39,6 +39,9 @@ import {
   NOT_ACTIVE_REL,
   OUTSIDE_MARKER,
   REPEATED_TEXT,
+  REVEAL_LINE,
+  REVEAL_MARKER,
+  REVEAL_REL,
   SAMPLE_REL,
   STAGE_MARKER,
   STAGE_RELS,
@@ -63,6 +66,7 @@ import {
   activeEditorSnapshot,
   annotate,
   annotateClear,
+  annotateRaw,
   annotationThread,
   arrangeCommands,
   arrangeEditors,
@@ -635,97 +639,66 @@ suite("実 VS Code / 信頼モード", () => {
   });
 
   /**
-   * 預けるのをやめたら、エージェントが描いた装飾が残らない（設計書 §5.4）。
-   *
-   * `extension.ts` の `applyRole` から `highlights.clearAll()` を**削除しても
-   * 全部緑だった**（実測）。統合テストが見ていたのは可視エディタと登録ファイル
-   * だけで、装飾はどちらにも出ない。「預けるのをやめても装飾が残る」は、
-   * 停止中と表示しながら描いたものが残るのと同じ嘘である。
+   * **`show_code` は塗らない**（増分13 D116）。開いてスクロールするだけで、コメントの無い塗りは
+   * 作らない。画家に何も預けていないことを観測面（`inspectVisuals`。画家が `setDecorations` に書く
+   * 唯一の帳簿）で言う。**開いたことを先に確かめる** ―― 開いていなければ「塗りが無い」は空で真になる。
+   * 結果は同じ解決関数の値なので、`text` の一致の列を持つ（D118）。
    */
-  test("預けるのをやめると、エージェントが描いた装飾が消える", async () => {
+  test("show_code は開いてスクロールするが、その範囲に装飾は無い（D116）", async () => {
     await lendWindow();
     const stageRel = STAGE_RELS[1];
     assert.ok(stageRel, "舞台用のフィクスチャが足りない");
     const uri = await stageUri(stageRel);
 
     const resolution = await showOne({ path: stageRel, text: STAGE_MARKER });
-    assert.strictEqual(resolution.match, "one", "ハイライトの前提が崩れている");
-    await waitFor("装飾を預かっている状態になる", async () =>
-      (await inspectVisuals()).highlightedUris.includes(uri.toString()),
+    assert.strictEqual(resolution.match, "one", "前提が崩れている（解決できない）");
+    await waitFor(
+      "舞台のファイルが可視エディタに現れる",
+      () => visibleEditorFor(uri) !== undefined,
     );
+    const editor = visibleEditorFor(uri);
+    assert.ok(editor, "開いたエディタが見えない");
+    // 結果の列は VS Code の文書の上の一致と同じ（UTF-16 の単位。D118）。
+    const line = asNumber((resolution.range as { startLine?: unknown })?.startLine, "startLine");
+    const column = editor.document.lineAt(line - 1).text.indexOf(STAGE_MARKER);
+    assert.ok(column >= 0, "前提が崩れている（行に目印が無い）");
+    assert.deepStrictEqual(resolution.range, {
+      startLine: line,
+      endLine: line,
+      startColumn: column,
+      endColumn: column + STAGE_MARKER.length,
+    });
+    assert.ok(showsLine(editor, line - 1), "位置までスクロールしていない");
 
-    await setRole("idle");
-    const after = await inspectVisuals();
+    // 遅れて塗る実装を見逃さないよう、少し待ってから見る。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const visuals = await inspectVisuals();
     assert.deepStrictEqual(
-      after.highlightedUris,
+      visuals.highlightRanges.filter((r) => r.uri === uri.toString()),
       [],
-      `預けるのをやめたのに装飾が残っている: ${after.highlightedUris.join(", ")}`,
+      `show_code の後にその範囲に装飾がある: ${JSON.stringify(visuals.highlightRanges)}`,
+    );
+    assert.ok(
+      !visuals.highlightedUris.includes(uri.toString()),
+      `show_code が画家に塗りを預けた: ${visuals.highlightedUris.join(", ")}`,
     );
   });
 
-  /**
-   * **スポットライトは窓ごと**（増分6 D67）。増分5 まではファイルごとに残した（LRU 32）
-   * ので、別のファイルへの `show_code` の後も前のファイルの塗りが残っていた。
-   * 人間には戻る手段も消す手段も無いものを残さない（§C1）。
-   */
-  test("別のファイルへ show_code すると、前のファイルのスポットライトが消える（D67）", async () => {
-    await lendWindow();
-    const [firstRel, secondRel] = STAGE_RELS;
-    const firstUri = await stageUriString(firstRel);
-    const secondUri = await stageUriString(secondRel);
-
-    const first = await showOne({ path: firstRel, text: STAGE_MARKER });
-    assert.strictEqual(first.match, "one", "1枚目の前提が崩れている");
-    await waitFor("1枚目に貼られる", async () =>
-      (await inspectVisuals()).highlightedUris.includes(firstUri),
-    );
-
-    const second = await showOne({ path: secondRel, text: STAGE_MARKER });
-    assert.strictEqual(second.match, "one", "2枚目の前提が崩れている");
-    await waitFor("2枚目に貼られる", async () =>
-      (await inspectVisuals()).highlightedUris.includes(secondUri),
-    );
-    // **1枚目のタブはまだ開いている**（`preview: false`。同じ列で2枚目の後ろに隠れて
-    // いるので可視エディタではなくタブで見る）のに、塗りだけが消えている。
-    // タブが閉じたから消えたのではない ―― 窓が置き換わったから消えた。
-    const firstTabOpen = vscode.window.tabGroups.all.some((group) =>
-      group.tabs.some(
-        (tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === firstUri,
-      ),
-    );
-    assert.ok(firstTabOpen, "1枚目のタブが閉じた（前提が崩れている）");
-    const after = await inspectVisuals();
-    assert.deepStrictEqual(
-      after.highlightedUris,
-      [secondUri],
-      `前のファイルの塗りが残っている: ${after.highlightedUris.join(", ")}`,
-    );
-  });
-
-  /**
-   * 観測面が**層**を言う（増分6 §C2）。`show_code` の塗りは `spotlight` で、注釈の塗り
-   * と同じ `highlightRanges` に並ぶ。層が無いと「互いを消していない」を言えない。
-   */
-  test("show_code の塗りは spotlight 層に載る（§C2）", async () => {
+  test("show_code の location.color は線上の検証で落ちる（D116: 効かない摘みを受けない）", async () => {
     await lendWindow();
     const stageRel = STAGE_RELS[2];
     assert.ok(stageRel, "舞台用のフィクスチャが足りない");
-    const uri = await stageUriString(stageRel);
-    const resolution = await showOne({ path: stageRel, text: STAGE_MARKER });
-    assert.strictEqual(resolution.match, "one", "前提が崩れている");
-    await waitFor("貼られる", async () => (await inspectVisuals()).highlightedUris.includes(uri));
-
-    const ranges = (await inspectVisuals()).highlightRanges;
-    assert.ok(ranges.length > 0, "highlightRanges が空");
-    assert.deepStrictEqual(
-      ranges.map((r) => r.layer),
-      ranges.map(() => "spotlight"),
-      `spotlight 以外の層が載っている: ${JSON.stringify(ranges)}`,
+    await assert.rejects(
+      async () =>
+        vscode.commands.executeCommand("showme.test.showCode", {
+          locations: [{ path: stageRel, text: STAGE_MARKER, color: "red" }],
+        }),
+      (e: unknown) => String(e).includes("color"),
+      "show_code の location.color が通った",
     );
-    assert.ok(
-      ranges.every((r) => r.uri === uri),
-      `1回の show_code の窓に別のファイルが残っている: ${JSON.stringify(ranges)}`,
-    );
+    // 肯定対照: color を外せば通る。
+    const ok = await showOne({ path: stageRel, text: STAGE_MARKER });
+    assert.strictEqual(ok.match, "one", "肯定対照が通らない");
   });
 
   /**
@@ -942,8 +915,9 @@ suite("実 VS Code / 信頼モード / 注釈", () => {
       },
     ]);
     assert.strictEqual(await bubbleCount(), 1, "前提が成立していない（吹き出しが出ていない）");
-    await waitFor("注釈の塗りが貼られる", async () =>
-      (await inspectVisuals()).highlightRanges.some((r) => r.layer === "annotation"),
+    await waitFor(
+      "注釈の塗りが貼られる",
+      async () => (await inspectVisuals()).highlightRanges.length > 0,
     );
 
     await setRole("idle");
@@ -952,7 +926,7 @@ suite("実 VS Code / 信頼モード / 注釈", () => {
     // ここが残るなら、役割の解除が画家の全消しに頼っていて、吹き出しと塗りの持ち主が割れている。
     const after = await inspectVisuals();
     assert.deepStrictEqual(
-      after.highlightRanges.filter((r) => r.layer === "annotation"),
+      after.highlightRanges,
       [],
       `預けるのをやめたのに注釈の塗りが残っている: ${JSON.stringify(after.highlightRanges)}`,
     );
@@ -1008,12 +982,10 @@ suite("実 VS Code / 信頼モード / 注釈", () => {
    */
   async function annotationRanges(): Promise<VisualState["highlightRanges"]> {
     const uri = await annotateUri();
-    return (await inspectVisuals()).highlightRanges.filter(
-      (r) => r.layer === "annotation" && r.uri === uri,
-    );
+    return (await inspectVisuals()).highlightRanges.filter((r) => r.uri === uri);
   }
 
-  test("色つきの注釈は行に塗られ（annotation 層・行全体）、無印は灰で塗られ、作者名は ShowMe のまま（D65 / D78）", async () => {
+  test("色つきの注釈は塗られ（text で指したら一致した文字列だけ）、無印は灰で塗られ、作者名は ShowMe のまま（D65 / D78 / D118）", async () => {
     await lendWindow();
     const resolutions = await annotate([
       { location: { path: ANNOTATE_REL, text: ANNOTATE_MARKER }, text: "赤く塗る", color: "red" },
@@ -1025,26 +997,39 @@ suite("実 VS Code / 信頼モード / 注釈", () => {
 
     const range = resolutions[0]?.range as { startLine?: unknown } | undefined;
     const startLine = asNumber(range?.startLine, "range.startLine");
+    // 一致の列は **VS Code の文書**から取る（全角が手前にある行。列が UTF-16 の単位で一致すること）。
+    const doc = await vscode.workspace.openTextDocument(
+      vscode.Uri.joinPath(workspaceRoot(), ANNOTATE_REL),
+    );
+    const column = doc.lineAt(startLine - 1).text.indexOf(ANNOTATE_MARKER);
+    assert.ok(column > 0, "前提が崩れている（目印の手前に文字が無い）");
     const painted = await annotationRanges();
     // 吹き出しは2件、塗りも2件: 色つきは自分の色、無印は灰（D78）。「無印は既定色（黄）で
     // 塗る」にも「無印は塗らない」（D65 の旧形）にも倒れていない。
     assert.strictEqual(painted.length, 2, `注釈層の塗りが2件でない: ${JSON.stringify(painted)}`);
     const shape = (r: (typeof painted)[number] | undefined) => ({
-      layer: r?.layer,
       color: r?.color,
       startLine: r?.startLine,
       wholeLine: r?.wholeLine,
     });
     const red = painted.find((r) => r.color === "red");
     const grey = painted.find((r) => r.color === "grey");
+    // text で指した赤は**一致した文字列の列だけ**（D118）。行全体ではない。
     assert.deepStrictEqual(
-      shape(red),
-      { layer: "annotation", color: "red", startLine: startLine - 1, wholeLine: true },
+      { ...shape(red), startColumn: red?.startColumn, endColumn: red?.endColumn },
+      {
+        color: "red",
+        startLine: startLine - 1,
+        wholeLine: false,
+        startColumn: column,
+        endColumn: column + ANNOTATE_MARKER.length,
+      },
       `色つきの塗りの中身が違う: ${JSON.stringify(painted)}`,
     );
+    // lines（列なし）の無印は行全体のまま。
     assert.deepStrictEqual(
       shape(grey),
-      { layer: "annotation", color: "grey", startLine: 0, wholeLine: true },
+      { color: "grey", startLine: 0, wholeLine: true },
       `無印の塗りの中身が違う: ${JSON.stringify(painted)}`,
     );
     // 灰は塗りだけで、作者名には出ない（注釈の語彙に灰は無い）。絵文字も付かない。
@@ -1100,11 +1085,10 @@ suite("実 VS Code / 信頼モード / 注釈", () => {
   });
 
   /**
-   * **同じ行に `show_code` の塗りと注釈の塗りが同時にあっても、互いを消さない**（§C2）。
-   * `setDecorations` は型ごとの全置換なので、2つの書き手が別々に書けば後から書いた
-   * ほうが前を消す。画家が1つで両層の和を書いていることを、同じ行で言う。
+   * **`show_code` は注釈の塗りを消さず、自分では塗らない**（増分13 D116 / §C2）。同じ行を
+   * `show_code` で開き直しても、塗りは注釈の1件だけのまま。
    */
-  test("同じ行に注釈（赤）と show_code（青）を重ねても、両方の層が残る（§C2）", async () => {
+  test("同じ行を show_code で開いても、注釈の塗りだけが残り、塗りは増えない（D116）", async () => {
     await lendWindow();
     const annotated = await annotate([
       { location: { path: ANNOTATE_REL, text: ANNOTATE_MARKER }, text: "赤い注釈", color: "red" },
@@ -1112,26 +1096,15 @@ suite("実 VS Code / 信頼モード / 注釈", () => {
     assert.strictEqual(annotated[0]?.match, "one", "注釈の前提が崩れている");
     await waitFor("注釈の塗りが貼られる", async () => (await annotationRanges()).length === 1);
 
-    const shown = await showOne({ path: ANNOTATE_REL, text: ANNOTATE_MARKER, color: "blue" });
+    const shown = await showOne({ path: ANNOTATE_REL, text: ANNOTATE_MARKER });
     assert.strictEqual(shown.match, "one", "show_code の前提が崩れている");
-    // 舞台と吹き出しは同じ1つの URI（D85）。両層がその URI の同じ行に載る。
-    const uri = await annotateUri();
-    await waitFor("スポットライトが貼られる", async () =>
-      (await inspectVisuals()).highlightRanges.some(
-        (r) => r.layer === "spotlight" && r.uri === uri,
-      ),
-    );
+    // 舞台と吹き出しは同じ1つの URI（D85）。開いたことを先に確かめる。
+    const uri = await stageUri(ANNOTATE_REL);
+    await waitFor("舞台に開く", () => visibleEditorFor(uri) !== undefined);
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
-    const line = asNumber((annotated[0]?.range as { startLine?: unknown })?.startLine, "line") - 1;
-    const onLine = (await inspectVisuals()).highlightRanges
-      .filter((r) => r.uri === uri && r.startLine === line)
-      .map((r) => `${r.layer}:${r.color}`)
-      .sort();
-    assert.deepStrictEqual(
-      onLine,
-      ["annotation:red", "spotlight:blue"],
-      `同じ行に両層が無い: ${onLine.join(", ")}`,
-    );
+    const onUri = (await annotationRanges()).map((r) => r.color);
+    assert.deepStrictEqual(onUri, ["red"], `塗りが注釈の1件だけでない: ${onUri.join(", ")}`);
   });
 
   /**
@@ -1159,6 +1132,118 @@ suite("実 VS Code / 信頼モード / 注釈", () => {
       { location: { path: ANNOTATE_REL, text: ANNOTATE_MARKER }, text: "通る", color: "red" },
     ]);
     assert.strictEqual(ok[0]?.match, "one", "肯定対照が通らない");
+  });
+
+  /**
+   * **`annotate` の `reveal`**（増分13 D117）。既定は開かない。`reveal: true` なら `show_code` と
+   * 同じ関数で、最初の吹き出しのファイルを舞台に開き、吹き出しの行までスクロールする。
+   * 目印は80行目（`REVEAL_LINE`）にあるので、見えていることがスクロールした証拠になる。
+   * 同じ行の目印の手前に全角とサロゲートペアがあり、塗りの列が VS Code の位置と一致すること
+   * （D118）も同じ場面で見る。
+   */
+  test("reveal 無しの annotate はファイルを開かない（D117 の既定）", async () => {
+    await lendWindow();
+    // 閉じ直さない（列を畳むと、後の節が前提にしている舞台の列が消える）。このファイルは
+    // 他の検査が一度も開かないので、開いていないことはこのままで言える。
+    const uri = await stageUri(REVEAL_REL);
+    const result = await annotateRaw({
+      items: [{ location: { path: REVEAL_REL, text: REVEAL_MARKER }, text: "開かない" }],
+    });
+    assert.strictEqual(result.resolutions[0]?.match, "one", JSON.stringify(result));
+    assert.ok(!("reveal" in result), `頼んでいないのに reveal が載った: ${JSON.stringify(result)}`);
+    // 遅れて開く実装を見逃さないよう、少し待ってから見る。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.strictEqual(visibleEditorFor(uri), undefined, "reveal 無しなのにファイルが見えている");
+    const open = vscode.window.tabGroups.all.some((group) =>
+      group.tabs.some(
+        (tab) =>
+          tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString(),
+      ),
+    );
+    assert.ok(!open, "reveal 無しなのにタブが開いた");
+    // 吹き出しは付いている（開かなくても注釈はする）。
+    assert.ok(
+      (await inspectVisuals()).annotatedUris.includes(uri.toString()),
+      "吹き出しが付いていない",
+    );
+    await annotateClear();
+  });
+
+  test("reveal: true でファイルが舞台に開き、吹き出しの行が見え、塗りは一致の列だけ（D117 / D118）", async () => {
+    await lendWindow();
+    // 閉じ直さない（列を畳むと、後の節が前提にしている舞台の列が消える）。このファイルは
+    // 他の検査が一度も開かないので、開いていないことはこのままで言える。
+    const uri = await stageUri(REVEAL_REL);
+    const result = await annotateRaw({
+      items: [
+        { location: { path: REVEAL_REL, text: REVEAL_MARKER }, text: "ここを見て", color: "green" },
+      ],
+      reveal: true,
+    });
+    assert.strictEqual(result.resolutions[0]?.match, "one", JSON.stringify(result));
+    assert.deepStrictEqual(result.reveal, { opened: true }, JSON.stringify(result));
+    assert.ok(annotateResultSchema.safeParse(result).success, "結果が線上の結果スキーマを通らない");
+
+    await waitFor(
+      "舞台のファイルが可視エディタに現れる",
+      () => visibleEditorFor(uri) !== undefined,
+    );
+    const editor = visibleEditorFor(uri);
+    assert.ok(editor, "開いたエディタが見えない");
+    // 舞台の URI（既定は映し。D85）で開いている ―― `show_code` と同じ開き方。
+    assert.strictEqual(editor.document.uri.toString(), uri.toString());
+    await waitFor("吹き出しの行までスクロールする", () => showsLine(editor, REVEAL_LINE - 1));
+    // 選択には触らない（不変条件3）。初めて開いた文書の選択は先頭の空の選択のままで、
+    // スクロールした先（80行目）へ動いていない ―― 動いていれば revealRange ではなく選択で合わせている。
+    assert.ok(
+      editor.selection.isEqual(new vscode.Selection(0, 0, 0, 0)),
+      `reveal が選択を動かした: ${JSON.stringify(editor.selection)}`,
+    );
+
+    // 塗りは一致した文字列の列だけ。列は VS Code の文書の上の位置（UTF-16 の単位）と一致する。
+    const text = editor.document.lineAt(REVEAL_LINE - 1).text;
+    const column = text.indexOf(REVEAL_MARKER);
+    assert.ok(column > 0, "前提が崩れている（目印の手前に文字が無い）");
+    assert.ok(
+      text.slice(0, column).length > [...text.slice(0, column)].length,
+      "前提が崩れている（目印の手前にサロゲートペアが無い）",
+    );
+    await waitFor("塗りが貼られる", async () =>
+      (await inspectVisuals()).highlightRanges.some((r) => r.uri === uri.toString()),
+    );
+    const painted = (await inspectVisuals()).highlightRanges.filter(
+      (r) => r.uri === uri.toString(),
+    );
+    assert.deepStrictEqual(
+      painted.map((r) => ({
+        startLine: r.startLine,
+        startColumn: r.startColumn,
+        endColumn: r.endColumn,
+        wholeLine: r.wholeLine,
+        color: r.color,
+      })),
+      [
+        {
+          startLine: REVEAL_LINE - 1,
+          startColumn: column,
+          endColumn: column + REVEAL_MARKER.length,
+          wholeLine: false,
+          color: "green",
+        },
+      ],
+      `塗りが一致の範囲でない: ${JSON.stringify(painted)}`,
+    );
+    await annotateClear();
+  });
+
+  test("clear に reveal を付けると線上の検証で落ちる（開く先が無い。D117）", async () => {
+    await lendWindow();
+    await assert.rejects(
+      async () =>
+        vscode.commands.executeCommand("showme.test.annotate", { mode: "clear", reveal: true }),
+      (e: unknown) => String(e).includes("reveal"),
+      "clear に reveal を付けても拒否されなかった",
+    );
   });
 
   test("除外パスには注釈を出さない（観測面にも載らない。D72 の「伏せ字の分岐は無い」の根拠）", async () => {
@@ -1476,29 +1561,25 @@ suite("実 VS Code / 信頼モード / 注釈の順番と id", () => {
 });
 
 /**
- * 人間向けの消す命令（増分6 D68）。**ShowMe: Clear highlights** / **ShowMe: Clear annotations**。
+ * 人間向けの消す命令（増分6 D68）。**ShowMe: Clear annotations**。
  *
- * どちらも人間の操作であって、エージェントへの入力路ではない（§C5: 設定が縛るのは
+ * 人間の操作であって、エージェントへの入力路ではない（§C5: 設定が縛るのは
  * エージェントであって人間ではない）。だから窓を預けていなくても効く。
- * 2つは独立している ―― Clear highlights は `show_code` のスポットライトだけ、
- * Clear annotations は吹き出しと注釈の塗りだけを消す。片方を消して他方が残ることを
- * 同じ観測で言わないと、両層ごと消す実装でも片方ずつは緑になる。
+ * 塗りを持つのは注釈だけなので（増分13 D116）、吹き出しと塗りが一緒に消える。
+ * **ShowMe: Clear highlights** は `show_code` の塗りと一緒に消した。
  */
 suite("実 VS Code / 信頼モード / 人間の消す命令（D68）", () => {
   suiteSetup(async () => {
     await activateExtension();
   });
 
-  /** 両方を消して次の節に持ち越さない。命令そのものが役割に依らず効くので、預け直さない。 */
+  /** 次の節に持ち越さない。命令そのものが役割に依らず効くので、預け直さない。 */
   suiteTeardown(async () => {
     await vscode.commands.executeCommand("showme.clearAnnotations");
-    await vscode.commands.executeCommand("showme.clearHighlights");
   });
 
   /** 舞台（と吹き出し）の URI（D85: 既定は映し）。 */
   const uriOf = (rel: string): Promise<string> => stageUriString(rel);
-  const annotationLayer = (visuals: VisualState): VisualState["highlightRanges"] =>
-    visuals.highlightRanges.filter((r) => r.layer === "annotation");
   const isTabOpen = (uri: string): boolean =>
     vscode.window.tabGroups.all.some((group) =>
       group.tabs.some(
@@ -1506,54 +1587,25 @@ suite("実 VS Code / 信頼モード / 人間の消す命令（D68）", () => {
       ),
     );
 
-  test("Clear highlights でスポットライトが消え、タブは開いたまま", async () => {
-    await lendWindow();
-    const rel = STAGE_RELS[0];
-    assert.ok(rel, "舞台用のフィクスチャが足りない");
-    const uri = await uriOf(rel);
-    const shown = await showOne({ path: rel, text: STAGE_MARKER });
-    assert.strictEqual(shown.match, "one", "show_code の前提が崩れている");
-    await waitFor("スポットライトが貼られる", async () =>
-      (await inspectVisuals()).highlightedUris.includes(uri),
-    );
-
-    await vscode.commands.executeCommand("showme.clearHighlights");
-
-    const after = await inspectVisuals();
-    assert.deepStrictEqual(
-      after.highlightedUris,
-      [],
-      `Clear highlights の後に塗りが残っている: ${after.highlightedUris.join(", ")}`,
-    );
-    // 消したのは塗りであって、タブではない。タブが閉じたから塗りが無いのではない。
-    assert.ok(isTabOpen(uri), "Clear highlights がタブを閉じた");
-  });
-
-  test("Clear annotations で吹き出しと注釈の塗りが消え、別ファイルのスポットライトは残る", async () => {
+  test("Clear annotations で吹き出しと注釈の塗りが消え、開いているタブはそのまま", async () => {
     await lendWindow();
     const stageRel = STAGE_RELS[1];
     assert.ok(stageRel, "舞台用のフィクスチャが足りない");
     const stagedUri = await uriOf(stageRel);
-    const shown = await showOne({ path: stageRel, text: STAGE_MARKER, color: "blue" });
+    const shown = await showOne({ path: stageRel, text: STAGE_MARKER });
     assert.strictEqual(shown.match, "one", "show_code の前提が崩れている");
-    await waitFor("スポットライトが貼られる", async () =>
-      (await inspectVisuals()).highlightedUris.includes(stagedUri),
-    );
+    await waitFor("舞台のタブが開く", () => isTabOpen(stagedUri));
     const annotated = await annotate([
       { location: { path: ANNOTATE_REL, text: ANNOTATE_MARKER }, text: "消える", color: "red" },
     ]);
     assert.strictEqual(annotated[0]?.match, "one", "注釈の前提が崩れている");
     await waitFor(
       "注釈の塗りが貼られる",
-      async () => annotationLayer(await inspectVisuals()).length === 1,
+      async () => (await inspectVisuals()).highlightRanges.length === 1,
     );
-    // 前提: 消す前に両方が出ている。出ていなければ「消えた」は空虚に真になる。
+    // 前提: 消す前に出ている。出ていなければ「消えた」は空虚に真になる。
     const before = await inspectVisuals();
     assert.strictEqual(before.annotatedUris.length, 1, "前提が崩れている（吹き出しが無い）");
-    assert.ok(
-      before.highlightedUris.includes(stagedUri),
-      "前提が崩れている（スポットライトが無い）",
-    );
 
     await vscode.commands.executeCommand("showme.clearAnnotations");
 
@@ -1563,57 +1615,31 @@ suite("実 VS Code / 信頼モード / 人間の消す命令（D68）", () => {
     );
     const after = await inspectVisuals();
     assert.deepStrictEqual(after.annotatedUris, [], "吹き出しが残っている");
-    // 注釈の塗りは注釈と一緒に消える（D66 の経路の1つ）。
+    // 注釈の塗りは注釈と一緒に消える（D66 の経路の1つ）。塗りは他に無い（D116）。
     assert.deepStrictEqual(
-      annotationLayer(after),
+      after.highlightRanges,
       [],
-      `注釈の塗りが残っている: ${JSON.stringify(after.highlightRanges)}`,
+      `塗りが残っている: ${JSON.stringify(after.highlightRanges)}`,
     );
-    // スポットライトは Clear annotations の対象ではない。
-    assert.deepStrictEqual(
-      after.highlightedUris,
-      [stagedUri],
-      `Clear annotations がスポットライトに触った: ${after.highlightedUris.join(", ")}`,
-    );
+    assert.deepStrictEqual(after.highlightedUris, []);
+    // 消したのは注釈であって、タブではない。
+    assert.ok(isTabOpen(stagedUri), "Clear annotations がタブを閉じた");
   });
 
-  test("同じ行の注釈は Clear highlights で消えない（2つの命令は独立）", async () => {
-    await lendWindow();
-    const uri = await uriOf(ANNOTATE_REL);
-    const annotated = await annotate([
-      { location: { path: ANNOTATE_REL, text: ANNOTATE_MARKER }, text: "残る", color: "red" },
-    ]);
-    assert.strictEqual(annotated[0]?.match, "one", "注釈の前提が崩れている");
-    const line = asNumber((annotated[0]?.range as { startLine?: unknown })?.startLine, "line") - 1;
-    const shown = await showOne({ path: ANNOTATE_REL, text: ANNOTATE_MARKER, color: "blue" });
-    assert.strictEqual(shown.match, "one", "show_code の前提が崩れている");
-    const layersOnLine = async (): Promise<string[]> =>
-      (await inspectVisuals()).highlightRanges
-        .filter((r) => r.uri === uri && r.startLine === line)
-        .map((r) => `${r.layer}:${r.color}`)
-        .sort();
-    await waitFor("同じ行に両層が載る", async () => (await layersOnLine()).length === 2);
-    assert.deepStrictEqual(await layersOnLine(), ["annotation:red", "spotlight:blue"]);
-
-    await vscode.commands.executeCommand("showme.clearHighlights");
-
-    const after = await inspectVisuals();
-    assert.deepStrictEqual(
-      await layersOnLine(),
-      ["annotation:red"],
-      `Clear highlights が注釈の塗りに触った: ${JSON.stringify(after.highlightRanges)}`,
-    );
-    assert.strictEqual(after.annotatedUris.length, 1, "Clear highlights が吹き出しを消した");
-  });
-
-  test("窓を預けていなくても命令は登録されていて、呼んでも失敗しない（§C5）", async () => {
+  test("窓を預けていなくても命令は登録されていて、呼んでも失敗しない（§C5）。Clear highlights は無い", async () => {
     await setRole("idle");
     const commands = await vscode.commands.getCommands(true);
-    for (const id of ["showme.clearHighlights", "showme.clearAnnotations"]) {
-      assert.ok(commands.includes(id), `コマンドが登録されていない: ${id}`);
-      // 人間の操作なので役割で拒否しない。消すものが無くても成功する。
-      await vscode.commands.executeCommand(id);
-    }
+    assert.ok(
+      commands.includes("showme.clearAnnotations"),
+      "コマンドが登録されていない: showme.clearAnnotations",
+    );
+    // 人間の操作なので役割で拒否しない。消すものが無くても成功する。
+    await vscode.commands.executeCommand("showme.clearAnnotations");
+    // 塗りだけを消す命令は無い（増分13 D116。塗りを持つのは注釈だけ）。
+    assert.ok(
+      !commands.includes("showme.clearHighlights"),
+      "showme.clearHighlights が登録されている",
+    );
     const after = await inspectVisuals();
     assert.deepStrictEqual(after.highlightedUris, []);
     assert.deepStrictEqual(after.annotatedUris, []);
@@ -3952,51 +3978,12 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
   });
 
   /**
-   * **片づけたのに指差しが残るのは片づけていない**（増分6 D67）。`close-own` は
-   * `show_code` のスポットライトも消す。人間の `keep.md` は開いたままなので、
-   * 「タブが全部閉じたから塗りも無い」ではなく、片づけが塗りを消したことを言う。
-   */
-  test("close-own で show_code のスポットライトも消える（D67）", async () => {
-    await closeEverythingForArrange();
-    assertLayoutSetting("closeHumanTabs", undefined);
-    assertLayoutSetting("closeDirtyTabs", undefined);
-
-    await openHumanTab(ARRANGE_KEEP_REL);
-    await showCode([{ path: ARRANGE_PLAIN_REL, lines: { start: 1, end: 1 } }]);
-    await waitFor("2枚のタブが開く", () => arrangeTabs().length === 2);
-    const plainUri = await stageUriString(ARRANGE_PLAIN_REL);
-    await waitFor("スポットライトが貼られる", async () =>
-      (await inspectVisuals()).highlightedUris.includes(plainUri),
-    );
-    assert.strictEqual(
-      vscode.window.tabGroups.activeTabGroup.activeTab?.label,
-      "keep.md",
-      "人間が見ているタブが keep.md でない（前提が崩れている）",
-    );
-
-    const result = await arrangeEditors("close-own");
-    assert.strictEqual(result.done, true, `done が true でない: ${JSON.stringify(result)}`);
-    assert.strictEqual(result.closed, 1, `閉じた枚数が1でない: ${JSON.stringify(result)}`);
-    await waitFor("自分の1枚が消える", () => arrangeTabs().length === 1);
-    assert.deepStrictEqual(arrangeTabLabels(), ["keep.md"], "人間の keep.md が巻き込まれた");
-
-    const after = await inspectVisuals();
-    assert.deepStrictEqual(
-      after.highlightedUris,
-      [],
-      `片づけたのにスポットライトが残っている: ${after.highlightedUris.join(", ")}`,
-    );
-  });
-
-  /**
    * **注釈の塗りは `show_code` でも `close-own` でも消えない**（増分6 D66 / §C2）。
    *
-   * スポットライト（D67）は窓ごとに置き換わり、片づけでも消える。注釈の塗りは注釈の
-   * 寿命なので、別ファイルへの `show_code` の後も、`close-own` の後も残る。
-   * 両方を同じ場面で見る ―― 「スポットライトが消えた」と「注釈の塗りが残った」を
-   * 同じ観測で言わないと、`clearAll()` で両層ごと消す実装でも片方ずつは緑になる。
+   * 注釈の塗りは注釈の寿命なので、別ファイルへの `show_code` の後も、`close-own` の後も残る。
+   * `show_code` を開いたファイルには塗りが無い（増分13 D116）。
    */
-  test("annotate の塗りは show_code 別ファイルでも close-own でも残り、スポットライトだけ消える（D66）", async () => {
+  test("annotate の塗りは show_code 別ファイルでも close-own でも残り、show_code は塗らない（D66 / D116）", async () => {
     await closeEverythingForArrange();
     assertLayoutSetting("closeHumanTabs", undefined);
     assertLayoutSetting("closeDirtyTabs", undefined);
@@ -4008,7 +3995,7 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
     const layersOf = (visuals: VisualState, uri: string): string[] =>
       visuals.highlightRanges
         .filter((r) => r.uri === uri)
-        .map((r) => `${r.layer}:${r.color}`)
+        .map((r) => r.color)
         .sort();
 
     // 注釈は other.md の1行目に赤。吹き出しはタブを開かない（塗りは可視になったとき貼る）。
@@ -4021,20 +4008,22 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
     ]);
     assert.strictEqual(annotated[0]?.match, "one", "注釈の前提が崩れている");
     await waitFor("注釈の塗りが層に載る", async () =>
-      layersOf(await inspectVisuals(), otherUri).includes("annotation:red"),
+      layersOf(await inspectVisuals(), otherUri).includes("red"),
     );
 
-    // 別ファイルへ show_code（黄）。スポットライトは plain.md に、注釈の塗りは other.md に。
-    await showCode([{ path: ARRANGE_PLAIN_REL, lines: { start: 1, end: 1 }, color: "yellow" }]);
+    // 別ファイルへ show_code。plain.md は開くが塗らない。注釈の塗りは other.md に残る。
+    await showCode([{ path: ARRANGE_PLAIN_REL, lines: { start: 1, end: 1 } }]);
     await waitFor("2枚のタブが開く", () => arrangeTabs().length === 2);
-    await waitFor("スポットライトが貼られる", async () =>
-      layersOf(await inspectVisuals(), plainUri).includes("spotlight:yellow"),
-    );
     const mid = await inspectVisuals();
     assert.deepStrictEqual(
       layersOf(mid, otherUri),
-      ["annotation:red"],
+      ["red"],
       `show_code で注釈の塗りが消えた: ${JSON.stringify(mid.highlightRanges)}`,
+    );
+    assert.deepStrictEqual(
+      layersOf(mid, plainUri),
+      [],
+      `show_code が塗った: ${JSON.stringify(mid.highlightRanges)}`,
     );
     assert.strictEqual(
       vscode.window.tabGroups.activeTabGroup.activeTab?.label,
@@ -4048,13 +4037,8 @@ suite("実 VS Code / 信頼モード / arrange_editors は人間のタブを閉�
 
     const after = await inspectVisuals();
     assert.deepStrictEqual(
-      layersOf(after, plainUri),
-      [],
-      `片づけたのにスポットライトが残っている: ${JSON.stringify(after.highlightRanges)}`,
-    );
-    assert.deepStrictEqual(
       layersOf(after, otherUri),
-      ["annotation:red"],
+      ["red"],
       `close-own で注釈の塗りが消えた: ${JSON.stringify(after.highlightRanges)}`,
     );
   });
@@ -5218,27 +5202,27 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
     }));
   }
 
-  /** そのファイルのスポットライト層の塗り（0始まりの行）。 */
-  function spotlightLinesOf(visuals: VisualState, uri: vscode.Uri): number[] {
+  /** そのファイルの塗り（0始まりの行）。`show_code` は塗らないので、ここは空のはず（D116）。 */
+  function paintedLinesOf(visuals: VisualState, uri: vscode.Uri): number[] {
     return visuals.highlightRanges
-      .filter((r) => r.uri === uri.toString() && r.layer === "spotlight")
+      .filter((r) => r.uri === uri.toString())
       .map((r) => r.startLine)
       .sort();
   }
 
   /**
-   * **`stage` を切ると `show_code` は印だけ**（増分6 D75 / D76 / §C5）。
+   * **`stage` を切ると `show_code` は位置を解決して返すだけ**（増分6 D75 / D76 / §C5、増分13 D116）。
    *
-   * 位置は解決して返し、塗りはスポットライトに登録するが、**開かない・スクロール
-   * しない・列を作らない**。設定が縛るのはエージェントであって人間ではないので、
-   * 人間が自分でそのファイルを開くと塗りが見える。ステータスバーには `path:line`
-   * が出る（開かない結果を黙らせない）。
+   * 位置は解決して返すが、**開かない・スクロールしない・列を作らない**。塗りも無い
+   * （`show_code` はもう塗らない ―― 人間が自分でそのファイルを開いても塗りは無い）。
+   * ステータスバーには `path:line` が出る（開かない結果を黙らせない）。
+   * `annotate { reveal: true }` も同じ関数で開くので、同じく開かない（D117）。
    *
    * 「開かない」を言うには開いていないファイルが要る（`MARK_ONLY_RELS`。他の検査と
    * 共有しない）。タブは**列ごとの集合**で前後を比べる ―― 枚数だけでは「別の列に
    * 開いた」が判別しない。
    */
-  test("stage を切ると show_note は断られ、show_code は開かずに印だけ付ける（D75 / D76）", async () => {
+  test("stage を切ると show_note は断られ、show_code は開かずに位置だけ返す（D75 / D76 / D116）", async () => {
     const [oneRel, twoRel] = MARK_ONLY_RELS;
     const oneUri = vscode.Uri.joinPath(workspaceRoot(), oneRel);
     const twoUri = vscode.Uri.joinPath(workspaceRoot(), twoRel);
@@ -5279,15 +5263,15 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
         "stage を切ったのにエディタが見えている",
       );
 
-      // 塗りは**登録されている**（見えていないので貼れないが、観測面には出る）。
+      // 塗りは**登録されない**（増分13 D116。以前は開いたときに貼る塗りを登録していた）。
       const marked = await inspectVisuals();
       assert.ok(
-        marked.highlightedUris.includes(oneUri.toString()),
-        `印が登録されていない: ${marked.highlightedUris.join(", ")}`,
+        !marked.highlightedUris.includes(oneUri.toString()),
+        `show_code が塗りを預けた: ${marked.highlightedUris.join(", ")}`,
       );
       assert.deepStrictEqual(
-        spotlightLinesOf(marked, oneUri),
-        [2],
+        paintedLinesOf(marked, oneUri),
+        [],
         JSON.stringify(marked.highlightRanges),
       );
       // ステータスバーに `path:line`（1始まり）。開かない結果の唯一の痕跡。
@@ -5300,15 +5284,33 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
         `ステータスバーが印だと言っていない: ${marked.statusBar.text}`,
       );
 
-      // --- 人間が開く（§C5: 設定は人間を縛らない）→ 塗りが見える ---
+      // --- annotate の reveal も開かない（同じ関数。D117）。吹き出しは付く ---
+      const revealed = await annotateRaw({
+        items: [{ location: { path: oneRel, text: MARK_ONLY_MARKER }, text: "開かない" }],
+        reveal: true,
+      });
+      assert.strictEqual(revealed.resolutions[0]?.match, "one", JSON.stringify(revealed));
+      assert.deepStrictEqual(
+        revealed.reveal,
+        { opened: false, reason: "stage-disabled" },
+        JSON.stringify(revealed),
+      );
+      assert.deepStrictEqual(
+        tabSnapshot(),
+        before,
+        "stage を切ったのに annotate reveal がタブを開いた",
+      );
+      await annotateClear();
+
+      // --- 人間が開く（§C5: 設定は人間を縛らない）→ 塗りは無い（show_code は塗らない） ---
       const doc = await vscode.workspace.openTextDocument(oneUri);
       await vscode.window.showTextDocument(doc, { viewColumn: 1, preview: false });
       await waitFor("人間が開いたエディタが見える", () => visibleEditorFor(oneUri) !== undefined);
       const opened = await inspectVisuals();
       assert.deepStrictEqual(
-        spotlightLinesOf(opened, oneUri),
-        [2],
-        `人間が開いたのに塗りが無い: ${JSON.stringify(opened.highlightRanges)}`,
+        paintedLinesOf(opened, oneUri),
+        [],
+        `show_code の塗りが人間の開いたエディタに出た: ${JSON.stringify(opened.highlightRanges)}`,
       );
       assert.ok(visibleEditorFor(oneUri), "人間が開いたエディタが消えた");
 
@@ -5340,13 +5342,13 @@ suite("実 VS Code / 信頼モード / list_workspaces は自分にできるこ�
       assert.strictEqual(visibleEditorFor(twoUri), undefined, "2本目が見えている");
       const split = await inspectVisuals();
       assert.deepStrictEqual(
-        spotlightLinesOf(split, oneUri),
-        [2],
+        paintedLinesOf(split, oneUri),
+        [],
         JSON.stringify(split.highlightRanges),
       );
       assert.deepStrictEqual(
-        spotlightLinesOf(split, twoUri),
-        [2],
+        paintedLinesOf(split, twoUri),
+        [],
         JSON.stringify(split.highlightRanges),
       );
       assert.ok(

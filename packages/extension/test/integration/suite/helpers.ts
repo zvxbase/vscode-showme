@@ -97,6 +97,19 @@ export async function annotate(
 }
 
 /**
+ * テスト専用コマンド経由で `annotate` を**引数そのまま**呼び、結果を丸ごと返す（増分13 D117 の
+ * `reveal` を見るため。`annotate()` は `resolutions` だけを返す）。線上と同じ検証を通る。
+ */
+export async function annotateRaw(
+  args: Record<string, unknown>,
+): Promise<{ resolutions: RawResolution[]; reveal?: { opened: boolean; reason?: string } }> {
+  const raw = await vscode.commands.executeCommand("showme.test.annotate", args);
+  const result = raw as { resolutions?: unknown; reveal?: unknown };
+  assert.ok(Array.isArray(result.resolutions), "resolutions が配列で返らなかった");
+  return result as { resolutions: RawResolution[]; reveal?: { opened: boolean; reason?: string } };
+}
+
+/**
  * テスト専用コマンド経由で `annotate` の `mode: "clear"` を呼ぶ（設計 D54）。
  *
  * `items` は**渡さない**（線上のスキーマが落とす。付けると意図が曖昧になる）。
@@ -892,13 +905,12 @@ export function tabGroupCount(): number {
 export interface VisualState {
   highlightedUris: string[];
   /**
-   * いま貼っている範囲と、その**層**（増分6 §C2）。`spotlight` は `show_code` のもの、
-   * `annotation` は注釈ストアのもの。`highlightedUris` は両層の和なので、
-   * 「どちらの塗りが残ったか」はここでしか言えない。
+   * いま貼っている範囲（増分6 §C2）。塗りを持つのは注釈だけ（増分13 D116。`show_code` は塗らない）
+   * なので、層の名前は無い。列（`startColumn` / `endColumn`）で「`text` で指したら一致した文字列
+   * だけを塗る」（D118）を言う。
    */
   highlightRanges: Array<{
     uri: string;
-    layer: "spotlight" | "annotation";
     startLine: number;
     startColumn: number;
     endColumn: number;

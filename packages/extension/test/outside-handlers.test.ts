@@ -65,7 +65,6 @@ function showCodeSpy(root: string, allow: boolean, limiter = new RateLimiter()) 
       reveal: async (relPath) => {
         revealed.push(relPath);
       },
-      setSpotlight: () => undefined,
     },
     log: { info: () => undefined },
     statusBar: {
@@ -106,7 +105,8 @@ describe("show_code とワークスペースの外（D102）", () => {
       {
         resolvedBy: "text",
         match: "one",
-        range: { startLine: 2, endLine: 2 },
+        // text の一致の列（D118）。
+        range: { startLine: 2, endLine: 2, startColumn: 0, endColumn: 6 },
         normalizedPath: agentSpelling(abs),
       },
     ]);

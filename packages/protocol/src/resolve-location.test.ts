@@ -24,7 +24,8 @@ describe("resolveLocation", () => {
     const r = resolveLocation({ path: "a.ts", text: "function parseHeader" }, deps());
     expect(r.match).toBe("one");
     expect(r.resolvedBy).toBe("text");
-    expect(r.range).toEqual({ startLine: 2, endLine: 2 });
+    // 一致した文字列の列範囲（D118）。0始まり、終端は含まない。
+    expect(r.range).toEqual({ startLine: 2, endLine: 2, startColumn: 0, endColumn: 20 });
   });
 
   it("見つからないときは none と not-found を返す", () => {
@@ -71,7 +72,7 @@ describe("resolveLocation", () => {
   it("occurrence で候補から1つ選べる", () => {
     const r = resolveLocation({ path: "a.ts", text: "parseHeader", occurrence: 2 }, deps());
     expect(r.match).toBe("one");
-    expect(r.range).toEqual({ startLine: 5, endLine: 5 });
+    expect(r.range).toEqual({ startLine: 5, endLine: 5, startColumn: 0, endColumn: 11 });
   });
 
   it("occurrence が範囲外なら none", () => {
@@ -259,13 +260,14 @@ describe("列は両方そろったときだけ通る（設計 D34）", () => {
     expect(out.range).toEqual({ startLine: 2, endLine: 2, startColumn: 0, endColumn: 2 });
   });
 
-  it("text で解決したときは列を持たない（行全体のまま）", () => {
-    // text 照合は行単位なので、列を名乗れない。名乗ると嘘の精度になる。
+  it("text で解決したときは一致した文字列の列を持つ（増分13 D118。以前は行全体だった）", () => {
+    // 以前は「text 照合は行単位なので列を名乗れない」としていたが、一致した文字列の位置は
+    // 照合そのものが知っている（`indexOf`）。塗りを文字列だけにするためにその値を返す。
     const out = resolveLocation(
       { path: "a.txt", text: "bbb" },
       deps({ readText, findSymbol: () => undefined }),
     );
-    expect(out.range).toEqual({ startLine: 2, endLine: 2 });
+    expect(out.range).toEqual({ startLine: 2, endLine: 2, startColumn: 0, endColumn: 3 });
   });
 });
 
@@ -293,5 +295,102 @@ describe("normalizePath を注入したら、その結果で読み・秘匿を�
       { isRedacted: () => false, readText: () => "x", findSymbol: () => undefined },
     );
     expect(r).toEqual({ resolvedBy: "none", match: "none", reason: "invalid-path" });
+  });
+});
+
+/**
+ * `text` の一致は**一致した文字列の列範囲**を返す（増分13 D118）。列は VS Code の `Position.character`
+ * と同じ UTF-16 の単位で数える ―― 全角やサロゲートペアが手前にあってもずれないこと。
+ */
+describe("text の一致の列（D118）", () => {
+  const one = (content: string, text: string, occurrence?: number) =>
+    resolveLocation(
+      occurrence === undefined ? { path: "a.ts", text } : { path: "a.ts", text, occurrence },
+      deps({ readText: () => content }),
+    );
+
+  it("行の途中の一致は、その文字列だけの列範囲", () => {
+    const r = one("const a = 1;\nlet value = parse(x);\n", "parse(x)");
+    expect(r.range).toEqual({ startLine: 2, endLine: 2, startColumn: 12, endColumn: 20 });
+  });
+
+  it("手前に全角の文字があっても UTF-16 の単位で数える（1文字 = 1単位）", () => {
+    const r = one("// 日本語の説明 needle\n", "needle");
+    // "// " = 3, "日本語の説明" = 6, " " = 1
+    expect(r.range).toEqual({ startLine: 1, endLine: 1, startColumn: 10, endColumn: 16 });
+  });
+
+  it("手前にサロゲートペア（絵文字）があれば2単位として数える", () => {
+    const content = `x = "${"\u{1F600}"}"; needle\n`;
+    const r = one(content, "needle");
+    // 'x = "' = 5, 絵文字 = 2, '"; ' = 3
+    expect(r.range).toEqual({ startLine: 1, endLine: 1, startColumn: 10, endColumn: 16 });
+    expect(content.indexOf("needle")).toBe(10);
+  });
+
+  it("探す文字列そのものが全角・サロゲートペアを含んでも、終端は UTF-16 の長さ", () => {
+    const needle = `名前${"\u{1F600}"}`;
+    const r = one(`a ${needle} b\n`, needle);
+    expect(r.range).toEqual({ startLine: 1, endLine: 1, startColumn: 2, endColumn: 6 });
+  });
+
+  /**
+   * **1行に2回以上現れたら列を返さず、行全体**。`occurrence` は行を数えるので、同じ行の2つ目の
+   * 一致は指せない ―― 最初の一致の列を返すと、2つ目を指したつもりの呼び出しが黙って1つ目を塗る。
+   * 行全体に倒す（件数は漏らさない。不変条件4）。1つに絞るのは `lines` の列で。
+   */
+  it("1行に2回現れたら、列を返さず行全体（どちらを指したか決められない）", () => {
+    const r = one("f(a).g(a)\n", "a");
+    expect(r.match).toBe("one");
+    expect(r.range).toEqual({ startLine: 1, endLine: 1 });
+  });
+
+  it("重なる一致（aa の中の aaa など）も2回と数えて行全体", () => {
+    const r = one("xaaay\n", "aa");
+    expect(r.range).toEqual({ startLine: 1, endLine: 1 });
+  });
+
+  it("occurrence で選んだ行に2回あれば行全体、1回の行なら列（行を数える意味は変えない）", () => {
+    const content = "a once\nb a a twice\n";
+    expect(one(content, "a", 1).range).toEqual({
+      startLine: 1,
+      endLine: 1,
+      startColumn: 0,
+      endColumn: 1,
+    });
+    expect(one(content, "a", 2).range).toEqual({ startLine: 2, endLine: 2 });
+  });
+
+  it("対照: 1行に1回だけなら列を返す", () => {
+    const r = one("f(a).g(b)\n", "a");
+    expect(r.range).toEqual({ startLine: 1, endLine: 1, startColumn: 2, endColumn: 3 });
+  });
+
+  it("occurrence で選んだ行でも列が付く", () => {
+    const r = one("  needle\nx needle\n", "needle", 2);
+    expect(r.range).toEqual({ startLine: 2, endLine: 2, startColumn: 2, endColumn: 8 });
+  });
+
+  it("CRLF の行でも列は変わらない", () => {
+    const r = one("a\r\n  needle\r\n", "needle");
+    expect(r.range).toEqual({ startLine: 2, endLine: 2, startColumn: 2, endColumn: 8 });
+  });
+
+  it("先頭の BOM は数えない（VS Code は文書の本文から BOM を外す）", () => {
+    const r = one("\uFEFFneedle\n", "needle");
+    expect(r.range).toEqual({ startLine: 1, endLine: 1, startColumn: 0, endColumn: 6 });
+  });
+
+  it("対照: symbol と列なしの lines は行全体のまま（列を付けない）", () => {
+    const s = resolveLocation({ path: "a.ts", symbol: "parseHeader" }, deps());
+    expect(s.range).toEqual({ startLine: 2, endLine: 4 });
+    const l = resolveLocation({ path: "a.ts", lines: { start: 1, end: 2 } }, deps());
+    expect(l.range).toEqual({ startLine: 1, endLine: 2 });
+  });
+
+  it("many の候補には列を付けない（行だけ）", () => {
+    const r = one("needle\n  needle\n", "needle");
+    expect(r.match).toBe("many");
+    expect(r.candidates).toEqual([{ line: 1 }, { line: 2 }]);
   });
 });

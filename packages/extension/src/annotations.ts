@@ -157,13 +157,14 @@ export class Annotations implements vscode.Disposable {
       thread,
     };
     // **無印は灰で塗る（増分6.1 D78。D65 の「塗らない」を撤回）。** 灰は protocol の
-    // `UNMARKED_ANNOTATION_PAINT` 1つが決め、ここはそれに倒すだけ。塗る色は `show_code` と
-    // 同じ語彙・同じ表（`HIGHLIGHT_RGBA`）で、注釈の色（灰無し）はその部分集合なのでそのまま通る。
+    // `UNMARKED_ANNOTATION_PAINT` 1つが決め、ここはそれに倒すだけ。塗る色はハイライトの
+    // 語彙・表（`HIGHLIGHT_RGBA`）で、注釈の色（灰無し）はその部分集合なのでそのまま通る。
+    // `text` で指した位置は一致した文字列の列を持つので、塗りもその列だけになる（増分13 D118）。
     // `entry.color` は `undefined` のまま ―― 作者名も観測面も無印のまま（灰はエージェントの色ではない）。
     this.highlights.setAnnotation(
       entry.key,
       uri,
-      toHighlightRange({ ...range, color: color ?? UNMARKED_ANNOTATION_PAINT }),
+      toHighlightRange(range, color ?? UNMARKED_ANNOTATION_PAINT),
     );
 
     this.entries.push(entry);

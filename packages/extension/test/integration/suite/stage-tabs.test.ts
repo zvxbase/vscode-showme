@@ -15,6 +15,7 @@ import {
   activeEditorSnapshot,
   annotate,
   annotateClear,
+  annotateRaw,
   annotationThread,
   arrangeEditors,
   assertGlobal,
@@ -53,12 +54,12 @@ function fileUri(rel: string): vscode.Uri {
   return vscode.Uri.joinPath(workspaceRoot(), rel);
 }
 
-function spotlightUris(visuals: VisualState): string[] {
-  return visuals.highlightRanges.filter((r) => r.layer === "spotlight").map((r) => r.uri);
-}
-
-function annotationLayerUris(visuals: VisualState): string[] {
-  return visuals.highlightRanges.filter((r) => r.layer === "annotation").map((r) => r.uri);
+/**
+ * 塗りが付いている URI。塗るのは注釈だけ（増分13 D116。`show_code` は塗らない。無印の注釈は灰）。
+ * 塗りと吹き出しが同じ URI に付くことを言うのに使う。
+ */
+function paintedUris(visuals: VisualState): string[] {
+  return visuals.highlightRanges.map((r) => r.uri);
 }
 
 function textTabUris(): string[] {
@@ -158,7 +159,7 @@ suite("舞台を映しで開く（D84 / D85）", () => {
     await vscode.commands.executeCommand("workbench.action.closeAllGroups");
   });
 
-  test("show_code は showme-ro: の編集器を舞台の列に開き、塗りはその URI に付く", async () => {
+  test("show_code は showme-ro: の編集器を舞台の列に開き、塗らない（D116）", async () => {
     const rel = STAGE_TABS_RELS.show;
     const mirror = await stageUri(rel, STAGE_SCHEME_READONLY);
     await withSettings({ "stage.agentTabs": true }, async () => {
@@ -180,15 +181,7 @@ suite("舞台を映しで開く（D84 / D85）", () => {
       );
 
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(
-        spotlightUris(visuals),
-        [mirror.toString()],
-        JSON.stringify(visuals.highlightRanges),
-      );
-      assert.deepStrictEqual(
-        visuals.highlightRanges.filter((r) => r.layer === "spotlight").map((r) => r.startLine),
-        [2],
-      );
+      assert.deepStrictEqual(visuals.highlightRanges, [], JSON.stringify(visuals.highlightRanges));
     });
   });
 
@@ -231,9 +224,8 @@ suite("舞台を映しで開く（D84 / D85）", () => {
       assert.ok(annotated && typeof annotated.id === "number", JSON.stringify(annotated));
 
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(spotlightUris(visuals), [mirror.toString()]);
       assert.deepStrictEqual(visuals.annotatedUris, [mirror.toString()]);
-      assert.deepStrictEqual(annotationLayerUris(visuals), [mirror.toString()]);
+      assert.deepStrictEqual(paintedUris(visuals), [mirror.toString()]);
       for (const uris of [visuals.highlightedUris, visuals.annotatedUris]) {
         assert.ok(!uris.includes(file.toString()), `file: に付いた: ${uris.join(", ")}`);
       }
@@ -252,7 +244,7 @@ suite("舞台を映しで開く（D84 / D85）", () => {
 
       const unopened = await inspectVisuals();
       assert.deepStrictEqual(unopened.annotatedUris, [mirror.toString()]);
-      assert.deepStrictEqual(annotationLayerUris(unopened), [mirror.toString()]);
+      assert.deepStrictEqual(paintedUris(unopened), [mirror.toString()]);
 
       // 開いたら: スレッドの URI が、開いた編集器の文書の URI と一致する（描画そのものは
       // API から読めないので、VS Code がスレッドを出す条件 ―― URI の一致 ―― を見る）。
@@ -277,7 +269,8 @@ suite("舞台を映しで開く（D84 / D85）", () => {
 
       await annotate([{ location: { path: rel, text: STAGE_TABS_MARKER }, text: "mark only" }]);
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(spotlightUris(visuals), [file.toString()]);
+      // 塗りは注釈のもの（show_code は塗らない）。吹き出しと同じ file: に付く。
+      assert.deepStrictEqual(paintedUris(visuals), [file.toString()]);
       assert.deepStrictEqual(visuals.annotatedUris, [file.toString()]);
       for (const uris of [visuals.highlightedUris, visuals.annotatedUris]) {
         assert.ok(!uris.includes(mirror.toString()), `映しに付いた: ${uris.join(", ")}`);
@@ -297,7 +290,7 @@ suite("舞台を映しで開く（D84 / D85）", () => {
 
       await annotate([{ location: { path: rel, text: STAGE_TABS_MARKER }, text: "editable" }]);
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(spotlightUris(visuals), [rw.toString()]);
+      assert.deepStrictEqual(paintedUris(visuals), [rw.toString()]);
       assert.deepStrictEqual(visuals.annotatedUris, [rw.toString()]);
     });
   });
@@ -915,11 +908,7 @@ suite("show_code の realFile: true（D87）", () => {
         `realFile なのに映しも開いた: ${textTabUris().join(", ")}`,
       );
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(
-        spotlightUris(visuals),
-        [file.toString()],
-        JSON.stringify(visuals.highlightRanges),
-      );
+      assert.deepStrictEqual(visuals.highlightRanges, [], JSON.stringify(visuals.highlightRanges));
 
       const fileTab = await observedTab(rel, editor.viewColumn);
       assert.ok(fileTab, "本物のファイルのタブが path で現れない");
@@ -932,12 +921,12 @@ suite("show_code の realFile: true（D87）", () => {
         "close-own が本物のファイルを閉じた",
       );
 
-      // 同じファイルを realFile なしで見せる → 映しが開き、塗りは映しへ移る。
+      // 同じファイルを realFile なしで見せる → 映しが開く（どちらも塗らない）。
       const again = await showOne({ path: rel, text: STAGE_TABS_MARKER });
       assert.strictEqual(again.match, "one", JSON.stringify(again));
       await visibleEditorEventually("映しの編集器が見える", mirror);
       const after = await inspectVisuals();
-      assert.deepStrictEqual(spotlightUris(after), [mirror.toString()]);
+      assert.deepStrictEqual(after.highlightRanges, [], JSON.stringify(after.highlightRanges));
 
       const closed = await arrangeEditors("close-own");
       await waitFor("映しが閉じる", () => columnOfUri(mirror) === undefined);
@@ -958,7 +947,7 @@ suite("show_code の realFile: true（D87）", () => {
       const editor = await visibleEditorEventually("本物のファイルの編集器が見える", file);
       assert.notStrictEqual(editor.viewColumn, humanColumn, "本物のファイルが人間の列に開いた");
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(spotlightUris(visuals), [file.toString()]);
+      assert.deepStrictEqual(visuals.highlightRanges, [], JSON.stringify(visuals.highlightRanges));
       const fileTab = await observedTab(rel, editor.viewColumn);
       assert.ok(fileTab, "本物のファイルのタブが path で現れない");
       assert.ok(!("own" in fileTab), `realFile のタブが own になった: ${JSON.stringify(fileTab)}`);
@@ -1001,7 +990,7 @@ suite("show_code の realFile: true（D87）", () => {
       assert.strictEqual(thread.uri.toString(), editor.document.uri.toString());
       const visuals = await inspectVisuals();
       assert.deepStrictEqual(visuals.annotatedUris, [file.toString()]);
-      assert.deepStrictEqual(annotationLayerUris(visuals), [file.toString()]);
+      assert.deepStrictEqual(paintedUris(visuals), [file.toString()]);
       assert.ok(!textTabUris().includes(mirror.toString()), "annotate が映しを開いた");
 
       // realFile なしは今までどおり映しの URI に付く。
@@ -1016,14 +1005,74 @@ suite("show_code の realFile: true（D87）", () => {
     });
   });
 
-  test("印だけ（stage.enabled: false）では realFile でも開かず、塗りは file: に付く（D76）", async () => {
+  test("stage.enabled: false では realFile でも開かず、塗りも無い（D76 / D116）", async () => {
     const rel = REAL_FILE_RELS.agent;
-    const file = fileUri(rel);
     await withSettings({ "stage.agentTabs": true, "stage.enabled": false }, async () => {
       await showRealFile(rel);
-      assert.deepStrictEqual(textTabUris(), [], "印だけなのにタブを開いた");
+      assert.deepStrictEqual(textTabUris(), [], "stage を切ったのにタブを開いた");
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(spotlightUris(visuals), [file.toString()]);
+      assert.deepStrictEqual(visuals.highlightRanges, [], JSON.stringify(visuals.highlightRanges));
+    });
+  });
+
+  /**
+   * **`annotate` の `reveal: true` は `show_code` と同じ開き方**（増分13 D117）。列の決め方（人間の列を
+   * 避ける ―― この節は `dedicated`）、フォーカスを奪わない（`preserveFocus`）、既定は映し、
+   * `realFile: true` なら本物のファイル。吹き出しも開いたのと同じ URI に付く。
+   */
+  test("annotate の reveal: true は show_code と同じ開き方で開く（映し／realFile なら本物のファイル。D117）", async () => {
+    const rel = REAL_FILE_RELS.reveal;
+    const file = fileUri(rel);
+    const mirror = await stageUri(rel, STAGE_SCHEME_READONLY);
+    await withSettings({ "stage.agentTabs": true }, async () => {
+      const human = await humanOpens(STAGE_TABS_RELS.human);
+      // 人間の選択を置き、呼び出しの前後で**同じ**であることを見る（不変条件3。空かどうかではなく一致）。
+      human.selection = new vscode.Selection(2, 0, 2, 5);
+      const humanSelectionBefore = human.selection;
+      const humanColumn = vscode.window.tabGroups.activeTabGroup.viewColumn;
+      const focusBefore = activeEditorSnapshot();
+
+      const onMirror = await annotateRaw({
+        items: [{ location: { path: rel, text: STAGE_TABS_MARKER }, text: "open the agent tab" }],
+        reveal: true,
+      });
+      assert.deepStrictEqual(onMirror.reveal, { opened: true }, JSON.stringify(onMirror));
+      const staged = await visibleEditorEventually("映しの編集器が見える", mirror);
+      assert.notStrictEqual(staged.viewColumn, humanColumn, "reveal が人間の列に開いた");
+      assert.strictEqual(activeEditorSnapshot(), focusBefore, "reveal がフォーカスを奪った");
+      assert.ok(!textTabUris().includes(file.toString()), "映しのはずが file: も開いた");
+      const [shown] = onMirror.resolutions;
+      assert.ok(shown && typeof shown.id === "number", JSON.stringify(onMirror));
+      const thread = await annotationThread(shown.id as number);
+      assert.strictEqual(thread.uri.toString(), staged.document.uri.toString());
+
+      const onFile = await annotateRaw({
+        items: [{ location: { path: rel, text: STAGE_TABS_MARKER }, text: "open the real file" }],
+        realFile: true,
+        reveal: true,
+      });
+      assert.deepStrictEqual(onFile.reveal, { opened: true }, JSON.stringify(onFile));
+      const real = await visibleEditorEventually("本物のファイルの編集器が見える", file);
+      assert.strictEqual(real.document.uri.scheme, "file");
+      assert.notStrictEqual(real.viewColumn, humanColumn, "realFile の reveal が人間の列に開いた");
+      assert.strictEqual(activeEditorSnapshot(), focusBefore, "reveal がフォーカスを奪った");
+      const [onReal] = onFile.resolutions;
+      assert.ok(onReal && typeof onReal.id === "number", JSON.stringify(onFile));
+      const realThread = await annotationThread(onReal.id as number);
+      assert.strictEqual(realThread.uri.toString(), real.document.uri.toString());
+
+      // 選択に触らない（不変条件3）: 人間の選択は呼び出しの前と同じ。開いた側は先頭の空の選択の
+      // まま（目印の3行目へ選択で合わせていない）。
+      assert.ok(
+        human.selection.isEqual(humanSelectionBefore),
+        `人間の選択が変わった: ${JSON.stringify(human.selection)}`,
+      );
+      for (const editor of [staged, real]) {
+        assert.ok(
+          editor.selection.isEqual(new vscode.Selection(0, 0, 0, 0)),
+          `reveal が選択を動かした: ${JSON.stringify(editor.selection)}`,
+        );
+      }
     });
   });
 });

@@ -4,7 +4,7 @@ import {
   type HighlightColor,
 } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
-import { HighlightLayers, type LayerName, type LayerRange } from "./highlight-layers.js";
+import { HighlightLayers, type LayerRange } from "./highlight-layers.js";
 
 /**
  * ハイライトの保持と貼り直し。**画家はこの1つだけ**（増分6 §C2）。
@@ -16,16 +16,14 @@ import { HighlightLayers, type LayerName, type LayerRange } from "./highlight-la
  * contentText を引数化すると、ファイルに存在しないテキストをエディタ内に
  * 描けてしまい、「原典が隣に開いている」という唯一の緩和が無効になる。
  *
- * 層は2つ（`HighlightLayers`。判断はそちらの純関数にある）:
- * - **spotlight** ―― `show_code` のもの。1回の呼び出しの全 `locations` をまとめて
- *   受け取り、**窓ごと**に前回の分を全部消す（D67）。`close-own` でも消える。
- *   ファイルごとに残す前の形（LRU 32）は消した ―― 人間には戻る手段も消す手段も無く、
- *   編集でずれるものを残す理由が無い（§C1）。積み上げたいものは注釈であるべきである
- * - **annotation** ―― 注釈ストアのもの。注釈と同じ寿命を持つ（D66）
+ * 層は注釈の1つだけ（`HighlightLayers`。判断はそちらの純関数にある）。注釈ストアが札ごとに
+ * 登録・抹消し、注釈と同じ寿命を持つ（D66）。以前は `show_code` のスポットライトの層もあったが、
+ * 増分13 D116 で `show_code` が塗らなくなったので消した ―― コメントの無い塗りは人間が辿れず、
+ * AI が何も言っていない塗りには意味がほとんど無い（オーナーの所見）。
  *
  * `setDecorations(type, ranges)` は「その型の全範囲」を置き換えるので、2つの書き手が
- * 同じ型を別々に書けば互いを消し合う。だから貼るときは常に両層の和（`layers.forUri`）を
- * 1回で書く（不変条件14）。
+ * 同じ型を別々に書けば互いを消し合う。だから書き手はここ1つで、貼るときは常に
+ * `layers.forUri` の全部を1回で書く（不変条件14）。
  */
 /**
  * 貼る範囲と、その**種類**。
@@ -83,7 +81,7 @@ export class Highlights implements vscode.Disposable {
     return created;
   }
 
-  /** 2つの層。uri は `uri.toString()`。**唯一の真実**で、`apply` はここからだけ読む。 */
+  /** 注釈の層。uri は `uri.toString()`。**唯一の真実**で、`apply` はここからだけ読む。 */
   private readonly layers = new HighlightLayers<vscode.Range>();
   private readonly subscription: vscode.Disposable;
 
@@ -91,15 +89,6 @@ export class Highlights implements vscode.Disposable {
     this.subscription = vscode.window.onDidChangeVisibleTextEditors((editors) => {
       for (const editor of editors) this.apply(editor);
     });
-  }
-
-  /** `show_code` 1回分の窓。前回の分は全部消える（D67）。 */
-  setSpotlight(byUri: ReadonlyMap<string, readonly HighlightRange[]>): void {
-    this.repaint(this.layers.setSpotlight(byUri));
-  }
-
-  clearSpotlight(): void {
-    this.repaint(this.layers.clearSpotlight());
   }
 
   /** 注釈ストアが札 `key` で登録する。同じ札の再登録は置き換え（D66）。 */
@@ -132,41 +121,39 @@ export class Highlights implements vscode.Disposable {
   }
 
   /**
-   * いまハイライトを預かっている URI（`uri.toString()`、両層の和）。**観測のためだけ**。
+   * いまハイライトを預かっている URI（`uri.toString()`）。**観測のためだけ**。
    *
    * VS Code には**貼った装飾を読み出す API が無い**（`setDecorations` は
    * 書きっぱなし）。だから統合テストから確かめられる最も近い面がこの状態で、
    * ここが空になることが「装飾を剥がした」ことの根拠になる ―― `apply()` が
    * 層を唯一の真実として editor へ書いている。
    *
-   * これが無いと、`applyRole` から `clearSpotlight()` を消しても単体・統合とも
-   * 全部緑のままだった（実測）。「預けるのをやめても装飾が残る」は、この道具が
-   * 防御として数えている性質である（設計書 §5.4）。
+   * これが無いと、役割を外したときの剥がしを消しても単体・統合とも全部緑のままだった
+   * （実測）。「預けるのをやめても装飾が残る」は、この道具が防御として数えている性質である
+   * （設計書 §5.4）。
    */
   highlightedUris(): string[] {
     return this.layers.uris();
   }
 
   /**
-   * いま貼っている範囲を、**種類と層つきで**返す。**観測のためだけ**。
+   * いま貼っている範囲を、**種類つきで**返す。**観測のためだけ**。
    *
    * `highlightedUris` は「どのファイルに貼ったか」しか言わないので、
    * **列の指定が効いているか**は観測できなかった。効いていることを言うには
-   * 範囲そのものを見るしかない（設計 D34）。層の名前は「`show_code` の塗りと
-   * 注釈の塗りが互いを消していない」を言うために要る（§C2）。
+   * 範囲そのものを見るしかない（設計 D34。`text` で指した注釈が一致の列だけを塗ること ――
+   * 増分13 D118 ―― もここで見る）。
    */
   highlightRanges(): {
     uri: string;
-    layer: LayerName;
     startLine: number;
     startColumn: number;
     endColumn: number;
     wholeLine: boolean;
     color: HighlightColor;
   }[] {
-    return this.layers.entries().map(({ uri, layer, item }) => ({
+    return this.layers.entries().map(({ uri, item }) => ({
       uri,
-      layer,
       startLine: item.range.start.line,
       startColumn: item.range.start.character,
       // 行全体のときは `Number.MAX_SAFE_INTEGER` が入る。丸めずにそのまま出す
@@ -191,8 +178,8 @@ export class Highlights implements vscode.Disposable {
    * `isWholeLine` は装飾の型に焼かれるので、1回の `setDecorations` では混ぜられない
    * （混ぜると全部が同じ扱いになり、列の指定が黙って効かなくなる）。
    *
-   * 両層の和を1回で書く。層ごとに書くと、同じ型（同じ色 × 同じ種類）を後から書いた
-   * 層が前の層の分を消す（§C2 の「互いを消し合う」はまさにこれ）。
+   * その uri の全部を1回で書く。書き手ごとに書くと、同じ型（同じ色 × 同じ種類）を後から
+   * 書いた側が前の分を消す（§C2 の「互いを消し合う」はまさにこれ）。
    */
   private apply(editor: vscode.TextEditor): void {
     const ranges = this.layers.forUri(editor.document.uri.toString());

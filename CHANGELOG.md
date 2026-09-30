@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7 — preview
+
+- **Behavior change: `show_code` no longer highlights.** It still opens the file (in the agent's tab or, with `realFile: true`, the real file), scrolls to the location and lays out columns as before, but paints nothing. To point at code the agent uses `annotate`, so every painted spot comes with a comment you can follow in the bubbles and the Comments panel. `show_code` no longer accepts `color` on a location (it is refused instead of being ignored).
+- **Behavior change:** the **ShowMe: Clear highlights** command is gone, since there is no longer a highlight without an annotation. **ShowMe: Clear annotations** removes the bubbles together with their paint.
+- **Behavior change:** with `showme.stage.enabled` off, `show_code` now only resolves the location (and shows it in the status bar); it no longer marks lines to be painted when you open the file.
+- `annotate` has a new `reveal` option (default `false`): with `reveal: true` it also opens the file of the first annotation and scrolls to it, exactly the way `show_code` opens files (same columns and tabs, the agent's tab unless `realFile: true`). Without it, annotations are added without opening or scrolling anything, as before. If the file cannot be opened, the result says why (for example, no usable column).
+- An annotation located by `text` now paints only the matched text instead of the whole line; the bubble stays on that line. If the line contains the text more than once, the whole line is painted (`occurrence` counts lines, so it cannot pick one of them; use `lines` with columns instead). Locations by `symbol`, or by `lines` without columns, still paint whole lines. The resolved location returned by `show_code` and `annotate` now carries the matched columns for `text`.
+- The tool descriptions now say what an annotation without a `color` does: it is painted grey (one description used to say it was not painted).
+
 ## 0.1.6 — preview
 
 - **Copilot in VS Code no longer needs Node.js.** ShowMe now starts its bridge with VS Code's own runtime instead of `node` from the `PATH`. Before, the bridge failed to start with `spawn node ENOENT` when Node.js was not installed, was installed after VS Code started, or was only set up in your shell (fnm, nvm).

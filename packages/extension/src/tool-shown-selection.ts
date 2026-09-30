@@ -242,8 +242,8 @@ export function frontEditorRecord(
  * 最中に人間が自分で移った先の選択まで「ツールが見せた」になる。
  *
  * **自ツールの時計（`OwnToolCallClock`）とは別の量である。** 時計に印を付けるのは
- * `show_code` だけで、それを広げると `arrange_editors` のあとにも1秒の待ちが生まれる
- * （振る舞いの変更）。**この分類が真のツールは、前面が実際に変わったかどうかに関わらず、
+ * `show_code` と `annotate { reveal: true }`（増分13 D117。同じ開く関数を通る）だけで、それを
+ * 広げると `arrange_editors` のあとにも1秒の待ちが生まれる（振る舞いの変更）。**この分類が真のツールは、前面が実際に変わったかどうかに関わらず、
  * 呼び出し中と終わってから `MIN_MS_SINCE_OWN_TOOL_CALL` の間ずっと窓が開き
  * （`ToolCallWindow`）、`get_editor_state` はその間 `too-soon-after-tool` で選択を返さない
  * （`get-editor-state.ts` の `msSinceOwnToolCall` は自ツールの時計とこの窓の小さいほう）。**

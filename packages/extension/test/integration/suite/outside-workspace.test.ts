@@ -39,8 +39,9 @@ import {
 const MARKER = "OUTSIDE_MARKER_D102";
 const trusted = process.env.SHOWME_TEST_MODE !== "restricted";
 
-function spotlightUris(visuals: VisualState): string[] {
-  return visuals.highlightRanges.filter((r) => r.layer === "spotlight").map((r) => r.uri);
+/** 塗りが付いている URI（塗るのは注釈だけ。増分13 D116。無印の注釈は灰で塗る）。 */
+function paintedUris(visuals: VisualState): string[] {
+  return visuals.highlightRanges.map((r) => r.uri);
 }
 
 function textTabUris(): string[] {
@@ -131,7 +132,7 @@ suite("ワークスペースの外のファイル（D101 / D102）", () => {
       ]);
       assert.ok(annotated && typeof annotated.id === "number", JSON.stringify(annotated));
       const visuals = await inspectVisuals();
-      assert.deepStrictEqual(spotlightUris(visuals), [mirror.toString()]);
+      assert.deepStrictEqual(paintedUris(visuals), [mirror.toString()]);
       assert.deepStrictEqual(visuals.annotatedUris, [mirror.toString()]);
     });
   });

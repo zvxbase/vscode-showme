@@ -157,7 +157,6 @@ const deps = (over: Partial<ArrangeEditorsDeps> = {}): ArrangeEditorsDeps => ({
   surface: surface(),
   config: config(),
   acceptPath,
-  clearSpotlight: vi.fn(),
   log: { info: vi.fn() },
   ...over,
 });
@@ -277,88 +276,6 @@ describe("handleArrangeEditors: 候補の選び方", () => {
       }),
     );
     expect(closeTabs).toHaveBeenCalledWith(["p2"]);
-  });
-});
-
-/**
- * **片づけたのに指差しが残るのは片づけていない**（増分6 D67）。`close-own` は
- * `show_code` のスポットライトも消す。消すのは画家（`Highlights.clearSpotlight`）で、
- * ハンドラは「片づいたときに1回呼ぶ」だけを決める。
- */
-describe("handleArrangeEditors: close-own はスポットライトを消す（D67）", () => {
-  it("close-own が片づいたら clearSpotlight を1回呼ぶ", async () => {
-    const clearSpotlight = vi.fn();
-    const result = await handleArrangeEditors(
-      { action: "close-own" },
-      deps({
-        surface: surface({ listTabs: () => [tab({ id: "p1", own: true })] }),
-        clearSpotlight,
-      }),
-    );
-    expect(result.done).toBe(true);
-    expect(clearSpotlight).toHaveBeenCalledTimes(1);
-  });
-
-  it("閉じるものが無くても片づいたことに変わりは無い ―― 消す", async () => {
-    // 「何も開いていないが前の指差しだけ残っている」は、まさに片づけて欲しい状態である。
-    const clearSpotlight = vi.fn();
-    const result = await handleArrangeEditors(
-      { action: "close-own" },
-      deps({ surface: surface({ listTabs: () => [] }), clearSpotlight }),
-    );
-    expect(result.done).toBe(true);
-    expect(clearSpotlight).toHaveBeenCalledTimes(1);
-  });
-
-  it("close-other-tabs では消さない（人間のタブを片づける語で自分の指差しを消さない）", async () => {
-    const clearSpotlight = vi.fn();
-    await handleArrangeEditors(
-      { action: "close-other-tabs" },
-      deps({
-        config: config({ closeHumanTabs: true }),
-        surface: surface({ listTabs: () => [...MIXED] }),
-        clearSpotlight,
-      }),
-    );
-    expect(clearSpotlight).not.toHaveBeenCalled();
-  });
-
-  it("断られた own タブが残っても、片づいた（done）なら消す ―― 指差しは中身ではなく指", async () => {
-    // 人間が見ている own タブは床1（protectViewingTab がオン）で残る。それでも人間は
-    // 「片づけて」と言ったのであり、残した指差しに人間が戻る手段も消す手段も無い（§C1）。
-    const clearSpotlight = vi.fn();
-    const result = await handleArrangeEditors(
-      { action: "close-own" },
-      deps({
-        config: config({ protectViewingTab: true }),
-        surface: surface({
-          listTabs: () => [
-            tab({ id: "p1", own: true, viewing: true }),
-            tab({ id: "p2", own: true }),
-          ],
-        }),
-        clearSpotlight,
-      }),
-    );
-    expect(result.done).toBe(true);
-    expect(result.withheld).toEqual(["viewing-tab"]);
-    expect(clearSpotlight).toHaveBeenCalledTimes(1);
-  });
-
-  it("面が失敗したら（done: false）消さない ―― 何も変わっていない", async () => {
-    const clearSpotlight = vi.fn();
-    const result = await handleArrangeEditors(
-      { action: "close-own" },
-      deps({
-        surface: surface({
-          listTabs: () => [tab({ id: "p1", own: true })],
-          closeTabs: vi.fn(async () => false),
-        }),
-        clearSpotlight,
-      }),
-    );
-    expect(result.done).toBe(false);
-    expect(clearSpotlight).not.toHaveBeenCalled();
   });
 });
 
@@ -2339,16 +2256,6 @@ describe("handleArrangeEditors: close-tabs", () => {
     );
     expect(s.closeTabs).not.toHaveBeenCalled();
     expect(result).toEqual({ done: true, closed: 0, notOpen: ["src/a.ts"] });
-  });
-
-  it("clearSpotlight は呼ばない（指差しの寿命を持つのは close-own だけ。D67）", async () => {
-    const clearSpotlight = vi.fn();
-    const result = await handleArrangeEditors(
-      { action: "close-tabs", paths: ["src/a.ts", "src/b.ts"] },
-      deps({ surface: listed(), clearSpotlight }),
-    );
-    expect(result.closed).toBe(2);
-    expect(clearSpotlight).not.toHaveBeenCalled();
   });
 
   it("面が失敗したら done: false で closed は 0", async () => {

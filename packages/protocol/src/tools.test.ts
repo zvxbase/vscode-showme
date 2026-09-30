@@ -208,17 +208,42 @@ describe("tool annotations", () => {
       "omit it for the unmarked `ShowMe`, which is painted grey",
     );
     expect(TOOL_DESCRIPTIONS.annotate).not.toContain("matched to highlights by color");
+    // 増分13 D116: show_code の塗りの層はもう無い。別の層として説明しない。
+    expect(TOOL_DESCRIPTIONS.annotate).not.toContain("highlights from show_code");
   });
 
-  it("stage を切ると show_code は印だけになることを、list_workspaces と show_code の両方の説明が言う（増分6 D76）", () => {
+  /**
+   * 増分13 D116 / D119: `show_code` は開いて見せるだけで塗らない。コードの場所について何か言うときは
+   * `annotate`（必ずコメント付き）。書いていないと、エージェントはコメントの無い指し示しを続ける。
+   */
+  it("show_code は塗らないと言い、指し示しは annotate へ導く（D116 / D119）", () => {
+    expect(TOOL_DESCRIPTIONS.show_code).toContain("does not highlight");
+    expect(TOOL_DESCRIPTIONS.show_code).not.toContain("highlights it");
+    expect(TOOL_DESCRIPTIONS.show_code).toContain("use annotate");
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("The way to point at code");
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("always with a comment");
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("reveal: true");
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("By default nothing is opened or scrolled");
+    // text で指したら文字列だけを塗る（D118）。
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("only the matched text is painted");
+    // 1行に2回あれば行全体（どちらを指したか決められない）。occurrence は行を数える。
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("more than once, the whole line is painted");
+    expect(TOOL_DESCRIPTIONS.annotate).toContain("occurrence counts lines");
+  });
+
+  it("stage を切ると show_code は位置を解決して返すだけになることを、list_workspaces と show_code の両方の説明が言う（増分6 D76 / 増分13 D116）", () => {
     // 書いていないと、エージェントは「開かなかった＝失敗」と読んで同じ位置を何度も呼ぶか、
     // 「開いた」つもりで人間に「今見えている箇所」を語る。
     expect(TOOL_DESCRIPTIONS.list_workspaces).toContain(
-      "when off, show_code only marks lines without opening or scrolling, and show_note is refused",
+      "when off, show_code only resolves the location without opening or scrolling, " +
+        "annotate's reveal does not open, and show_note is refused",
     );
     expect(TOOL_DESCRIPTIONS.show_code).toContain("turned off showme.stage.enabled");
     expect(TOOL_DESCRIPTIONS.show_code).toContain("the file is not opened or scrolled");
     expect(TOOL_DESCRIPTIONS.show_code).toContain("list_workspaces.features.stage tells you");
+    // 塗りはもう無いので、「開くと塗りが見える」とは言わない。
+    expect(TOOL_DESCRIPTIONS.show_code).not.toContain("the highlight appears");
+    expect(TOOL_DESCRIPTIONS.list_workspaces).not.toContain("only marks lines");
   });
 
   it("パネルの上限は人間の設定であることを、list_workspaces と show_html の説明が言う（増分6.2 D80）", () => {

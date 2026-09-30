@@ -152,8 +152,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "is viewing is off-limits even for your own tabs (protectViewingTab; default false, so by default your " +
     "own tab can be closed or moved even while the human is viewing it). " +
     "features tells you which of the three switchable features the human has left on: " +
-    "stage (opening files and tabs, scrolling, splitting; when off, show_code only marks lines without " +
-    "opening or scrolling, and show_note is refused), " +
+    "stage (opening files and tabs, scrolling, splitting; when off, show_code only resolves the location " +
+    "without opening or scrolling, annotate's reveal does not open, and show_note is refused), " +
     "html (when off, show_html is refused) and " +
     "layout (when off, arrange_editors and show_view are refused). " +
     "disabledTools is derived from features and lists the tools that are refused with disabled when called; " +
@@ -172,7 +172,9 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "(credential locations such as ~/.ssh stay refused with excluded-path). " +
     "Call this first to learn what you can do; being refused should be the last resort for finding out.",
   show_code:
-    "Opens a file on the human's screen, scrolls to the given location and highlights it. " +
+    "Opens a file on the human's screen and scrolls to the given location. It does not highlight anything: " +
+    "to point at code or say something about it, use annotate (a bubble with your comment, painted on the location; " +
+    "annotate with reveal: true also opens and scrolls, so you do not need show_code first). " +
     "The location is given by one of text (a literal string, recommended) / symbol / lines. " +
     "Regular expressions are not accepted. File contents are not returned; if you need the contents, use your own read tool. " +
     "When there are multiple matches, up to 3 candidates are returned; pick one with occurrence. " +
@@ -180,8 +182,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "By default the file opens as your own tab (read-only under the default settings), which you can close with arrange_editors close-own. " +
     "Passing realFile: true opens the real file instead so the human can edit it; close-own leaves it open " +
     "(it belongs to the human), so use it only when the human should edit the file. " +
-    "If the human has turned off showme.stage.enabled, the file is not opened or scrolled: the location is resolved " +
-    "and marked, and the highlight appears when the human opens the file (list_workspaces.features.stage tells you). " +
+    "If the human has turned off showme.stage.enabled, the file is not opened or scrolled: the location is only resolved " +
+    "and returned (list_workspaces.features.stage tells you). " +
     "If the human has turned on showme.stage.avoidToolColumns, columns showing a terminal or another extension's panel " +
     "are skipped; when no column can be used, the location is returned without a range and with reason no-stage-column.",
   get_editor_state:
@@ -207,20 +209,27 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "the key is omitted when there are no annotations. " +
     "File contents are not returned (selected text is the one exception, and it is truncated to a bounded length).",
   annotate:
-    "Shows an explanatory speech bubble (comment thread) below the given line on the human's screen. " +
+    "The way to point at code: shows an explanatory speech bubble (comment thread) below the given line on the " +
+    "human's screen, always with a comment, and paints the location. " +
+    "By default nothing is opened or scrolled (the bubbles appear where the human opens the file, and in the Comments panel); " +
+    "pass reveal: true to also open the file of the first shown annotation and scroll to it, " +
+    "exactly as show_code opens files (the result then carries reveal: { opened, reason? }). " +
     "The text is a **plain string** and is not interpreted as markdown " +
     "(no links, images or bold: by design there is no channel of any kind that could send data out). " +
     "The location is specified the same way as in show_code (text / symbol / lines), but without color: " +
     "each item's own color (optional) is shown in the bubble's author name and painted on the line " +
     "(omit it for the unmarked `ShowMe`, which is painted grey), " +
-    "and that paint lives exactly as long as the annotation (highlights from show_code are a separate, " +
-    "short-lived layer replaced by the next show_code). " +
+    "and that paint lives exactly as long as the annotation. " +
+    "With text, only the matched text is painted (the bubble stays on that line); when the line contains the text " +
+    "more than once, the whole line is painted (occurrence counts lines; use lines with startColumn and endColumn " +
+    "to pin one). symbol and lines paint whole lines, " +
+    "and lines with both startColumn and endColumn paint those characters. " +
     'mode: "replace" (the default) replaces all annotations in this window, ' +
     "so calling again with the same arguments does not add bubbles. " +
     'mode: "add" appends to the existing annotations (each call adds more). ' +
     'mode: "clear" removes all annotations in this window (do not pass items; the result is resolutions: []). ' +
     "Bubbles go on your own tab by default; after show_code with realFile: true, pass realFile: true here too " +
-    "so they appear on the real file the human is looking at. " +
+    "so they appear on the real file the human is looking at (with reveal: true, realFile: true opens the real file). " +
     "Each resolved item gets an id (stable for this window) and an index (1-based reading order = the order of items; " +
     "the author name shows 3/7 · when there are 2 or more annotations). " +
     'mode: "add" continues the numbering and renumbers existing bubbles\' denominators. ' +

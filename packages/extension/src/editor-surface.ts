@@ -1,7 +1,6 @@
 import type { AnnotationColor, PanelSlot } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
 import type { Annotations } from "./annotations.js";
-import type { HighlightRange, Highlights } from "./decorations.js";
 import {
   type ObservedGroup,
   type ObservedTab,
@@ -22,7 +21,7 @@ import type {
 import type { EditorSurface, LineRange, StagePlacement } from "./handlers/show-code.js";
 import type { SymbolLookup, SymbolSurface } from "./handlers/symbol-prefetch.js";
 import type { SelectionRange } from "./human-selection.js";
-import { toHighlightRange, toRange } from "./line-range-vscode.js";
+import { toRange } from "./line-range-vscode.js";
 import type { OpenedByAgent } from "./opened-by-agent.js";
 import { slotOfViewType } from "./own-view-type.js";
 import { isAgentStageUri, stageKeyOfUri, stageUriFor } from "./stage-uri-vscode.js";
@@ -106,16 +105,18 @@ export function observedRelPath(
 const OUTSIDE_OFF: RedactionPolicy = Object.freeze({ patterns: [], blockLinksToRedacted: true });
 
 /**
- * `target` は `show_code` 1回の開き方（`stageOpenTarget` の結果: スキームと記録するか）。
- * **呼び出しのたびに `extension.ts` が1回だけ決めて渡す**（D84 / D87）。ここ（`reveal` /
- * `setSpotlight`）で設定や `realFile` を見直すと、呼び出しの途中で設定が変わったときに舞台は映し・
- * 塗りは `file:` と割れ、塗りが舞台に届かない（不変条件14: 同じ量を2箇所で決めない）。
+ * `target` は1回の呼び出しの開き方（`stageOpenTarget` の結果: スキームと記録するか）。
+ * **呼び出しのたびに `extension.ts` が1回だけ決めて渡す**（D84 / D87）。ここ（`reveal`）で設定や
+ * `realFile` を見直すと、呼び出しの途中で設定が変わったときに舞台は映し・吹き出しは `file:` と割れ、
+ * 吹き出しが舞台に届かない（不変条件14: 同じ量を2箇所で決めない）。`annotate` の `reveal`
+ * （増分13 D117）も同じ組み立て（`extension.ts` の `stageEditorOf`）でこの面を受け取る。
+ *
+ * **画家を受け取らない**（増分13 D116）。`show_code` は塗らないので、この面から塗る経路は無い。
  */
 export function createEditorSurface(
   root: vscode.Uri | undefined,
   target: StageOpenTarget,
   stage: Stage,
-  highlights: Highlights,
   columns: StageColumnSettings,
 ): EditorSurface {
   const { scheme, record } = target;
@@ -123,8 +124,7 @@ export function createEditorSurface(
     // ハンドラは workspaceRoot が undefined なら先に返すので、通常ここには
     // 来ない。来たときに黙って別の場所を開かないよう、投げて止める。
     if (root === undefined) throw new Error("no workspace folder");
-    // 舞台で開く URI・塗りの鍵は `stageUriFor` だけで組む（D84。不変条件14）。
-    // 印だけ（舞台を切った窓）は scheme が "file" なので、実ファイルに付く（D85）。
+    // 舞台で開く URI は `stageUriFor` だけで組む（D84。不変条件14。吹き出しも同じ関数）。
     return stageUriFor(root, relPath, scheme);
   };
 
@@ -136,13 +136,6 @@ export function createEditorSurface(
       // 触ると show_code -> get_editor_state の合成で任意ファイルの生テキストが
       // 取れてしまう。位置合わせは revealRange だけで行う。
       shown.revealRange(toRange(range), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    },
-    setSpotlight(byPath: ReadonlyMap<string, readonly LineRange[]>): void {
-      const byUri = new Map<string, HighlightRange[]>();
-      for (const [relPath, ranges] of byPath) {
-        byUri.set(uriOf(relPath).toString(), ranges.map(toHighlightRange));
-      }
-      highlights.setSpotlight(byUri);
     },
   };
 }

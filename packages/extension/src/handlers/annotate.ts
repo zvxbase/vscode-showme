@@ -1,15 +1,16 @@
 import {
+  type AnnotateRevealReason,
   type AnnotationColor,
   type Location,
   MAX_ANNOTATION_BODY_LINES,
   MAX_ANNOTATION_TEXT_CHARS,
-  type MarkerLocation,
   type Resolution,
   type ResolutionReason,
   resolveLocation,
   sanitizeDisplayText,
 } from "@zvx/vscode-showme-protocol";
 import type { ShowMeConfig } from "../config.js";
+import { type OwnToolCallClock, sharedOwnToolClock } from "../human-selection.js";
 import type { LineRange } from "../line-range.js";
 import { type RateLimiter, fileRateLimitKey, sharedFileLimiter } from "../rate-limit.js";
 import { readAgentFile } from "../read-workspace-file.js";
@@ -18,7 +19,8 @@ import {
   fileRateLimitCanonicalizer,
   isExcludedSpelling,
 } from "../workspace-path-gate.js";
-import type { ShowCodeLog, ShowCodeStatus } from "./show-code.js";
+import { revealResolved } from "./reveal-location.js";
+import type { EditorSurface, ShowCodeLog, ShowCodeStatus } from "./show-code.js";
 import { type SymbolSurface, prefetchSymbol } from "./symbol-prefetch.js";
 
 /**
@@ -59,9 +61,13 @@ export interface AnnotationSurface {
 /** 注釈1件（線上のスキーマ `annotateArgsSchema` と同じ形）。 */
 export interface AnnotateItem {
   /** 色を持たない位置（D65'）。色は下の `color` 1つで、作者名と行の塗りの両方に出る。 */
-  location: MarkerLocation;
+  location: Location;
   text: string;
-  /** 吹き出しの作成者名と行の塗りに出る色。省略すると無印で、塗らない（設計 D57 / D65）。 */
+  /**
+   * 吹き出しの作成者名と塗りに出る色。省略すると無印（`ShowMe`）で、**灰で塗る**
+   * （設計 D57 / D65、増分6.1 D78。灰に倒すのは注釈ストア ―― `annotations.ts` の
+   * `UNMARKED_ANNOTATION_PAINT`。ここでは倒さない）。
+   */
   color?: AnnotationColor;
 }
 
@@ -72,7 +78,9 @@ export type AnnotateMode = "replace" | "add";
  * `annotateArgsSchema` の transform が同じ union を出すので、境界での移し替えは
  * 鍵の省略（`exactOptionalPropertyTypes`）だけである。
  */
-export type AnnotateArgs = { mode: "clear" } | { items: AnnotateItem[]; mode?: AnnotateMode };
+export type AnnotateArgs =
+  | { mode: "clear" }
+  | { items: AnnotateItem[]; mode?: AnnotateMode; reveal?: boolean };
 
 /**
  * `annotate` の項目1つの結果。`show_code` の `Resolution` に、吹き出しが出たときだけ
@@ -97,6 +105,16 @@ export interface AnnotateDeps {
   limiter?: RateLimiter;
   /** シンボルを引く面（`show_code` と同じもの）。省略すると `no-provider`。 */
   symbols?: SymbolSurface;
+  /**
+   * 開く面（増分13 D117 の `reveal`）。**`show_code` と同じ `EditorSurface`** を、`extension.ts` の
+   * 同じ組み立て（`stageEditorOf`）から受け取る。開く経路を2つにしない（不変条件14）。
+   */
+  editor: EditorSurface;
+  /**
+   * 自ツールがエディタに触った時刻を刻む時計（`show_code` と同じもの）。**`reveal: true` のときだけ**
+   * 刻む。省略するとモジュールで1つ共有するものを使う（既定）。
+   */
+  clock?: OwnToolCallClock;
 }
 
 function unresolved(reason: ResolutionReason, normalizedPath?: string): Resolution {
@@ -122,11 +140,18 @@ function selectorLabel(loc: Location): string {
  * 「1件も解決できなかったときは消さない」にしてはいけない ―― 画面には
  * 古い説明が、新しい呼び出しの結果として残ることになる。
  *
- * **自ツール呼び出しの時計（`OwnToolCallClock`）は刻まない。** あれは
- * 「エージェントがエディタを動かした直後の選択を人間由来と誤認しない」ための
- * ものである。注釈は選択もカーソルも動かさないので、刻むと
- * 「選択 → get_editor_state → annotate → もう一度選択して質問」という
- * 2B の主たる流れが、自分の注釈のせいで毎回待たされることになる。
+ * **自ツール呼び出しの時計（`OwnToolCallClock`）は、ここでは `reveal: true` のときだけ刻む**
+ * （増分13 D117。エディタを開いてスクロールするので、`show_code` と同じく入口で。開けたかに依らない）。
+ * ただし**待ちそのものは `reveal` が無くても効く**: `annotate` は `TOOL_MAY_CHANGE_FRONT_EDITOR` で
+ * 前面を変えうるツールに分類されていて、`extension.ts` の `recordFrontChanges` が呼び出しの間と
+ * 終わってから `MIN_MS_SINCE_OWN_TOOL_CALL` の間、`get_editor_state` に `too-soon-after-tool` を
+ * 返させる（`tool-shown-selection.ts`）。時計はそれとは別の量で、ここで刻むかどうかは
+ * 「エディタを実際に動かす呼び出しか」だけを表す。
+ *
+ * **`reveal: true`** は、吹き出しが出た最初の項目のファイルを `show_code` と同じ関数
+ * （`revealResolved`）で開き、その吹き出しの範囲までスクロールする。開けたか・開けなかった理由は
+ * 結果の `reveal` に載る。開けなくても吹き出しは残す ―― 吹き出しそのものが人間に残る痕跡なので、
+ * `show_code` の「開けなかった位置を返さない」（無音のオラクルを作らない）はここでは要らない。
  */
 export async function handleAnnotate(
   args: AnnotateArgs,
@@ -144,13 +169,24 @@ export async function handleAnnotate(
 
   const root = deps.workspaceRoot;
   const mode: AnnotateMode = args.mode ?? "replace";
+  const reveal = args.reveal === true;
+  // 開くときは入口で刻む（`show_code` と同じ理由: 開けなかった直後の窓を無防備にしない）。
+  if (reveal) (deps.clock ?? sharedOwnToolClock).mark();
+  /** 頼まれたときだけ結果に `reveal` を載せる（頼まれなければ鍵ごと無い）。 */
+  const withReveal = (
+    out: Record<string, unknown>,
+    outcome: { opened: true } | { opened: false; reason: AnnotateRevealReason },
+  ): Record<string, unknown> => (reveal ? { ...out, reveal: outcome } : out);
 
   if (root === undefined) {
     deps.log.info("annotate without a workspace folder", { items: String(args.items.length) });
     // ワークスペースが無ければ何も出せないが、**置換の約束は果たす**。
     // 果たさないと、フォルダを閉じた瞬間に古い注釈が固定される。
     if (mode === "replace") deps.annotations.clearAll();
-    return { resolutions: args.items.map(() => unresolved("not-found")) };
+    return withReveal(
+      { resolutions: args.items.map(() => unresolved("not-found")) },
+      { opened: false, reason: "no-annotation" },
+    );
   }
 
   const config = deps.config();
@@ -158,6 +194,8 @@ export async function handleAnnotate(
   const resolutions: AnnotateResolution[] = [];
   /** 出せた項目の `id`（結果の位置 → id）。`index` は最後にまとめて引く。 */
   const addedIds = new Map<number, number>();
+  /** 吹き出しが出た最初の項目の位置（`reveal` で開く先）。 */
+  let firstShown: { relPath: string; range: LineRange } | undefined;
 
   if (mode === "replace") deps.annotations.clearAll();
 
@@ -253,6 +291,8 @@ export async function handleAnnotate(
       // 「出た」と読める（D71）。`index` はここでは読まない（下）。
       addedIds.set(resolutions.length, id);
       resolutions.push({ ...resolution, id });
+      // 吹き出しと**同じ範囲**を開く先にする（スクロールする先が吹き出しの位置とずれない）。
+      firstShown ??= { relPath: resolution.normalizedPath, range: resolution.range };
       continue;
     }
 
@@ -270,5 +310,17 @@ export async function handleAnnotate(
     if (index !== undefined && resolution !== undefined) resolution.index = index;
   }
 
-  return { resolutions };
+  if (!reveal) return { resolutions };
+  if (firstShown === undefined) {
+    return withReveal({ resolutions }, { opened: false, reason: "no-annotation" });
+  }
+  // **`show_code` と同じ関数で開く**（増分13 D117。不変条件14）。舞台の1枠目・1列（`single`）は
+  // `show_code` が1件目の位置に使う枠と同じ。列・タブ・own・`realFile`・`preserveFocus` は面が持つ。
+  const outcome = await revealResolved(
+    { editor: deps.editor, log: deps.log, stage: config.features.stage },
+    firstShown.relPath,
+    firstShown.range,
+    { slot: 0, layout: "single" },
+  );
+  return withReveal({ resolutions }, outcome);
 }

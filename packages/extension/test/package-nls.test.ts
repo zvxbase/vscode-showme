@@ -226,12 +226,24 @@ describe("package.nls（%key% が英日の両方で解決される）", () => {
    * 人間向けの消す命令（増分6 D68）。`showme.enabled` や窓の役割で縛らない
    * （§C5: 設定が縛るのはエージェントであって人間ではない）。
    */
-  it("Clear highlights / Clear annotations が宣言されている（D68）", () => {
+  it("Clear annotations が宣言されている（D68）。Clear highlights は無い（増分13 D116）", () => {
     const ids = manifest.contributes.commands.map((c) => c.command);
-    expect(ids).toContain("showme.clearHighlights");
     expect(ids).toContain("showme.clearAnnotations");
-    expect(nlsEn["showme.command.clearHighlights"]).toBe("ShowMe: Clear highlights");
     expect(nlsEn["showme.command.clearAnnotations"]).toBe("ShowMe: Clear annotations");
+    // `show_code` の塗りが無くなったので、それを消す命令も無い。塗りは注釈のもので、
+    // 吹き出しと一緒に Clear annotations で消える（塗りだけを消す口を作らない）。
+    expect(ids).not.toContain("showme.clearHighlights");
+    expect(nlsEn["showme.command.clearHighlights"]).toBeUndefined();
+    expect(nlsJa["showme.command.clearHighlights"]).toBeUndefined();
+  });
+
+  it("stage.enabled の説明は、切ると show_code が位置を解決して返すだけと言う（増分13 D116）", () => {
+    const en = nlsEn["showme.config.stage.enabled"] ?? "";
+    const ja = nlsJa["showme.config.stage.enabled"] ?? "";
+    expect(en).not.toContain("highlight");
+    expect(ja).not.toContain("ハイライト");
+    expect(en).toContain("show_code only resolves the location");
+    expect(ja).toContain("show_code は位置を解決して返すだけ");
   });
 });
 

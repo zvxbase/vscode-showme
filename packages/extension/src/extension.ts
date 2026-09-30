@@ -49,7 +49,7 @@ import {
 } from "./handlers/find-locations.js";
 import { handleGetEditorState } from "./handlers/get-editor-state.js";
 import { handleListWorkspaces } from "./handlers/list-workspaces.js";
-import { type ShowCodeDeps, handleShowCode } from "./handlers/show-code.js";
+import { type EditorSurface, type ShowCodeDeps, handleShowCode } from "./handlers/show-code.js";
 import { type ShowPanelDeps, handleShowHtml } from "./handlers/show-html.js";
 import { type ShowNoteDeps, handleShowNote } from "./handlers/show-note.js";
 import { type ShowViewDeps, handleShowView } from "./handlers/show-view.js";
@@ -137,7 +137,13 @@ function toAnnotateArgs(args: AnnotateWireArgs): Parameters<typeof handleAnnotat
       ? { location: item.location, text: item.text }
       : { location: item.location, text: item.text, color: item.color },
   );
-  return args.mode === undefined ? { items } : { items, mode: args.mode };
+  // `reveal`（増分13 D117）はハンドラが決める量（開くかどうか・どれを開くか）なので渡す。
+  // 開き方（スキーム・記録）は `realFile` と同じく deps が決める。
+  return {
+    items,
+    ...(args.mode === undefined ? {} : { mode: args.mode }),
+    ...(args.reveal === undefined ? {} : { reveal: args.reveal }),
+  };
 }
 
 /**
@@ -179,7 +185,6 @@ function toShowNoteArgs(
  */
 interface ActiveState {
   readonly server: ShowMeSocketServer | undefined;
-  readonly highlights: Highlights;
   readonly annotations: Annotations;
   readonly opened: OpenedByAgent;
   readonly envCollection: vscode.EnvironmentVariableCollection;
@@ -200,14 +205,15 @@ function tolerate(fn: () => void): void {
 /**
  * 1回の要求の開き方（D84 / D85 / D87）: スキームと、開いた文書を記録するか。分岐そのものは
  * `stageOpenTarget` 1つが持つ（中で `effectiveStageScheme` を呼び、`realFile` を重ねる）。
- * `show_code` はスキームと記録の両方を、`annotate` はスキームだけを使う ―― どちらも同じ関数を
- * 通すので、`realFile` の意味が2つの道具で割れない（不変条件14）。
+ * `show_code` はスキームと記録の両方を、`annotate` は吹き出しのスキームと、`reveal`（増分13 D117）で
+ * 開くときの開き方を使う ―― どちらも同じ関数を通すので、`realFile` の意味が2つの道具で割れない
+ * （不変条件14）。
  *
  * **設定は1回の呼び出しにつき1回だけ読む**（`showCodeDeps` / `annotateDeps` が
  * `readConfig()` の写しを1つ取り、そこから開き方を作り、ハンドラにも同じ写しを
  * `config: () => snapshot` で渡す）。スキームとハンドラの設定（`features.stage` の
- * 印だけの判断など）を別々に読むと、呼び出しの途中で設定が変わったときに
- * 「印だけなのに映しに塗る」「舞台は映し・塗りは file:」と割れる（不変条件14）。
+ * 開かない判断など）を別々に読むと、呼び出しの途中で設定が変わったときに
+ * 「開かないはずなのに映しに開く」「舞台は映し・吹き出しは file:」と割れる（不変条件14）。
  *
  * 映しのタブの定義・参照の代理（D88）も、`agentTab` の写す先をここで決める（`realFile: false`）。
  * activate の中の登録より前から呼べるよう、activate の外に置く。
@@ -431,8 +437,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           raw,
           readConfig().redaction,
         ),
-      // `close-own` が片づいたら `show_code` の指差しも消える（増分6 D67）。画家は1つ。
-      clearSpotlight: () => highlights.clearSpotlight(),
       log,
     });
 
@@ -462,13 +466,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       statusBar.setEnabled(config.enabled);
       statusBar.setOutsideWorkspace(config.redaction.allowOutsideWorkspace === true);
       if (!config.enabled) {
-        highlights.clearSpotlight();
-        // 描いたものは装飾だけではない。停止中と表示しながらエージェントの
-        // 説明が行の下に残るのは、装飾が残るのと同じ嘘である。
-        // **注釈の層を空にできるのは注釈ストアだけ。** 注釈の塗りは注釈と一緒に
-        // ここで消える（D66）。画家に注釈の全消しを頼まない ―― 頼めば「画家の全消し ＋
-        // ストアの全消し」を各所に並べることになり、片方を落とした時点で吹き出しだけが
-        // 残る（不変条件14）。`applyRole` と `deactivate` も同じ2行である。
+        // 停止中と表示しながらエージェントの説明が行の下に残るのは、描いたものが残るのと
+        // 同じ嘘である。**塗りを持つのは注釈だけ**（増分13 D116）で、注釈の層を空にできるのは
+        // 注釈ストアだけ ―― 塗りは吹き出しと一緒にここで消える（D66）。画家に全消しを頼まない
+        // （頼めば「画家の全消し ＋ ストアの全消し」を各所に並べることになり、片方を落とした
+        // 時点で吹き出しだけが残る。不変条件14）。`applyRole` と `deactivate` も同じ1行である。
         annotations.clearAll();
       }
       if (socketPath !== undefined && config.injectTerminalEnv) {
@@ -514,27 +516,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * list_workspaces（毎回読み直している）と show_code の見ているルートが
      * 食い違う。TabGroup と同じ理由で、位置で決まるものは再導出する。
      */
+    /**
+     * 開く面（`EditorSurface`）の**唯一の組み立て**（増分13 D117）。`show_code` と `annotate` の
+     * `reveal` は同じここから面を受け取る ―― 開き方（スキームと記録するか。D84 / D87）と列の
+     * 選び方（`editorGroup` / `avoidToolColumns`）を、道具ごとに組み立て直さない（不変条件14）。
+     * `target` は呼び出し側が設定の写しから1回だけ決めたもの（吹き出しのスキームも同じ値から取る）。
+     */
+    const stageEditorOf = (
+      root: vscode.Uri | undefined,
+      snapshot: ShowMeConfig,
+      target: StageOpenTarget,
+    ): EditorSurface =>
+      // vscode に触る部分は薄い層に押し出してある（editor-surface.ts）。
+      // ハンドラ自体が vscode を値 import していると、vitest から読み込めず
+      // 単体テストが1件も書けない ―― 実際にそうなっていて、可視化と
+      // レート制限を壊しても緑のままだった。
+      createEditorSurface(root, target, stage, stageColumnSettingsOf(snapshot));
+
     const showCodeDeps = (realFile: boolean): ShowCodeDeps => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri;
       // 設定の写しは1つ（`openTargetOf` のコメント）。
       const snapshot = readConfig();
       // **開き方（スキームと記録するか）はここで1回だけ決める**（D84 / D87）。`realFile` は
-      // この要求の引数なので、設定の写しと同じ瞬間に同じ関数へ渡す。面（`reveal` /
-      // `setSpotlight`）と `Stage.open` は受け取った値を使うだけで、決め直さない（不変条件14）。
+      // この要求の引数なので、設定の写しと同じ瞬間に同じ関数へ渡す。面（`reveal`）と
+      // `Stage.open` は受け取った値を使うだけで、決め直さない（不変条件14）。
       const target = openTargetOf(snapshot, realFile);
       return {
         config: () => snapshot,
-        // vscode に触る部分は薄い層に押し出してある（editor-surface.ts）。
-        // ハンドラ自体が vscode を値 import していると、vitest から読み込めず
-        // 単体テストが1件も書けない ―― 実際にそうなっていて、可視化と
-        // レート制限を壊しても緑のままだった。
-        editor: createEditorSurface(
-          root,
-          target,
-          stage,
-          highlights,
-          stageColumnSettingsOf(snapshot),
-        ),
+        editor: stageEditorOf(root, snapshot, target),
         symbols: createSymbolSurface(root),
         log,
         statusBar,
@@ -551,15 +560,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const annotateDeps = (realFile: boolean): AnnotateDeps => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-      // 設定の写しは1つ（`openTargetOf` のコメント）。吹き出しは記録と無縁なのでスキームだけ使う。
+      // 設定の写しは1つ（`openTargetOf` のコメント）。開き方も1回だけ決め、吹き出しのスキームと
+      // `reveal` で開く面の両方がこの1つの値を使う（吹き出しと開いたタブが別の URI に割れない）。
       const snapshot = readConfig();
+      const target = openTargetOf(snapshot, realFile);
       return {
         config: () => snapshot,
-        annotations: createAnnotationSurface(
-          root,
-          openTargetOf(snapshot, realFile).scheme,
-          annotations,
-        ),
+        annotations: createAnnotationSurface(root, target.scheme, annotations),
+        editor: stageEditorOf(root, snapshot, target),
         symbols: createSymbolSurface(root),
         log,
         statusBar,
@@ -859,10 +867,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // 入力路ではない**（§C5: 設定が縛るのはエージェントであって人間ではない）ので、
       // 窓の役割でも `showme.enabled` でも縛らない ―― 消すだけで、何も開かない。
       // エージェントは `get_editor_state` の注釈が空になったことで知る（その観測面が
-      // 付いた）。ハイライトは戻れないものなので知らせない。
-      vscode.commands.registerCommand("showme.clearHighlights", () => {
-        highlights.clearSpotlight();
-      }),
+      // 付いた）。塗りを持つのは注釈だけなので、塗りだけを消す命令は無い（増分13 D116）。
       vscode.commands.registerCommand("showme.clearAnnotations", () => {
         // 注釈の層を空にできるのは注釈ストアだけ（`applyConfig` と同じ1行。
         // 吹き出しと塗りは一緒に消える。D66）。画家に全消しを頼まない。
@@ -1046,7 +1051,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          * 可視化を**観測する口**（統合テスト専用）。
          *
          * 統合テストが見られるのは可視エディタと登録ファイルだけだったので、
-         * 「役割を外したら装飾を剥がす」（`highlights.clearSpotlight()`）と
+         * 「役割を外したら装飾を剥がす」と
          * 「画面が役割を映す」（`statusBar.setRole()`）は、**消しても全部緑**
          * のままだった（実測）。どちらもこの道具が防御として数えている性質で
          * ある（設計書 §5.4）。VS Code には貼った装飾を読み出す API が無く、
@@ -1241,8 +1246,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const applyRole = (role: WindowRole): void => {
       statusBar.setRole(role);
       if (role !== "stage") {
-        // スポットライトは画家、注釈の塗りは注釈ストア（`applyConfig` の理由）。
-        highlights.clearSpotlight();
+        // 塗りは注釈のもので、注釈ストアが吹き出しと一緒に消す（`applyConfig` の理由）。
         annotations.clearAll();
       }
       log.info("window role changed", { role });
@@ -1300,7 +1304,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // context.subscriptions と deactivate の両方から解放される。vscode の
     // Disposable は二重 dispose に耐えるので、どちらが先でも構わない。
     for (const disposable of disposables) context.subscriptions.push(disposable);
-    active = { server: started, highlights, annotations, opened, envCollection, disposables };
+    active = { server: started, annotations, opened, envCollection, disposables };
   } catch (e) {
     // 途中で落ちたら half-initialized な状態を残さない。ここまでに確保した
     // ものを全部返してから、VS Code に失敗として伝える。
@@ -1338,7 +1342,6 @@ export async function deactivate(): Promise<void> {
   // persistent = false なので保存はされていないが、このセッションで後から
   // 開かれる端末に死んだパスが渡らないよう明示的に消す。
   tolerate(() => state.envCollection.clear());
-  tolerate(() => state.highlights.clearSpotlight());
   tolerate(() => state.annotations.clearAll());
   // 所有の記録はメモリだけなので消えるが、明示的に空にする（不変条件13）。
   tolerate(() => state.opened.clear());

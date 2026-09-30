@@ -1,5 +1,5 @@
 <!-- translated-from README.md: {
-  "vscode-showme": "5c97e3a5b36f49a7",
+  "vscode-showme": "a8bfd06de5dded7c",
   "What it does not do": "54fc2279eea3e95f",
   "Requirements": "2671b44a4de69b3e",
   "Getting started": "33dfafe2e5bed82d",
@@ -7,14 +7,14 @@
   "2. Register ShowMe with your agent": "cac6fb551ea1fe84",
   "3. Turn it on in the window you want the agent to use": "d6281735fa2ed5cf",
   "4. Ask your agent": "11e672ee91a4ab8b",
-  "What you will see": "51658178ca4d1940",
+  "What you will see": "acc48051e775b7a3",
   "Commands": "b21b96b0fd1e39bd",
-  "Tools": "6d4a6e7b8349d01f",
+  "Tools": "f8e4dfd9171875e2",
   "Settings": "a674388fc1d37f0f",
   "Opening files outside the workspace": "908e3968f41fafdd",
   "Troubleshooting": "dae156e1eb981b23",
   "Uninstall": "ca746396cb15acdd",
-  "Safety, in one table": "f9a300ab3deeaab9",
+  "Safety, in one table": "57e256284c7f6c8c",
   "Packages": "548565c3d5677140",
   "Languages": "174627b9997a152c",
   "Status": "a95219be71ef22c5",
@@ -29,7 +29,7 @@
 
 Claude Code・Copilot CLI・Codex はコードを変えられるが、あなたの画面には触れない。
 vscode-showme はその隙間だけを埋める。見慣れないリポジトリをエージェントに案内してもらうとき、
-エージェントがファイルを開き、該当行をハイライトし、2箇所を並べ、番号付きの注釈を残し、図を描いて
+エージェントがファイルを開き、番号付きのコメントで該当箇所を指し、2箇所を並べ、図を描いて
 メモを貼る ―― 隣に座った同僚がするように。
 
 ## これは何ではないか
@@ -140,13 +140,15 @@ Windows で動くエージェントは WSL に繋いだ VS Code の窓に届か�
   エージェントが自分で片づけられる。同じファイルをあなたが自分で開いたタブは、あなたのもののまま
 - **本物のファイルを開く** — タブのタイトルバーの **ShowMe: 本物のファイルを開く**（`ShowMe: Open the real file`）ボタンで、
   同じファイルの同じ行を今いる列（エージェントのタブの隣）に開く。そのタブはあなたのもので、エージェントのものではない。`arrange_editors` の `close-own` では閉じない
-- **ハイライト** — エージェントが「今ここ」と指している行。次の `show_code` で置き換わる
-- **注釈** — エージェントのタブの行の下の吹き出し。エージェントの読む順に番号（`1/7 ·`）が付く。吹き出しの `‹ ›`
+- **注釈** — エージェントのタブの行の下の吹き出し。エージェントの読む順に番号（`1/7 ·`）が付く。
+  エージェントがコードを指すのはこれだけで、塗られた箇所には必ずコメントがある。塗りは吹き出しの色
+  （エージェントが色を付けなければ灰）で、エージェントが文字列で探して指したときは、その文字列だけを塗る（その行に2回以上あれば行全体）。
+  `show_code` でファイルを開いても何も塗らない。吹き出しの `‹ ›`
   （**前の注釈へ** / **次の注釈へ**）で順にたどれる。開くのはエージェントのタブで、あなたの列に開くこともあり、
   あなたが目を離せばエージェントが片づけることがある。**解決済みにする** で「読んだ」を返せ、**未解決に戻す** で取り消せる
 - **HTML パネル** — 表や図。スクリプトは動かない
 - **メモ** — untitled のエディタ。保存するかどうかはあなたが決める
-- **片づけ** — **ShowMe: ハイライトを消す**（`ShowMe: Clear highlights`）と **ShowMe: 注釈を消す**（`ShowMe: Clear annotations`）
+- **片づけ** — **ShowMe: 注釈を消す**（`ShowMe: Clear annotations`）。吹き出しと塗りが一緒に消える
 
 ## コマンド
 
@@ -161,7 +163,6 @@ VS Code では英語名で出る。
 | **ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`） | Claude Code / Codex CLI / Copilot CLI にそのまま貼れる設定を、実際のインストール先入りで開く。 |
 | **ShowMe: 操作ログを表示**（`ShowMe: Show the operations log`） | ツール呼び出しの記録を開く（選択テキストは記録しない）。 |
 | **ShowMe: 撤去手順と設定の削除方法を表示**（`ShowMe: Show teardown steps and how to remove the configuration`） | エージェントから ShowMe の登録を消し、拡張を撤去する手順を開く。 |
-| **ShowMe: ハイライトを消す**（`ShowMe: Clear highlights`） | エージェントのハイライトを消す。 |
 | **ShowMe: 注釈を消す**（`ShowMe: Clear annotations`） | エージェントの注釈をすべて消す。 |
 | **ShowMe: 本物のファイルを開く**（`ShowMe: Open the real file`） | エージェントのタブのファイルを、同じ行で、あなたのタブとして開く。エージェントのタブが前面にあるときだけ出る。 |
 <!-- END GENERATED: commands -->
@@ -176,8 +177,8 @@ VS Code では英語名で出る。
 |---|---|
 | `list_workspaces` | 繋がっている VS Code の窓をエージェントに教える |
 | `get_editor_state` | あなたが見ているところ（ファイル・カーソル・選択・見えている行・開いているタブ） |
-| `show_code` | ファイルを開き、その場所までスクロールしてハイライトする。`realFile: true` で本物のファイルを開き、あなたが編集できるようにする |
-| `annotate` | 行の下に番号付きの吹き出しを付ける（`realFile: true` で本物のファイルに付ける。`show_code realFile: true` の後に使う） |
+| `show_code` | ファイルを開き、その場所までスクロールする。塗らない。`realFile: true` で本物のファイルを開き、あなたが編集できるようにする |
+| `annotate` | コードを指す。行の下に番号付きの吹き出しを付け、その箇所を塗る（色が無ければ灰。文字列で指したら一致した文字列だけ。その行に文字列が2回以上あれば行全体）。`reveal: true` で、`show_code` と同じやり方でファイルを開き、最初の吹き出しまでスクロールもする。`realFile: true` で本物のファイルに付ける |
 | `show_html` | 表や図をパネルに出す（スクリプトは動かない） |
 | `show_note` | untitled のメモを開く |
 | `find_definition` | シンボルの定義場所（「定義へ移動」と同じ答え） |
@@ -195,7 +196,7 @@ VS Code では英語名で出る。
 | 設定 | 既定 | 意味 |
 |---|---|---|
 | `showme.enabled` | `true` | エージェントからの接続を受け付ける。オフにするとすべての窓で ShowMe が止まる。切り替えはコマンド「ShowMe: 拡張を停止する／再開する」（ShowMe: Stop / Resume the extension）で行う。 |
-| `showme.stage.enabled` | `true` | エージェントがファイルやタブを開き、スクロールし、エディタを分割することを許す（show\_code がファイルを開く部分と show\_note）。オフにすると show\_code は行に印を付けるだけになり（あなたがそのファイルを開くとハイライトが見える）、show\_note は断られる。注釈と読み取りのツールは常に使える。 |
+| `showme.stage.enabled` | `true` | エージェントがファイルやタブを開き、スクロールし、エディタを分割することを許す（show\_code がファイルを開く部分と show\_note）。オフにすると show\_code は位置を解決して返すだけで開かず、annotate は reveal を付けてもファイルを開かず、show\_note は断られる。注釈と読み取りのツールは常に使える。 |
 | `showme.stage.editorGroup` | `"shared"` | エージェントがファイル・メモ・パネルを開く列。この設定で、エージェントが閉じたり動かしたりしてよいあなたのタブは変わらない。 `"shared"`: 既定。あなたの列より右の列を先に使う。右に無ければ列を増やさずにあなたの列を使い、split でまだ足りないときだけ列を足す。 `"dedicated"`: あなたの列はあなた専用にする。右の列に開き、足りなければ列を足す。ただし、あなたのタブが1枚も無い列（空か、エージェントのタブだけ）なら使う。 `"active"`: 常にあなたの列に開く。エージェントの layout と枠は見ない。 |
 | `showme.stage.agentTabs` | `true` | エージェントの編集器を、エージェント専用のタブとして開く（ファイルの映しで、showme.stage.editable をオンにしていない限り読み取り専用）。エージェントのタブには印が付く: タブの名前が showme.agentTabForeground の色になり（テーマで変えられる）、VS Code がバッジを出す所には「SM」のバッジが出る（読み取り専用のタブではバッジの代わりに鍵のアイコンが出る）。あなたがタブを動かしても、同じファイルを自分で開いても、エージェントのタブのままなので、エージェントが自分で片づけられる。オフにすると、エージェントは今までどおり普通のファイルのタブを開く。切り替えが効くのはこの後に開くタブだけで、開いているタブはそのまま。 |
 | `showme.stage.editable` | `false` | エージェントのタブでの編集・保存を許す。保存は本物のファイルに書く。映しの編集は保存するまで人間の file: タブに見えない。書けないファイル（ディスクで読み取り専用のもの・ハードリンク）は読み取り専用で開く。showme.stage.agentTabs がオンでなければ効かない。切り替えが効くのはこの後に開くタブだけで、開いているタブはそのまま。 |
@@ -318,7 +319,7 @@ ShowMe を更新した後も、同じように一覧が取り直される。
 |---|---|
 | ネットワークリスナーを持たない | Unix socket / 名前付きパイプのみ。HTTP サーバは決して立てない。 |
 | どのツールもファイルの中身を返さない | `show_code` が返すのは解決した位置と、どう解決したかだけ。テキストは返さない。 |
-| 選択を動かさない | ハイライトは装飾、位置合わせは `revealRange`。選択を動かすと `get_editor_state` を通してテキストが漏れる。 |
+| 選択を動かさない | 注釈の塗りは装飾、位置合わせは `revealRange`。選択を動かすと `get_editor_state` を通してテキストが漏れる。 |
 | エージェントの HTML はスクリプトを持たない | 二重の iframe で、内側は `sandbox=""`、`connect-src 'none'`、`img-src data:`（egress ゼロ）。 |
 | エージェントの舞台は有界 | 上限2列。既定（`editorGroup: "shared"`）では、右に余地が無いとき列を足す代わりにあなたの列を使う。`editorGroup: "dedicated"` にすると、あなたが今いる列は、あなたのタブが1枚でもあれば使わない（あなたの列より右の既存の列は再利用する）。片づけ（`arrange_editors`）は、`closeHumanTabs` を設定しない限りエージェントが開いたものしか閉じず、`closeDirtyTabs` を設定しない限り未保存のタブを閉じない。`protectViewingTab` を設定すると、あなたが見ているタブにも触れない。 |
 | ツールが前面に出した選択は、あなたが選び直すまで渡さない | ツールの呼び出しであなたの前面の編集器が変わったら、見えている選択（VS Code が自分で戻したものも含む）は、あなたが自分で何かを選ぶまで `get_editor_state` に返らない。 |

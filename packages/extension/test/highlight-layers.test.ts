@@ -11,72 +11,18 @@ const item = (line: number, color: LayerRange<R>["color"] = "yellow"): LayerRang
   wholeLine: true,
   color,
 });
-const map = (
-  ...pairs: [string, LayerRange<R>[]][]
-): ReadonlyMap<string, readonly LayerRange<R>[]> => new Map(pairs);
 
-describe("HighlightLayers（増分6 §C2 / D67）", () => {
-  it("スポットライトは窓ごとに置き換わる: A の次に B を貼ると A は消える", () => {
-    const layers = new HighlightLayers<R>();
-    expect(layers.setSpotlight(map(["file:///a", [item(1)]]))).toEqual(["file:///a"]);
-    expect(layers.uris()).toEqual(["file:///a"]);
-
-    // 返るのは貼り直しが要る uri: 消える A と、新しく貼る B の両方。
-    // A を返さないと、画家が A の装飾を剥がしに行かない。
-    const touched = layers.setSpotlight(map(["file:///b", [item(2)]]));
-    expect([...touched].sort()).toEqual(["file:///a", "file:///b"]);
-    expect(layers.uris()).toEqual(["file:///b"]);
-    expect(layers.forUri("file:///a")).toEqual([]);
-    expect(layers.forUri("file:///b")).toEqual([item(2)]);
-  });
-
-  it("空の窓を渡すと前回の分が全部消える（解決できなかった show_code も窓を置き換える）", () => {
-    const layers = new HighlightLayers<R>();
-    layers.setSpotlight(map(["file:///a", [item(1)]], ["file:///b", [item(2)]]));
-    expect([...layers.setSpotlight(map())].sort()).toEqual(["file:///a", "file:///b"]);
-    expect(layers.uris()).toEqual([]);
-  });
-
-  it("clearSpotlight は貼っていた uri を返し、スポットライトだけを空にする", () => {
-    const layers = new HighlightLayers<R>();
-    layers.setSpotlight(map(["file:///a", [item(1)]]));
-    layers.setAnnotation("k1", "file:///b", item(3, "red"));
-    expect(layers.clearSpotlight()).toEqual(["file:///a"]);
-    expect(layers.uris()).toEqual(["file:///b"]);
-    // 何も無いときは何も触らない。
-    expect(layers.clearSpotlight()).toEqual([]);
-  });
-
-  it("注釈の層はスポットライトの置き換えで消えない（D66: 注釈の塗りは注釈の寿命）", () => {
-    const layers = new HighlightLayers<R>();
-    layers.setAnnotation("k1", "file:///a", item(5, "red"));
-    layers.setSpotlight(map(["file:///b", [item(1)]]));
-    layers.setSpotlight(map(["file:///c", [item(1)]]));
-    expect(layers.forUri("file:///a")).toEqual([item(5, "red")]);
-    expect([...layers.uris()].sort()).toEqual(["file:///a", "file:///c"]);
-  });
-
-  it("スポットライトは注釈の抹消で消えない", () => {
-    const layers = new HighlightLayers<R>();
-    layers.setSpotlight(map(["file:///a", [item(1)]]));
-    layers.setAnnotation("k1", "file:///b", item(2, "red"));
-    expect(layers.removeAnnotation("k1")).toEqual(["file:///b"]);
-    expect(layers.forUri("file:///a")).toEqual([item(1)]);
-    expect(layers.uris()).toEqual(["file:///a"]);
-  });
-
-  it("同じ uri に両層があるとき forUri は両方を返す（互いを消さない。spotlight が先）", () => {
-    const layers = new HighlightLayers<R>();
-    layers.setAnnotation("k1", "file:///a", item(7, "red"));
-    layers.setSpotlight(map(["file:///a", [item(7, "yellow")]]));
-    expect(layers.forUri("file:///a")).toEqual([item(7, "yellow"), item(7, "red")]);
-    // どちらを貼り直しても他方は残る。
-    layers.setSpotlight(map(["file:///a", [item(8)]]));
-    expect(layers.forUri("file:///a")).toEqual([item(8), item(7, "red")]);
-    layers.setAnnotation("k2", "file:///a", item(9, "blue"));
-    expect(layers.forUri("file:///a")).toEqual([item(8), item(7, "red"), item(9, "blue")]);
-    // 1つの uri は1回だけ数える。
-    expect(layers.uris()).toEqual(["file:///a"]);
+describe("HighlightLayers（注釈の層だけ。増分6 D66 / 増分13 D116）", () => {
+  /**
+   * 増分13 D116: `show_code` は塗らない。スポットライトの層は消した（死んだ層を残さない）。
+   */
+  it("スポットライトの層の口が無い（D116）", () => {
+    const layers = new HighlightLayers<R>() as unknown as Record<string, unknown>;
+    expect(layers.setSpotlight).toBeUndefined();
+    expect(layers.clearSpotlight).toBeUndefined();
+    // 肯定対照: 注釈の口はある（検査が別の理由で緑になっていない）。
+    expect(typeof layers.setAnnotation).toBe("function");
+    expect(typeof layers.removeAnnotation).toBe("function");
   });
 
   it("知らない key の removeAnnotation は何も触らない", () => {
@@ -102,13 +48,20 @@ describe("HighlightLayers（増分6 §C2 / D67）", () => {
     expect(layers.forUri("file:///b")).toEqual([item(3, "red")]);
   });
 
-  it("clearSpotlight は注釈の項目を残す。注釈は札ごとの抹消でだけ空になる（D66）", () => {
+  it("同じ uri に複数の注釈があるとき forUri は全部を登録順に返す", () => {
     const layers = new HighlightLayers<R>();
-    layers.setSpotlight(map(["file:///a", [item(1)]]));
+    layers.setAnnotation("k1", "file:///a", item(7, "red"));
+    layers.setAnnotation("k2", "file:///a", item(9, "blue"));
+    layers.setAnnotation("k3", "file:///b", item(1, "green"));
+    expect(layers.forUri("file:///a")).toEqual([item(7, "red"), item(9, "blue")]);
+    // 1つの uri は1回だけ数える。
+    expect([...layers.uris()].sort()).toEqual(["file:///a", "file:///b"]);
+  });
+
+  it("注釈は札ごとの抹消でだけ空になる（D66）", () => {
+    const layers = new HighlightLayers<R>();
     layers.setAnnotation("k1", "file:///a", item(2, "red"));
     layers.setAnnotation("k2", "file:///b", item(3, "green"));
-    expect(layers.clearSpotlight()).toEqual(["file:///a"]);
-    expect(layers.entries().map((e) => e.layer)).toEqual(["annotation", "annotation"]);
     expect(layers.removeAnnotation("k1")).toEqual(["file:///a"]);
     expect(layers.removeAnnotation("k2")).toEqual(["file:///b"]);
     expect(layers.uris()).toEqual([]);
@@ -124,14 +77,13 @@ describe("HighlightLayers（増分6 §C2 / D67）", () => {
     expect(layers.clearAll).toBeUndefined();
   });
 
-  it("entries は層の名前つきで全部を返す（観測用）", () => {
+  it("entries は全部を返す（観測用）", () => {
     const layers = new HighlightLayers<R>();
-    layers.setSpotlight(map(["file:///a", [item(1), item(2)]]));
-    layers.setAnnotation("k1", "file:///b", item(3, "red"));
+    layers.setAnnotation("k1", "file:///a", item(1));
+    layers.setAnnotation("k2", "file:///b", item(3, "red"));
     expect(layers.entries()).toEqual([
-      { uri: "file:///a", layer: "spotlight", item: item(1) },
-      { uri: "file:///a", layer: "spotlight", item: item(2) },
-      { uri: "file:///b", layer: "annotation", item: item(3, "red") },
+      { uri: "file:///a", item: item(1) },
+      { uri: "file:///b", item: item(3, "red") },
     ]);
   });
 });

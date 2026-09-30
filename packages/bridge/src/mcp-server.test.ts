@@ -132,18 +132,18 @@ describe("createShowMeServer", () => {
       properties: Record<string, { maxItems?: number; enum?: string[] }>;
       additionalProperties: boolean;
     };
-    expect(Object.keys(schema.properties).sort()).toEqual(["items", "mode", "realFile"]);
+    // `reveal`（増分13 D117）も広告面に載る（D54: 広告されるのは object の `.shape` だけ）。
+    expect(Object.keys(schema.properties).sort()).toEqual(["items", "mode", "realFile", "reveal"]);
     expect(schema.properties.items?.maxItems).toBe(20);
     expect(schema.properties.mode?.enum).toEqual(["replace", "add", "clear"]);
     expect(schema.additionalProperties).toBe(false);
   });
 
   /**
-   * 色を持つのは `show_code` だけ（増分6 D65'）。`annotate` の `location` は
-   * `markerLocationSchema` で、広告面からも `color` が消えている ―― 検証で落ちるだけ
-   * でなく、エージェントが `tools/list` で見る形にも無いことを固定する。
+   * 位置は色を持たない（増分6 D65'、増分13 D116 で `show_code` も）。広告面からも `color` が
+   * 消えている ―― 検証で落ちるだけでなく、エージェントが `tools/list` で見る形にも無いことを固定する。
    */
-  it("annotate / find_* の広告面の location に color が無く、show_code には有る（D65'）", async () => {
+  it("annotate / find_* / show_code の広告面の location に color が無い（D65' / D116）", async () => {
     const client = await connect(noWindow);
     const { tools } = await client.listTools();
     type ObjectSchema = { properties: Record<string, unknown> };
@@ -172,7 +172,11 @@ describe("createShowMeServer", () => {
     const showCode = tools.find((t) => t.name === "show_code")?.inputSchema as {
       properties: { locations: { items: ObjectSchema } };
     };
-    expect(Object.keys(showCode.properties.locations.items.properties)).toContain("color");
+    expect(Object.keys(showCode.properties.locations.items.properties)).not.toContain("color");
+    // 肯定対照: 消えたのは color だけ。
+    expect(Object.keys(showCode.properties.locations.items.properties)).toEqual(
+      expect.arrayContaining(["path", "text", "symbol", "lines", "occurrence"]),
+    );
   });
 
   it("location.color を付けた annotate / find_definition は、拡張へ届く前にエラーで返る（D65'）", async () => {

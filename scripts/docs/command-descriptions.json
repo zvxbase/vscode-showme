@@ -19,10 +19,6 @@
     "en": "Open the steps to remove ShowMe from your agent and uninstall it.",
     "ja": "エージェントから ShowMe の登録を消し、拡張を撤去する手順を開く。"
   },
-  "showme.clearHighlights": {
-    "en": "Remove the agent's highlight.",
-    "ja": "エージェントのハイライトを消す。"
-  },
   "showme.clearAnnotations": {
     "en": "Remove all of the agent's annotations.",
     "ja": "エージェントの注釈をすべて消す。"

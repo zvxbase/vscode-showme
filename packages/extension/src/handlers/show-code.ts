@@ -10,12 +10,12 @@ import type { LineRange } from "../line-range.js";
 import { type RateLimiter, fileRateLimitKey, sharedFileLimiter } from "../rate-limit.js";
 import { readAgentFile } from "../read-workspace-file.js";
 import type { StageLayout } from "../stage-column.js";
-import { ToolError } from "../tool-error.js";
 import {
   agentPathKey,
   fileRateLimitCanonicalizer,
   isExcludedSpelling,
 } from "../workspace-path-gate.js";
+import { revealResolved } from "./reveal-location.js";
 import { type SymbolSurface, prefetchSymbol } from "./symbol-prefetch.js";
 
 export type { LineRange } from "../line-range.js";
@@ -43,15 +43,13 @@ export interface StagePlacement {
  * このファイルは vitest から読み込めず、**ハンドラの単体テストが1件も
  * 書けなかった**。その結果、空振りの可視化（設計書 §5.4 の実装要件）と
  * レート制限を両方壊しても単体・統合とも緑のままだった（実測）。
+ *
+ * **塗る口は無い**（増分13 D116）。`show_code` は開いて見せるだけで、塗るのは注釈
+ * （`annotate`）だけである。以前は `show_code` のスポットライトを渡す口があった。
  */
 export interface EditorSurface {
   /** ワークスペース相対パスを人間の画面に開き、行範囲を可視にする。 */
   reveal(relPath: string, range: LineRange, placement: StagePlacement): Promise<void>;
-  /**
-   * 1回の `show_code` のスポットライトを**窓ごと**に置き換える（増分6 D67）。
-   * 前回の呼び出しの分は全部消える。空の Map でも呼ぶ（消すのも置き換えである）。
-   */
-  setSpotlight(byPath: ReadonlyMap<string, readonly LineRange[]>): void;
 }
 
 /**
@@ -65,9 +63,9 @@ export interface ShowCodeStatus {
   flashManyMatches(path: string, needle: string): void;
   flashRateLimited(path: string): void;
   /**
-   * `stage` を切っているので開かずに印だけ付けた（増分6 D76）。`line` は1始まり。
+   * `stage` を切っているので開かずに位置だけ解決した（増分6 D76 / 増分13 D116）。`line` は1始まり。
    * 人間が自分でその場所を探しに行くための手がかりで、開かない結果を黙らせない
-   * ための可視化でもある。
+   * ための可視化でもある（塗りが無くなった今は、人間に残る**唯一の**痕跡）。
    */
   flashMarked(path: string, line: number): void;
 }
@@ -125,7 +123,8 @@ function selectorLabel(loc: Location): string {
 }
 
 /**
- * 人間の画面にファイルを開き、該当箇所を見せる。
+ * 人間の画面にファイルを開き、該当箇所までスクロールする。**塗らない**（増分13 D116。
+ * コードを指し示すのはコメント付きの `annotate` で、`reveal: true` なら開くのも同じ関数）。
  *
  * 返り値にファイルの内容を入れない。位置と解決手段だけを返す
  * 。
@@ -140,8 +139,8 @@ function selectorLabel(loc: Location): string {
  * （`clampStageColumn` に逐語）。開けなかった位置で枠を進めないのは、
  * 空振り1件が舞台の1列目を空のまま消費しないようにするため。
  *
- * `config.features.stage` が false なら**開かない**（印だけ。増分6 D76。
- * 本文の `stage` のコメント）。
+ * `config.features.stage` が false なら**開かない**（位置を解決して返すだけ。増分6 D76。
+ * 判断は `revealResolved` にある）。
  */
 export async function handleShowCode(
   args: { locations: Location[]; layout?: StageLayout },
@@ -168,11 +167,9 @@ export async function handleShowCode(
   const config = deps.config();
   const layout = args.layout ?? "single";
   /**
-   * **`stage` を切ると印だけ**（増分6 §C4 / D76）。設定が縛るのはエージェントで
-   * あって人間ではない（§C5）: 位置は解決して返し、塗りはスポットライトに登録する
-   * （見えていれば今貼る。見えていなければ人間が開いたときに画家が貼る）が、
-   * **開かない・スクロールしない・列を作らない**。`layout` は無視する
-   * （列を作るのは開く側の量）。`annotate` と同じ流儀 ―― 印は残るが画面は動かない。
+   * **`stage` を切ると位置を解決して返すだけ**（増分6 §C4 / D76、増分13 D116）。判断は
+   * `revealResolved` の1つ（`annotate` の `reveal` と同じ）。`layout` は無視される
+   * （列を作るのは開く側の量）。
    *
    * 結果の形は設定で変えない（`opened` のような欄を足さない。`list_workspaces` の
    * `features.stage` で分かる）。
@@ -182,9 +179,6 @@ export async function handleShowCode(
   const resolutions: Resolution[] = [];
   /** 次に使う舞台の枠。**実際に開けたときだけ進む。** */
   let slot = 0;
-  // 1回の呼び出しの全位置を溜めて、最後に**1つの窓**として渡す（D67）。画家は窓ごとに
-  // 置き換えるので、ファイルごとに渡すと後のファイルの分が前のファイルの分を消す。
-  const highlightsByPath = new Map<string, LineRange[]>();
 
   /**
    * 予算を数える単位を決める。**関門の口をそのまま注入する**
@@ -254,7 +248,7 @@ export async function handleShowCode(
     // エディタが開かない結果はすべて画面に出す。無音のオラクルを作らない
     // （設計書 §4.1 ⑥ / §5.4）。判定基準は「0件かどうか」ではなく
     // 「エディタが開くかどうか」である:
-    //   one  -> 開いてハイライトされるので、その表示自体が可視化になる
+    //   one  -> 開いてスクロールするので、その表示自体が可視化になる
     //   none -> 何も起きない。黙らせると、`.env` に対して探す文字列を変えながら
     //           何百回も問い合わせて内容を絞り込む攻撃が人間に一切見えない
     //   many -> 候補を返すだけで何も起きない。エージェントには情報量のある結果
@@ -274,13 +268,9 @@ export async function handleShowCode(
       const rel = resolution.normalizedPath;
       // **列も写す。** 欄を数え上げて写すと、`Resolution` に欄が増えたときに
       // ここで黙って落ちる（実際に落ちていて、文字単位の指定が効かなかった）。
-      // **色は解決結果ではなく指定である。** `Resolution` には載せない ――
-      // 載せると「解決器が色を決めている」ように読める。指定した本人から写す。
-      const color = loc.color;
       const range: LineRange = {
         startLine: resolution.range.startLine,
         endLine: resolution.range.endLine,
-        ...(color === undefined ? {} : { color }),
         ...(resolution.range.startColumn !== undefined && resolution.range.endColumn !== undefined
           ? {
               startColumn: resolution.range.startColumn,
@@ -288,49 +278,36 @@ export async function handleShowCode(
             }
           : {}),
       };
-      if (stage) {
-        try {
-          // selection は絶対に触らない（設計書 D8' / S2）。
-          // 触ると show_code -> get_editor_state の合成で任意ファイルの生テキストが
-          // 取れてしまい、「どのツールもファイルの中身を返さない」が無効になる。
-          // それを守るのは EditorSurface の実装側の責務である。
-          await deps.editor.reveal(rel, range, { slot, layout });
-        } catch (e) {
-          // 見せられなかったのに位置を返すと、人間に何の痕跡も残らないまま
-          // エージェントだけが位置を得る（＝無音のオラクル）。返さない。
-          //
-          // 舞台の列が無い（D90。面が `no-stage-column` で断った）ときだけ理由を分ける ――
-          // それ以外の失敗は今までどおり `not-found` に畳む（例外の中身を線に載せない）。
-          const reason: ResolutionReason =
-            e instanceof ToolError && e.code === "no-stage-column"
-              ? "no-stage-column"
-              : "not-found";
-          deps.log.info("show_code failed to open", { path: loc.path, error: String(e) });
-          deps.statusBar.flashMiss(loc.path, selectorLabel(loc));
-          resolutions.push(unresolved(reason, rel));
-          continue;
-        }
-        // 枠は**実際に開けたときだけ**進む。印だけのときは1つも進まない。
+      // selection は絶対に触らない（設計書 D8' / S2）。
+      // 触ると show_code -> get_editor_state の合成で任意ファイルの生テキストが
+      // 取れてしまい、「どのツールもファイルの中身を返さない」が無効になる。
+      // それを守るのは EditorSurface の実装側の責務である。
+      const outcome = await revealResolved(
+        { editor: deps.editor, log: deps.log, stage },
+        rel,
+        range,
+        { slot, layout },
+      );
+      if (outcome.opened) {
+        // 枠は**実際に開けたときだけ**進む。
         slot += 1;
-      } else {
+      } else if (outcome.reason === "stage-disabled") {
         // 開かないので、開いたこと自体が可視化になる道は無い。空振り（`flashMiss`）と
         // 同じく、ステータスバーの一瞬の表示が**人間に残る唯一の痕跡**である
-        // （無音のオラクルを作らない。設計書 §5.4）。塗りは登録するが、見えていない
-        // ファイルの塗りは人間が開くまで画面に出ない。
+        // （無音のオラクルを作らない。設計書 §5.4）。
         deps.statusBar.flashMarked(rel, range.startLine);
+      } else {
+        // 見せられなかったのに位置を返すと、人間に何の痕跡も残らないまま
+        // エージェントだけが位置を得る（＝無音のオラクル）。返さない。
+        // 理由は `revealResolved` が決める（列が無い `no-stage-column` と、それ以外の `not-found`）。
+        deps.statusBar.flashMiss(loc.path, selectorLabel(loc));
+        resolutions.push(unresolved(outcome.reason, rel));
+        continue;
       }
-      const ranges = highlightsByPath.get(rel) ?? [];
-      ranges.push(range);
-      highlightsByPath.set(rel, ranges);
     }
 
     resolutions.push(resolution);
   }
-
-  // **空でも渡す。** スポットライトの寿命は「1回の show_code の分だけ」（§C1）で、
-  // 何も解決できなかった呼び出しも前回の指差しを消す ―― 残すと、開けなかった位置の
-  // 代わりに前の呼び出しの塗りが「今ここ」に見える。
-  deps.editor.setSpotlight(highlightsByPath);
 
   return { resolutions };
 }

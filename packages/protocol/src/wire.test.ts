@@ -751,6 +751,42 @@ describe("annotate の引数スキーマ", () => {
     expect(annotateArgsObjectSchema.shape.realFile.description).toContain("real file");
   });
 
+  /** 増分13 D117: 開いてスクロールするかは任意で、既定は開かない。 */
+  it("reveal は省略できる boolean で、型違いを拒み、検証後の形に残る（D117）", () => {
+    expect(annotateArgsSchema.parse({ items: [item], reveal: true })).toEqual({
+      items: [item],
+      reveal: true,
+    });
+    expect(annotateArgsSchema.parse({ items: [item], mode: "add", reveal: false })).toEqual({
+      items: [item],
+      mode: "add",
+      reveal: false,
+    });
+    // 既定は開かない（鍵ごと無い）。
+    expect(annotateArgsSchema.parse({ items: [item] })).not.toHaveProperty("reveal");
+    for (const wrong of ["true", 1, null]) {
+      expect(
+        annotateArgsSchema.safeParse({ items: [item], reveal: wrong }).success,
+        JSON.stringify(wrong),
+      ).toBe(false);
+    }
+    const description = annotateArgsObjectSchema.shape.reveal.description ?? "";
+    expect(description).toContain("show_code");
+    expect(description).toContain("Default false");
+  });
+
+  it("clear に reveal を付けると落ちる（開く先が無い。D117）", () => {
+    for (const reveal of [true, false]) {
+      const parsed = annotateArgsSchema.safeParse({ mode: "clear", reveal });
+      expect(parsed.success, String(reveal)).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues.map((i) => i.path.join("."))).toEqual(["reveal"]);
+      }
+    }
+    // 肯定対照: reveal を外せば通る。
+    expect(annotateArgsSchema.safeParse({ mode: "clear" }).success).toBe(true);
+  });
+
   it("items は1〜20件", () => {
     expect(annotateArgsSchema.safeParse({ items: [] }).success).toBe(false);
     const many = Array.from({ length: MAX_ANNOTATION_ITEMS }, () => item);
@@ -897,10 +933,16 @@ describe("annotate の色（設計 D46/D47/D57）", () => {
     );
   });
 
-  it("対照: show_code の location.color は残る", () => {
-    expect(showCodeArgsSchema.safeParse({ locations: [{ ...LOC, color: "red" }] }).success).toBe(
-      true,
-    );
+  /**
+   * 増分13 D116: `show_code` も塗らない。色を持つツールは無くなったので、`show_code` の
+   * `location.color` も効かない摘みになる ―― 受けて黙って捨てずに落とす（D65' と同じ規則）。
+   */
+  it("show_code の location.color も落ちる（増分13 D116: show_code は塗らない）", () => {
+    const parsed = showCodeArgsSchema.safeParse({ locations: [{ ...LOC, color: "red" }] });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(namesColor(parsed.error)).toBe(true);
+    // 肯定対照: color だけ外せば通る。
+    expect(showCodeArgsSchema.safeParse({ locations: [LOC] }).success).toBe(true);
   });
 
   it("ハイライトの語彙の部分集合である（灰を除いて一致）", () => {
@@ -909,6 +951,16 @@ describe("annotate の色（設計 D46/D47/D57）", () => {
     for (const c of ANNOTATION_COLORS) expect(HIGHLIGHT_COLORS).toContain(c);
     expect(ANNOTATION_COLORS).not.toContain("grey");
     expect([...ANNOTATION_COLORS]).toEqual(["yellow", "green", "red", "blue", "purple"]);
+  });
+
+  /**
+   * 増分13 D119: 色を省いたときは灰で塗る（`annotations.ts` が `UNMARKED_ANNOTATION_PAINT` に倒す）。
+   * 以前は項目の `color` の説明だけが「塗らない（no paint）」と言っていて、道具の説明と食い違っていた。
+   */
+  it("項目の color の説明は、省略すると灰で塗ると言う（D119。実装に合わせる）", () => {
+    const description = annotateItemSchema.shape.color.description ?? "";
+    expect(description).toContain("painted grey");
+    expect(description).not.toContain("no paint");
   });
 
   it("無印の塗りは灰で、注釈の語彙の外にある（増分6.1 D78）", () => {
@@ -1279,6 +1331,11 @@ describe("find_* の location.color（D65'）", () => {
         tool: "show_code",
         args: { locations: [{ ...LOC, color: "red" }] },
       }).success,
+      // 増分13 D116: show_code も塗らないので、show_code の color も落ちる。
+    ).toBe(false);
+    // 肯定対照: color を外せば線上でも通る。
+    expect(
+      requestSchema.safeParse({ id: "1", tool: "show_code", args: { locations: [LOC] } }).success,
     ).toBe(true);
   });
 });
@@ -1308,6 +1365,21 @@ describe("annotate の結果に id と index が載る（D71）", () => {
 
   it("clear の結果（空の配列）は通る", () => {
     expect(annotateResultSchema.safeParse({ resolutions: [] }).success).toBe(true);
+  });
+
+  it("reveal の結果: 開けたか、開けなかった理由を閉じた語彙で（D117）", () => {
+    const ok = (reveal: unknown) =>
+      annotateResultSchema.safeParse({ resolutions: [], reveal }).success;
+    expect(ok({ opened: true })).toBe(true);
+    for (const reason of ["no-stage-column", "not-found", "stage-disabled", "no-annotation"]) {
+      expect(ok({ opened: false, reason }), reason).toBe(true);
+    }
+    // 自由文字列の理由は通さない（不変条件2の抜け道にしない）。知らない鍵も落ちる。
+    expect(ok({ opened: false, reason: "file contents here" })).toBe(false);
+    expect(ok({ opened: true, path: "a.ts" })).toBe(false);
+    // 開けたなら理由は無く、開けなかったなら理由が要る（判別可能な union）。
+    expect(ok({ opened: false })).toBe(false);
+    expect(ok({ opened: true, reason: "not-found" })).toBe(false);
   });
 
   it("id と index は 1 以上の整数", () => {

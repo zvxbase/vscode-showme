@@ -24,8 +24,8 @@ export type Feature = (typeof FEATURES)[number];
  * 読む。2つの面が別々に表を持つと、片方だけ更新されたときに「一覧には載って
  * いないのに断られる」（あるいはその逆）が起きる（不変条件14）。
  *
- * `show_code` は core: 印（`spotlight` への登録）は常に出せる。開く・スクロールする
- * 部分だけを `stage` が縛る（D76）。
+ * `show_code` は core: 位置の解決は常にできる。開く・スクロールする部分だけを `stage` が
+ * 縛る（D76）。塗りは無い（増分13 D116）。`annotate` の `reveal` も同じく `stage` が縛る。
  */
 export const FEATURE_OF_TOOL: Record<ToolName, Feature | "core"> = {
   annotate: "core",

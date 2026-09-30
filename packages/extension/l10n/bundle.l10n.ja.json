@@ -25,7 +25,7 @@
   "ShowMe: second connection refused": "ShowMe: 2本目の接続を拒否",
   "ShowMe: the agent found \"{1}\" more than once in {0} (it has to narrow the selector)": "ShowMe: エージェントが {0} の「{1}」を複数見つけました（選び直しが要ります）",
   "ShowMe: the agent looked for \"{1}\" in {0} and found nothing": "ShowMe: エージェントが {0} の「{1}」を探して見つかりませんでした",
-  "ShowMe: the agent marked {0}:{1} (open the file to see the highlight)": "ShowMe: エージェントが {0}:{1} に印を付けました（ファイルを開くとハイライトが見えます）",
+  "ShowMe: the agent pointed at {0}:{1} (not opened: opening files is turned off)": "ShowMe: エージェントが {0}:{1} を指しました（ファイルを開く機能が切られているので開いていません）",
   "ShowMe: the agent requested {0} repeatedly in a short time, so it was rate limited": "ShowMe: エージェントが {0} を短時間に繰り返し要求したので制限しました",
   "ShowMe: the agent tried to read the editor state repeatedly in a short time, so it was rate limited (get_editor_state)": "ShowMe: エージェントが画面の状態を短時間に繰り返し読もうとしたので制限しました（get_editor_state）",
   "ShowMe: the socket path the agent connects to": "ShowMe: エージェントが繋ぐソケットのパス",

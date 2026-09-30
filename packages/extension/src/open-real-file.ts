@@ -22,7 +22,7 @@ import { acceptWorkspacePath } from "./workspace-path-gate.js";
  *   フォーカスも移す。**何も記録しない**ので、開いた `file:` のタブは own にならない（人間の
  *   タブ）。映しの own はスキームで決まる（D82）ので、映しは own のまま
  * - **役割・`showme.enabled`・舞台の設定には縛られない**（§C5: 設定が縛るのはエージェントで
- *   あって人間ではない。Clear highlights と同じ）。制限モードでも同じ
+ *   あって人間ではない。Clear annotations と同じ）。制限モードでも同じ
  *
  * URI は `relOfStageUri` / `stageUriFor` だけで組む（不変条件14）。
  */

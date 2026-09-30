@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { HIGHLIGHT_COLORS } from "./highlight-style.js";
 
 /**
  * `Location.path` の説明（D102）。`show_code` / `annotate` / `find_*` が同じ `locationSchema` を
@@ -22,7 +21,9 @@ export const locationSchema = z
       })
       .optional()
       .describe(
-        "Literal string to search for. Not a regular expression. The recommended way to specify a location",
+        "Literal string to search for. Not a regular expression. The recommended way to specify a location. " +
+          "annotate paints only the matched text; when the line contains the text more than once, the whole line " +
+          "is painted (use lines with startColumn and endColumn to pin one)",
       ),
     symbol: z
       .string()
@@ -55,32 +56,17 @@ export const locationSchema = z
       .min(1)
       .max(50)
       .optional()
-      .describe("Which match to use when there are several"),
-    color: z
-      .enum(HIGHLIGHT_COLORS)
-      .optional()
       .describe(
-        "Highlight color. **A hue name, not a meaning**: " +
-          "what each color means is up to the caller (default is yellow)",
+        "Which match to use when there are several. For text, occurrence counts lines (the Nth line containing the text)",
       ),
+    // **色は持たない**（増分13 D116）。以前は `show_code` の塗りの色がここにあり、塗らないツールは
+    // それを外した別のスキーマ（`markerLocationSchema`）を使っていた（増分6 D65'）。`show_code` も
+    // 塗らなくなったので、色の摘みを持つ位置は無い。注釈の色は項目の `color`（`annotateItemSchema`）。
+    // 効かない摘みを広告しない ―― 受けて黙って捨てると、エージェントは効いていると思い込む。
   })
   .strict();
 
 export type Location = z.infer<typeof locationSchema>;
-
-/**
- * 塗らないツール（`annotate` / `find_definition` / `find_references`）の位置。
- *
- * 色を持つのは `show_code` だけ。注釈の色は項目の `color`（作者名と行の塗りの両方に出る）で、
- * `find_*` は色を読まない。**効かない摘みを広告しない**（増分6 D65'）―― 受けて黙って捨てると、
- * エージェントは効いていると思い込み、人間の画面には何も出ない。
- *
- * `.omit()` は元の strict を引き継ぐが、言葉で信じず `.strict()` を明示する
- * （`location.test.ts` が知らない鍵で落ちることを両方に当てている）。
- */
-export const markerLocationSchema = locationSchema.omit({ color: true }).strict();
-
-export type MarkerLocation = z.infer<typeof markerLocationSchema>;
 
 /** 何件当たったか。正確な件数は返さない（設計書 §4.1 ③ / S1）。 */
 export type MatchKind = "none" | "one" | "many";
@@ -119,7 +105,8 @@ export interface Resolution {
    * 確定した範囲。`match === "one"` のときだけ入る。
    *
    * `startColumn` / `endColumn` は**両方そろったときだけ**入る（0始まり、設計 D34）。
-   * 入っていれば文字単位、入っていなければ行全体である。
+   * 入っていれば文字単位、入っていなければ行全体である。`text` で解決したときは一致した
+   * 文字列の列（UTF-16 の単位。増分13 D118）、`lines` は指定された列、`symbol` は行全体。
    */
   range?: { startLine: number; endLine: number; startColumn?: number; endColumn?: number };
   /** match === "many" のときの候補。最大3件 */

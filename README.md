@@ -6,8 +6,8 @@
 
 Claude Code, Copilot CLI and Codex can change your code, but they cannot touch your screen.
 vscode-showme fills exactly that gap: while an agent walks you through an unfamiliar repository,
-it can open the file, highlight the lines, put two places side by side, leave numbered
-annotations, draw a diagram and pin a note — the way a colleague sitting next to you would.
+it can open the file, point at lines with numbered comments, put two places side by side,
+draw a diagram and pin a note — the way a colleague sitting next to you would.
 
 ## What it does not do
 
@@ -123,14 +123,16 @@ Talk to your agent as usual and ask it to show you things, for example:
   up. A tab you open yourself on the same file stays yours.
 - **Open the real file** — the **`ShowMe: Open the real file`** button in the tab title bar opens
   the same file at the same line in the column you're in (next to the agent's tab). That tab is yours, not the agent's: `arrange_editors`' `close-own` does not close it.
-- **Highlight** — the lines the agent is talking about right now. The next `show_code` replaces it.
 - **Annotations** — speech bubbles under lines in the agent's tabs, numbered in the agent's reading order (`1/7 ·`).
+  This is how the agent points at code: every painted spot comes with a comment. The paint is in the
+  bubble's color (grey when the agent gives none), and covers only the matched text when the agent
+  located it by searching for text (the whole line if that text appears on it more than once). Opening a file with `show_code` paints nothing.
   Use the `‹ ›` buttons in the bubble (**Previous annotation** / **Next annotation**) to follow
   them. They open the agent's tab, possibly in your column, and the agent may tidy it up once
   you look away. **Resolve** marks one as read; **Unresolve** takes that back.
 - **HTML panels** — tables and diagrams. Scripts never run in them.
 - **Notes** — an untitled editor. Nothing is saved unless you save it.
-- **Clean up** — **ShowMe: Clear highlights** and **ShowMe: Clear annotations**.
+- **Clean up** — **ShowMe: Clear annotations** (removes the bubbles and their paint together).
 
 ## Commands
 
@@ -144,7 +146,6 @@ These are in the Command Palette (Ctrl+Shift+P, or Cmd+Shift+P on macOS).
 | **ShowMe: Show agent configuration** | Open ready-to-paste configuration for Claude Code, Codex CLI and Copilot CLI, filled in with the real install path. |
 | **ShowMe: Show the operations log** | Open the log of every tool call (selected text is not recorded). |
 | **ShowMe: Show teardown steps and how to remove the configuration** | Open the steps to remove ShowMe from your agent and uninstall it. |
-| **ShowMe: Clear highlights** | Remove the agent's highlight. |
 | **ShowMe: Clear annotations** | Remove all of the agent's annotations. |
 | **ShowMe: Open the real file** | Open the file of the agent's tab at the same line, as your own tab. Listed only while one of the agent's tabs is active. |
 <!-- END GENERATED: commands -->
@@ -158,8 +159,8 @@ The buttons in the annotation bubbles (`‹ ›` for **Previous annotation** / *
 |---|---|
 | `list_workspaces` | Tells the agent which VS Code window it is connected to |
 | `get_editor_state` | Where you are looking: active file, cursor, selection, visible lines, open tabs |
-| `show_code` | Opens a file, scrolls to a location and highlights it. `realFile: true` opens the real file instead, for you to edit |
-| `annotate` | Leaves numbered speech bubbles under lines (`realFile: true` puts them on the real file, for use after `show_code realFile: true`) |
+| `show_code` | Opens a file and scrolls to a location, without highlighting it. `realFile: true` opens the real file instead, for you to edit |
+| `annotate` | Points at code: leaves numbered speech bubbles under lines and paints the spot (grey without a color; only the matched text when located by text, or the whole line when that text appears on it more than once). `reveal: true` also opens the file and scrolls to the first bubble, the same way `show_code` does. `realFile: true` puts them on the real file |
 | `show_html` | Shows a table or diagram in a panel (no scripts) |
 | `show_note` | Opens an untitled note |
 | `find_definition` | Where a symbol is defined (like Go to Definition) |
@@ -178,7 +179,7 @@ settings.
 | Setting | Default | Meaning |
 |---|---|---|
 | `showme.enabled` | `true` | Accept connections from agents. Turning it off stops ShowMe in every window. Use the command "ShowMe: Stop / Resume the extension" to switch it. |
-| `showme.stage.enabled` | `true` | Let the agent open files and tabs, scroll, and split the editor area (show\_code opening files, show\_note). When off, show\_code only marks lines (you see the highlight when you open the file yourself) and show\_note is refused. Annotations and the reading tools always work. |
+| `showme.stage.enabled` | `true` | Let the agent open files and tabs, scroll, and split the editor area (show\_code opening files, show\_note). When off, show\_code only resolves the location without opening it, annotate does not open files even with reveal, and show\_note is refused. Annotations and the reading tools always work. |
 | `showme.stage.editorGroup` | `"shared"` | Which editor column the agent opens files, notes and panels in. Changing this does not change which of your tabs the agent may close or move. `"shared"`: Default. Reuse the columns to the right of yours first. If there are none, use your column instead of adding one; add a column only when a split layout still needs more. `"dedicated"`: Keep your column for you: open in the columns to the right, adding one when needed. Your column is still used when it has none of your tabs (it is empty or holds only the agent's tabs). `"active"`: Always open in your column, ignoring the agent's layout and slots. |
 | `showme.stage.agentTabs` | `true` | Open the agent's editors as its own tabs (a mirror of the file, read-only unless showme.stage.editable is on). The agent's tabs are marked: the tab name is shown in the color showme.agentTabForeground (themes can change it), and an "SM" badge appears where VS Code shows badges (read-only tabs show their lock icon instead of the badge). They stay the agent's even if you move them or open the same file yourself, so the agent can tidy them up. When off, the agent opens ordinary file tabs as before. Changing this affects only tabs opened afterwards; tabs already open stay as they are. |
 | `showme.stage.editable` | `false` | Let you edit and save in the agent's tabs. Saving writes the real file. Edits in the agent's tab are not visible in your own tab of the same file until you save. A file you cannot write (read-only on disk, or a hard link) opens read-only. Has no effect unless showme.stage.agentTabs is on. Changing this affects only tabs opened afterwards; tabs already open stay as they are. |
@@ -302,7 +303,7 @@ the error.
 |---|---|
 | No network listener | Unix socket / named pipe only. No HTTP server, ever. |
 | No tool returns file contents | `show_code` returns the resolved position and how it was resolved — never text. |
-| Selection is never moved | Highlights use decorations; alignment uses `revealRange`. Moving the selection would leak text through `get_editor_state`. |
+| Selection is never moved | Annotation paint uses decorations; alignment uses `revealRange`. Moving the selection would leak text through `get_editor_state`. |
 | Agent HTML has no script | Double iframe, inner `sandbox=""`, `connect-src 'none'`, `img-src data:` (no egress). |
 | The agent's stage is bounded | At most 2 editor columns. By default (`editorGroup: "shared"`) it reuses your column instead of adding a new one when there's no room to its right; set `editorGroup: "dedicated"` to keep it out of the column you're working in while it holds any of your tabs (it still reuses existing columns to the right of yours). Tidy-up (`arrange_editors`) closes only what the agent opened unless you set `closeHumanTabs`, never an unsaved tab unless you set `closeDirtyTabs`, and with `protectViewingTab` it also leaves the tab you are viewing. |
 | A selection a tool brought to the front isn't shared until you pick it again | If a tool call changes the editor in front of you, the selection it's showing — even one VS Code restored on its own — is withheld from `get_editor_state` until you select something yourself. |

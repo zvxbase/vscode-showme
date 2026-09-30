@@ -86,4 +86,28 @@ describe("setDecorations を呼ぶのは decorations.ts だけ（増分6 §C2）
     );
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
+
+  /**
+   * 増分13 D116: `show_code` は塗らない。画家の層は注釈だけで、スポットライトの層と、それを
+   * 消すための経路（次の `show_code`・`close-own`・停止・人間の「ハイライトを消す」）は消した。
+   * 死んだ層を残さない ―― 名前が src/ のどこかに残っていれば、誰かが戻したか消し残した。
+   */
+  it("スポットライトの層と消す経路が extension / protocol / bridge の src/ に無い（増分13 D116）", () => {
+    // 拡張だけでなく protocol と bridge も見る（層の名前が型や説明に戻るのも「戻した」である）。
+    // 識別子もコメントも区別しない単語一致（`spotlight` / `setSpotlight` / `clearSpotlight` /
+    // `clearHighlights`）。消した経緯は日本語（スポットライト）で書く。
+    const roots = ["../../protocol/src", "../../bridge/src"].map((r) => path.resolve(SRC_ROOT, r));
+    const scanned = [...files];
+    for (const root of roots) {
+      expect(fs.existsSync(root), `${root} が無い`).toBe(true);
+      walk(root, scanned);
+    }
+    expect(scanned.length).toBeGreaterThan(files.length + 20);
+    const WORDS = /\b(spotlight|setSpotlight|clearSpotlight|clearHighlights)\b/i;
+    // 検出器が当たることを先に確かめる（0件でも「無い」は真になる）。
+    expect(WORDS.test("layers.clearSpotlight()")).toBe(true);
+    expect(WORDS.test("// the spotlight layer")).toBe(true);
+    const offenders = scanned.filter((file) => WORDS.test(fs.readFileSync(file, "utf8")));
+    expect(offenders, offenders.join("\n")).toEqual([]);
+  });
 });

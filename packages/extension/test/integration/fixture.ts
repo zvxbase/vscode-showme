@@ -135,6 +135,19 @@ export const ANNOTATE_REL = "docs/annotate.md";
 export const ANNOTATE_MARKER = "ANNOTATE_TARGET";
 
 /**
+ * `annotate` の `reveal`（増分13 D117）と、`text` で指した塗りの列（D118）の検査だけに使うファイル。
+ *
+ * 目印は**80行目**にある ―― 開いた直後に見えている範囲には入らないので、「吹き出しの行が
+ * 見えている」がスクロールしたことの証拠になる。同じ行の目印の手前に全角とサロゲートペア
+ * （絵文字）を置き、列が UTF-16 の単位で VS Code の位置と一致することを実機で見る。
+ * 予算（ファイル単位で 30回/分）を他の節と分けるために専用のファイルにする。
+ */
+export const REVEAL_REL = "docs/reveal.md";
+export const REVEAL_MARKER = "ANNOTATE_REVEAL_TARGET";
+/** 目印のある行（1始まり）。 */
+export const REVEAL_LINE = 80;
+
+/**
  * 注釈の**順番と id**（増分6 D69 / D71 / D72）の検査だけに使う2ファイル。
  *
  * `ANNOTATE_REL` を使い回さない ―― あちらの節は既に予算（ファイル単位で 30回/分）の
@@ -326,6 +339,8 @@ export const REAL_FILE_RELS = {
   legacyOwn: "tabs/real-file-legacy-own.md",
   // `annotate` の `realFile: true`（`show_code` の `realFile` と対で使う）。
   annotate: "tabs/real-file-annotate.md",
+  // `annotate` の `reveal: true`（増分13 D117。`show_code` と同じ開き方）。
+  reveal: "tabs/real-file-reveal.md",
 } as const;
 export const REAL_FILE_DEEP_LINE = 300;
 
@@ -481,6 +496,17 @@ export function createFixtureWorkspace(label: string): FixtureWorkspace {
     `# annotate\n\nこの行に注釈を出す: ${ANNOTATE_MARKER}\n`,
     "utf8",
   );
+  fs.writeFileSync(
+    path.join(root, REVEAL_REL),
+    [
+      ...Array.from({ length: REVEAL_LINE - 1 }, (_, i) => `filler ${String(i + 1)}`),
+      `絵文字 ${"\u{1F600}"} の後の ${REVEAL_MARKER} を指す`,
+      ...Array.from({ length: 40 }, (_, i) => `tail ${String(i + 1)}`),
+    ]
+      .join("\n")
+      .concat("\n"),
+    "utf8",
+  );
   for (const rel of [ANNOTATE_ORDER_A_REL, ANNOTATE_ORDER_B_REL]) {
     fs.writeFileSync(
       path.join(root, rel),
@@ -562,6 +588,7 @@ export function createFixtureWorkspace(label: string): FixtureWorkspace {
     REAL_FILE_RELS.agentLegacy,
     REAL_FILE_RELS.legacyOwn,
     REAL_FILE_RELS.annotate,
+    REAL_FILE_RELS.reveal,
   ]) {
     fs.writeFileSync(path.join(root, rel), `# tabs\n\n${STAGE_TABS_MARKER}\n`, "utf8");
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
-import { locationSchema, markerLocationSchema } from "./location.js";
+import { locationSchema } from "./location.js";
 
 /**
  * strict な object が知らない鍵で落ちたとき、鍵の名前は `issue.keys` に入る
@@ -72,38 +72,36 @@ describe("locationSchema の境界", () => {
 });
 
 /**
- * 色を持つのは `show_code` だけ（増分6 D65'）。塗らないツール（`annotate` / `find_*`）の
- * `location` は `markerLocationSchema` で、`color` を**スキーマで**落とす。
+ * 色を持つ位置は無い（増分13 D116。`show_code` も塗らなくなった）。以前は `show_code` だけが
+ * `color` を持ち、塗らないツールは `color` を外した別のスキーマを使っていた（増分6 D65'）。
  * 効かない摘みを広告しない ―― 受けて黙って捨てると、エージェントは効いていると思い込む。
  */
-describe("markerLocationSchema（D65'）", () => {
-  const okMarker = (v: unknown) => markerLocationSchema.safeParse(v).success;
-
-  it("color を渡すと落ちる（issue の path が color を指す）", () => {
-    const parsed = markerLocationSchema.safeParse({ path: "a.ts", text: "x", color: "red" });
+describe("locationSchema は color を持たない（D116 / D65'）", () => {
+  it("color を渡すと落ちる（issue が color を名指す）", () => {
+    const parsed = locationSchema.safeParse({ path: "a.ts", text: "x", color: "red" });
     expect(parsed.success).toBe(false);
     if (!parsed.success) {
       expect(namesColor(parsed.error)).toBe(true);
     }
   });
 
-  it("肯定対照: color 以外は locationSchema と同じものを受ける", () => {
-    expect(okMarker({ path: "a.ts", text: "x" })).toBe(true);
-    expect(okMarker({ path: "a.ts", symbol: "s", occurrence: 2 })).toBe(true);
-    expect(
-      okMarker({ path: "a.ts", lines: { start: 1, end: 2, startColumn: 0, endColumn: 3 } }),
-    ).toBe(true);
-    // 元の境界も引き継いでいる（omit で別物になっていない）。
-    expect(okMarker({ path: "", text: "x" })).toBe(false);
-    expect(okMarker({ path: "a.ts", text: "a\nb" })).toBe(false);
+  it("肯定対照: color 以外の位置の指定はそのまま受ける", () => {
+    expect(ok({ path: "a.ts", text: "x" })).toBe(true);
+    expect(ok({ path: "a.ts", symbol: "s", occurrence: 2 })).toBe(true);
+    expect(ok({ path: "a.ts", lines: { start: 1, end: 2, startColumn: 0, endColumn: 3 } })).toBe(
+      true,
+    );
   });
+});
 
-  it("strict のまま（omit で緩んでいない）", () => {
-    expect(okMarker({ path: "a.ts", text: "x", pattern: ".*" })).toBe(false);
-    expect(ok({ path: "a.ts", text: "x", pattern: ".*" })).toBe(false);
-  });
-
-  it("対照: locationSchema は color を受ける（show_code の摘みは残る）", () => {
-    expect(ok({ path: "a.ts", text: "x", color: "red" })).toBe(true);
+describe("occurrence と text の説明（増分13 D118 のレビュー）", () => {
+  it("occurrence は行を数え、1行に2回あれば行全体、1つに絞るのは lines の列、と言う", () => {
+    const occ = locationSchema.shape.occurrence.description ?? "";
+    expect(occ).toContain("counts lines");
+    const text = locationSchema.shape.text.description ?? "";
+    expect(text).toContain("only the matched text");
+    expect(text).toContain("more than once");
+    expect(text).toContain("whole line");
+    expect(text).toContain("startColumn and endColumn");
   });
 });

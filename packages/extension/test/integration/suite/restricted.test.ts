@@ -75,7 +75,6 @@ suite("実 VS Code / 制限モード", () => {
       "showme.showAgentConfig",
       "showme.showLog",
       "showme.teardown",
-      "showme.clearHighlights",
       "showme.clearAnnotations",
       "showme.annotation.resolve",
       "showme.annotation.unresolve",

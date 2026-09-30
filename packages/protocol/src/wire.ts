@@ -1,12 +1,7 @@
 import { z } from "zod";
 import { ANNOTATION_COLORS } from "./annotation-color.js";
 import { ARRANGE_ACTIONS } from "./arrange-action.js";
-import {
-  MAX_FOUND_LOCATIONS,
-  RESOLUTION_REASONS,
-  locationSchema,
-  markerLocationSchema,
-} from "./location.js";
+import { MAX_FOUND_LOCATIONS, RESOLUTION_REASONS, locationSchema } from "./location.js";
 import { MAX_PANEL_SLOT, panelLimitSchema } from "./panel-limit.js";
 import { MAX_HTML_CHARS } from "./sanitize-html.js";
 import {
@@ -150,8 +145,8 @@ export const MAX_ANNOTATION_THREADS = 64;
 /** 注釈1件（線上の形）。拡張のハンドラも同じ形を要求する。 */
 export const annotateItemSchema = z
   .object({
-    // 色は項目の `color` にだけある。`location.color` は塗らないので落とす（D65'）。
-    location: markerLocationSchema,
+    // 色は項目の `color` にだけある（位置は色を持たない。D65' / 増分13 D116）。
+    location: locationSchema,
     text: z
       .string()
       .min(1)
@@ -165,7 +160,7 @@ export const annotateItemSchema = z
       .optional()
       .describe(
         "Color of the annotation. Shown in the bubble's author name (e.g. `ShowMe 🔴 R`) " +
-          "**and painted on the line** in the same color. Omit for the unmarked `ShowMe` (no paint). " +
+          "**and painted on the location** in the same color. Omit for the unmarked `ShowMe`, which is painted grey. " +
           "A subset of the highlight color vocabulary (minus gray)",
       ),
   })
@@ -215,8 +210,20 @@ export const annotateArgsObjectSchema = z
       .boolean()
       .optional()
       .describe(
-        "Put the bubbles on the real file (use together with show_code realFile: true); " +
-          "by default they go on the agent's own tab.",
+        "Put the bubbles on the real file (use together with show_code realFile: true, or with reveal: true " +
+          "to open the real file here); by default they go on the agent's own tab.",
+      ),
+    // 開いてスクロールするか（増分13 D117）。既定は開かない ―― 「注釈はするが開かない」はそのまま
+    // 使える。開くのは `show_code` と同じ関数（拡張の `handlers/reveal-location.ts`）で、列・タブの
+    // 決め方・own・`realFile`・`preserveFocus` も同じ。
+    reveal: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, also opens the file of the first annotation that was shown and scrolls to its bubble, " +
+          "exactly as show_code opens a file (same column and tab rules, your own tab unless realFile: true). " +
+          "Default false: the bubbles are added without opening or scrolling anything. " +
+          'Not accepted with mode: "clear". The result carries reveal: { opened, reason? }.',
       ),
   })
   .strict();
@@ -224,12 +231,14 @@ export const annotateArgsObjectSchema = z
 /** `annotate` の引数（検証後の形）。`clear` は `items` を持たない。 */
 export type AnnotateArgs =
   | { mode: "clear" }
-  | { items: AnnotateItem[]; mode?: "replace" | "add"; realFile?: boolean };
+  | { items: AnnotateItem[]; mode?: "replace" | "add"; realFile?: boolean; reveal?: boolean };
 
 /**
  * `annotate` の引数。**規則はここに1つ**（設計 D54）:
  *
  * - `mode: "clear"` は `items` を取らない（付いていたら意図が曖昧なので落とす）
+ * - `mode: "clear"` は `reveal` も取らない（開く先が無い。増分13 D117。`false` でも落とす ――
+ *   「clear と組んでよい値」を作ると、組み合わせの意味を読み手に推測させる）
  * - それ以外は `items` が要る
  *
  * 出力は `AnnotateArgs` の判別可能な union。ハンドラはこの形で `clear` を先頭で分ける。
@@ -242,6 +251,14 @@ export const annotateArgsSchema = annotateArgsObjectSchema.transform((args, ctx)
         path: ["items"],
         message:
           'mode: "clear" does not take items (it would be ambiguous whether to clear or to show)',
+      });
+      return z.NEVER;
+    }
+    if (args.reveal !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reveal"],
+        message: 'mode: "clear" does not take reveal (there is nothing to open)',
       });
       return z.NEVER;
     }
@@ -261,6 +278,7 @@ export const annotateArgsSchema = annotateArgsObjectSchema.transform((args, ctx)
     items: args.items,
     ...(args.mode === undefined ? {} : { mode: args.mode }),
     ...(args.realFile === undefined ? {} : { realFile: args.realFile }),
+    ...(args.reveal === undefined ? {} : { reveal: args.reveal }),
   };
 });
 
@@ -403,12 +421,12 @@ export const showNoteArgsSchema = z
   })
   .strict();
 
-// `find_*` は色を読まない。色を持つのは `show_code` だけ（D65'）。
-export const findDefinitionArgsSchema = z.object({ location: markerLocationSchema }).strict();
+// 位置は色を持たない（D65' / 増分13 D116）。`find_*` は画面も動かさない。
+export const findDefinitionArgsSchema = z.object({ location: locationSchema }).strict();
 
 export const findReferencesArgsSchema = z
   .object({
-    location: markerLocationSchema,
+    location: locationSchema,
     includeDeclaration: z
       .boolean()
       .optional()
@@ -734,8 +752,38 @@ export const annotateResolutionSchema = resolutionSchema.extend({
   index: z.number().int().min(1).max(MAX_ANNOTATION_THREADS).optional(),
 });
 
+/**
+ * `annotate` の `reveal: true` で開けなかった理由（増分13 D117）。**閉じた語彙**（`RESOLUTION_REASONS`
+ * と同じ理由 ―― 自由文字列は不変条件2の抜け道になる）。
+ *
+ * - `no-stage-column` / `not-found`: `show_code` が同じ失敗で返す理由と同じ（開く関数が同じなので、
+ *   理由の分け方も同じ。列が無いときだけ分け、それ以外の失敗は `not-found` に畳む）
+ * - `stage-disabled`: 人間が `showme.stage.enabled` を切っている（`show_code` と同じく開かない）
+ * - `no-annotation`: 吹き出しが1つも出なかった（開く先が無い）
+ */
+export const ANNOTATE_REVEAL_REASONS = [
+  "no-stage-column",
+  "not-found",
+  "stage-disabled",
+  "no-annotation",
+] as const;
+
+export type AnnotateRevealReason = (typeof ANNOTATE_REVEAL_REASONS)[number];
+
+/**
+ * `reveal: true` の結果。頼まれなかったら載らない。**判別可能な union**: 開けたなら理由は無く、
+ * 開けなかったなら理由が必ずある（「開けなかったが理由が無い」を形で作れないようにする）。
+ */
+export const annotateRevealResultSchema = z.discriminatedUnion("opened", [
+  z.object({ opened: z.literal(true) }).strict(),
+  z.object({ opened: z.literal(false), reason: z.enum(ANNOTATE_REVEAL_REASONS) }).strict(),
+]);
+
 export const annotateResultSchema = z
-  .object({ resolutions: z.array(annotateResolutionSchema) })
+  .object({
+    resolutions: z.array(annotateResolutionSchema),
+    reveal: annotateRevealResultSchema.optional(),
+  })
   .strict();
 
 export const listWorkspacesResultSchema = z

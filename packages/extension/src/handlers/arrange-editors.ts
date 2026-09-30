@@ -208,11 +208,6 @@ export interface ArrangeEditorsDeps {
    * 人間が開いているかの口にしない）。
    */
   acceptPath: (raw: string) => ObservablePathVerdict;
-  /**
-   * `show_code` のスポットライトを消す（画家 `Highlights.clearSpotlight`）。`close-own` が
-   * 片づいたときに呼ぶ ―― 消すのは画家で、ハンドラは呼ぶ時だけを決める（増分6 D67）。
-   */
-  clearSpotlight: () => void;
   log: { info: (message: string, fields?: Record<string, string>) => void };
 }
 
@@ -399,18 +394,6 @@ async function handleClose(
   // エージェントに次の一手を選ばせない。少なく言う側に倒す ―― この道具は
   // べき等（`idempotentHint: true`）なので、呼び直しても増えない。
   const closed = done ? closable.length : 0;
-
-  // **片づけたのに指差しが残るのは片づけていない**（D67）。スポットライトの寿命は
-  // 1回の `show_code` の分だけで、`close-own` はその終わりでもある。
-  //
-  // 決めるのは `done` だけである。断られた own タブ（未保存／protectViewingTab がオンなら見ている）が
-  // 開いたまま残っても消す ―― 人間は「片づけて」と言ったのであり、指差しは中身では
-  // なく指であって、残しても人間には戻る手段も消す手段も無い（§C1）。閉じるものが
-  // 無くても同じ理由で消す。消さないのは面が失敗した（`done: false`）ときだけで、
-  // それは**何も変わっていない**からである（べき等な呼び直しに同じ画面を渡す）。
-  // `close-other-tabs` は人間のタブを片づける語で、自分の指差しとは別の量である。
-  // `close-tabs` も同じ ―― 指されたタブを閉じるのであって「片づけ」ではない。
-  if (action === "close-own" && done) deps.clearSpotlight();
 
   // `close-tabs` で、指したのに開いていなかったパス（関門を通ったものだけ。送った綴りで）。
   // 「開いていなかった」は候補の観測から決める ―― 閉じる前後で取り直さない。

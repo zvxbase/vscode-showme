@@ -1,5 +1,3 @@
-import type { HighlightColor } from "@zvx/vscode-showme-protocol";
-
 /**
  * 1始まりの行範囲。`Resolution.range` と同じ数え方。
  *
@@ -18,12 +16,8 @@ export interface LineRange {
    */
   startColumn?: number;
   endColumn?: number;
-  /**
-   * ハイライトの色。**任意**。省いたら既定（設計 D35）。
-   *
-   * 色は見た目であって意味ではない ―― 意味づけは呼ぶ側がする。
-   */
-  color?: HighlightColor;
+  // 色は持たない（増分13 D116: 位置は色を持たない。塗りの色は注釈の `color` で、
+  // `toHighlightRange` の引数として渡る）。
 }
 
 /** 列を持つ範囲か。ハイライトの種類（行全体か文字だけか）を決めるのに使う。 */
