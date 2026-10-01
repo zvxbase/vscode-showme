@@ -28,6 +28,9 @@ const SYSTEM32 = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32");
 
 describe.runIf(onWindows)(
   "claude mcp add の行が cmd と PowerShell で1引数のまま届く（D109）",
+  // 1本の検査で6行をシェルに通す。runner では pwsh の起動だけで数秒かかり、vitest の既定の
+  // 5 秒で切れた（公開 repo の CI、0.1.7。中の spawn は 60 秒まで待つので、検査の枠をそれより長くする）
+  { timeout: 180_000 },
   () => {
     let base: string;
     let bin: string;

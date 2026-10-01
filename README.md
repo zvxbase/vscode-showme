@@ -9,46 +9,108 @@ vscode-showme fills exactly that gap: while an agent walks you through an unfami
 it can open the file, point at lines with numbered comments, put two places side by side,
 draw a diagram and pin a note — the way a colleague sitting next to you would.
 
+![An agent explains why tax is lower with a coupon: it leaves three numbered comment bubbles on the code, the human steps through them, then asks for a diagram and it opens in a panel](media/readme/showme-hero.gif)
+
+**No network.** ShowMe opens no network port, makes no network connections and has no telemetry.
+The bridge your agent starts and the extension in VS Code talk over a local socket (a named pipe on
+Windows); ShowMe itself sends nothing off your machine. Your agent still talks to its model provider
+as usual, and what ShowMe tells the agent (where things are, what you have selected) becomes part of
+that conversation like anything else the agent reads. See [How it fits](#how-it-fits).
+
 ## What it does not do
 
 - No code editing, no shell, no diagnostics/LSP — your agent already has those.
 - No pre-generated tours, no LLM calls of its own. The teaching is the agent's job.
+
+## How it fits
+
+<img src="media/readme/how-it-fits.png" width="880" alt="Your agent (Copilot in VS Code, Claude Code, Codex CLI or Copilot CLI) talks MCP over stdio to the ShowMe bridge, which it starts; the bridge talks to the ShowMe extension in VS Code over a local socket or named pipe; the extension shows the agent's tabs, comment bubbles, HTML panels and notes in your editor. All of it runs on your machine, with no network.">
+
+Your agent starts the ShowMe bridge, which is bundled with the extension, as its own child process
+and talks MCP to it over stdio (Copilot in VS Code has VS Code start it). The bridge connects to the
+ShowMe extension over a Unix socket, or a named pipe on Windows, and both sides prove they hold a
+connection token kept in a folder only your account can read (on Windows, also SYSTEM and
+Administrators). There is no HTTP server and no TCP port. A named
+pipe on Windows can in principle be opened over the network through SMB (`\\<host>\pipe\…`), but
+only with your account's credentials, and the connection still needs the token. HTML the agent
+shows runs in a sandbox with no scripts and no outside requests (`connect-src 'none'`, images only as
+`data:`). More in [Safety, in one table](#safety-in-one-table).
 
 ## Requirements
 
 - VS Code 1.101 or later.
 - **Copilot in VS Code (agent mode):** nothing else. ShowMe starts its bridge with VS Code's own
   runtime, so you do not need Node.js.
-- **Claude Code, Codex CLI and Copilot CLI:** the configuration that ShowMe shows you gives every
-  agent two complete forms of the same entry. Use one of them:
-  - **VS Code's runtime** needs no Node.js. Choose it when Node.js is not installed. Its path belongs
-    to your VS Code installation, so in some setups (remote, AppImage, Nix) you set it up again after
-    VS Code updates or restarts. The Flatpak build of VS Code does not offer this form, because agents
-    outside the sandbox cannot start its runtime.
-  - **`node`** needs Node.js 20 or later on your `PATH`. Check with `which node` (on Windows,
-    `where.exe node`) in the terminal where you start your agent; after you install Node.js, quit VS
-    Code and that terminal completely and start them again. Choose it when Node.js is installed: it
-    does not depend on where VS Code is, so it keeps working when VS Code updates, and on Windows
-    the VS Code updater does not stop it.
+- **Claude Code, Codex CLI and Copilot CLI:** nothing else either. Node.js 20 or later is optional:
+  the configuration ShowMe shows you has a form that uses it and a form that does not (see
+  [Agent setup in detail](#agent-setup-in-detail)).
 
 ## Getting started
 
-You need two things: the extension (the "hands" inside VS Code) and a one-time registration in
-your agent (so the agent can talk to it). The bridge the agent talks to is bundled with the
-extension — there is nothing to install from npm.
+| Your agent | What to do |
+|---|---|
+| Copilot in VS Code (agent mode) | Install the extension. That is all: it registers itself with VS Code. |
+| Claude Code, Codex CLI, Copilot CLI | Install the extension, run **ShowMe: Show agent configuration**, paste the line or block for your agent, and restart the agent. |
 
-### 1. Install the extension
+Then, with any agent: click **`ShowMe: Off`** in the status bar so that it says **`ShowMe: On`**,
+and ask your agent "Use ShowMe to …".
 
-From the VS Code Marketplace or Open VSX (`zvxbase.vscode-showme`), or download the VSIX from
-[Releases](https://github.com/zvxbase/vscode-showme/releases) and run
-`code --install-extension vscode-showme-<version>.vsix`.
+### Quick start
 
-### 2. Register ShowMe with your agent
+1. **Install the extension** from the VS Code Marketplace or Open VSX (`zvxbase.vscode-showme`), or
+   download the VSIX from [Releases](https://github.com/zvxbase/vscode-showme/releases) and run
+   `code --install-extension vscode-showme-<version>.vsix`. The bridge your agent talks to is
+   bundled with the extension — there is nothing to install from npm.
+2. **Register ShowMe with your agent** (Claude Code, Codex CLI and Copilot CLI; Copilot in VS Code
+   skips this step). Run **ShowMe: Show agent configuration** from the Command Palette. It opens a
+   read-only document with ready-to-paste snippets, filled in with the real install path:
+   - **Claude Code** — run the `claude mcp add` line in a terminal, and add the listed rules to
+     `permissions.allow` in `.claude/settings.json` (without them, Claude Code asks before every call).
+   - **Codex CLI** — add the `[mcp_servers.showme]` section to `~/.codex/config.toml`.
+   - **Copilot CLI** — add the `"showme"` entry to `~/.copilot/mcp-config.json`, and start it with
+     `--allow-tool 'showme'`.
 
-Run **ShowMe: Show agent configuration** from the Command Palette. It opens a read-only document
-with ready-to-paste snippets for Claude Code, Codex CLI and Copilot CLI, filled in with the real
-install path. Copy the one for your agent. ShowMe never edits other tools' configuration files
-itself.
+   Then restart your agent (or start a new session) so that it loads ShowMe.
+3. **Turn it on in the window you want the agent to use.** Nothing is driven until you allow it.
+   Click **`ShowMe: Off`** in the status bar of that window → it becomes **`ShowMe: On`**, and
+   **`ShowMe: Connected`** once the agent connects. Click again to turn it off. You can open the same
+   folder in two windows and turn ShowMe on in only one of them; the agent uses that one.
+
+   <img src="media/readme/screenshot-statusbar.png" width="342" alt="The ShowMe status bar item, turned on, with its tooltip saying that ShowMe is on for this window and that a click turns it off">
+4. **Ask your agent.** Say "Use ShowMe to …" so that it reaches for ShowMe — see below.
+
+### What to ask
+
+Start with "Use ShowMe to …". The agent shows and explains, then stops; you read at your own pace
+and ask the next question.
+
+- "Use ShowMe to walk me through how a request is handled in this repo." — The agent opens each
+  file in its own tab and leaves numbered comment bubbles in the order to read them; **‹ ›** on a
+  bubble takes you to the previous or next one.
+- "Use ShowMe to show me where `parseConfig` is defined and where it is used, side by side." — The
+  definition and a call site open next to each other.
+- "Use ShowMe to annotate the important lines of `src/server.ts`." — Bubbles appear under those
+  lines, numbered in reading order (`1/7 ·`, `2/7 ·`, …).
+- "Use ShowMe to draw how these modules depend on each other." — A diagram opens in a panel next to
+  your code.
+
+### Agent setup in detail
+
+**Two forms.** For Claude Code, Codex CLI and Copilot CLI, the configuration that ShowMe shows you
+gives every agent two complete forms of the same entry. Use one of them:
+
+- **VS Code's runtime** needs no Node.js. Choose it when Node.js is not installed. Its path belongs
+  to your VS Code installation, so in some setups (remote, AppImage, Nix) you set it up again after
+  VS Code updates or restarts. The Flatpak build of VS Code does not offer this form, because agents
+  outside the sandbox cannot start its runtime.
+- **`node`** needs Node.js 20 or later on your `PATH`. Check with `which node` (on Windows,
+  `where.exe node`) in the terminal where you start your agent; after you install Node.js, quit VS
+  Code and that terminal completely and start them again. Choose it when Node.js is installed: it
+  does not depend on where VS Code is, so it keeps working when VS Code updates, and on Windows
+  the VS Code updater does not stop it.
+
+**What each agent gets.** Copy the snippets for your agent from
+**ShowMe: Show agent configuration**. ShowMe never edits other tools' configuration files itself.
 
 - **Claude Code** — one `claude mcp add` line for each form (`claude mcp add -e ELECTRON_RUN_AS_NODE=1 --transport stdio showme -- …` and `claude mcp add --transport stdio showme -- node …`), plus a list of permission rules to
   add to `permissions.allow` in `.claude/settings.json`. Without those rules, Claude Code asks for
@@ -60,8 +122,7 @@ itself.
 - **Copilot agent mode inside VS Code** — nothing to do. The extension registers itself as an
   MCP server (this does not work in Restricted Mode).
 
-Each agent's snippets come in both forms: VS Code's own runtime (the document shows its path; no
-Node.js needed) and `node` (Node.js 20 or later). The document lists the runtime form first. If VS
+**Where VS Code is installed.** The document lists the runtime form first. If VS
 Code moves to another folder, open **ShowMe: Show agent configuration** again for the current path.
 When VS Code is connected to a remote (WSL, SSH or a dev container), the runtime path belongs to the
 VS Code Server and changes every time VS Code updates, so the document lists the `node` form first
@@ -93,26 +154,10 @@ it.
 The document ends with a prompt you can give your agent so that it does the setup for you. You are
 responsible for what the agent changes: read the prompt first.
 
-The agent and VS Code must run on the same machine and in the same environment: in a
-devcontainer, both inside the container; with Remote-SSH, both on the remote side; with VS Code
-connected to WSL, the agent inside WSL. An agent running on Windows cannot reach a VS Code window
-connected to WSL, and the other way around.
-
-### 3. Turn it on in the window you want the agent to use
-
-Nothing is driven until you allow it. Click **`ShowMe: Off`** in the status bar of that window →
-it becomes **`ShowMe: On`**, and **`ShowMe: Connected`** once the agent connects. Click again to
-turn it off. You can open the same folder in two windows and turn ShowMe on in only one of them;
-the agent uses that one.
-
-### 4. Ask your agent
-
-Talk to your agent as usual and ask it to show you things, for example:
-
-- "Walk me through how a request is handled in this repo. Show me each step in the editor."
-- "Show me where `parseConfig` is defined and where it is used, side by side."
-- "Annotate the important lines of `src/server.ts` in reading order."
-- "Draw a diagram of how these modules depend on each other."
+**Same machine, same environment.** The agent and VS Code must run on the same machine and in the
+same environment: in a devcontainer, both inside the container; with Remote-SSH, both on the remote
+side; with VS Code connected to WSL, the agent inside WSL. An agent running on Windows cannot reach a
+VS Code window connected to WSL, and the other way around.
 
 ## What you will see
 
@@ -133,6 +178,10 @@ Talk to your agent as usual and ask it to show you things, for example:
 - **HTML panels** — tables and diagrams. Scripts never run in them.
 - **Notes** — an untitled editor. Nothing is saved unless you save it.
 - **Clean up** — **ShowMe: Clear annotations** (removes the bubbles and their paint together).
+
+<img src="media/readme/screenshot-bubbles-comments.png" width="880" alt="The agent's tab of src/cart.ts with two numbered comment bubbles under the painted lines, and the same three annotations listed in VS Code's Comments panel">
+
+<img src="media/readme/screenshot-show-html.png" width="880" alt="An HTML panel with a diagram the agent drew: subtotal, applyDiscount, addTax and total in a row, and a bar comparison of the tax with and without the coupon">
 
 ## Commands
 
@@ -249,7 +298,7 @@ Look at the status bar first — ShowMe shows what it is doing there.
 | `ShowMe: rate limited …` | The agent repeated the same request too quickly |
 
 **The agent says it cannot find a VS Code window.** Check that ShowMe is `On` in a window, that
-the agent runs in the same environment as VS Code (see step 2), and that both see the same
+the agent runs in the same environment as VS Code (see [Agent setup in detail](#agent-setup-in-detail)), and that both see the same
 `$TMPDIR` (on Windows, the same `TEMP`).
 
 **VS Code's Copilot shows `spawn node ENOENT` for ShowMe.** ShowMe 0.1.5 and earlier started the
@@ -301,7 +350,7 @@ the error.
 
 | Property | How |
 |---|---|
-| No network listener | Unix socket / named pipe only. No HTTP server, ever. |
+| No network listener, no telemetry | Unix socket / named pipe only. No HTTP server or TCP port, ever, and ShowMe makes no network connections of its own and sends no telemetry. On Windows, a named pipe can be opened over SMB only with your account's credentials, and the connection also needs the token. |
 | No tool returns file contents | `show_code` returns the resolved position and how it was resolved — never text. |
 | Selection is never moved | Annotation paint uses decorations; alignment uses `revealRange`. Moving the selection would leak text through `get_editor_state`. |
 | Agent HTML has no script | Double iframe, inner `sandbox=""`, `connect-src 'none'`, `img-src data:` (no egress). |
@@ -342,7 +391,7 @@ that only you, SYSTEM and Administrators can read that folder. It refuses to sta
 folder on another drive such as `D:\Temp`, which keeps that drive's default permissions (other users
 can create files there). To fix it, point `TEMP` and `TMP` at a folder only you can write to, such
 as the default `%LOCALAPPDATA%\Temp`, and restart VS Code. VS Code with WSL or a dev container keeps
-working as before; the agent and VS Code must run in the same environment (see step 2).
+working as before; the agent and VS Code must run in the same environment (see [Agent setup in detail](#agent-setup-in-detail)).
 
 The public repository on GitHub is a **release mirror**: development happens in a private repository, and
 each release is published there as one commit — see `CONTRIBUTING.md`. This is a personal project

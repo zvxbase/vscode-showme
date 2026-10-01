@@ -1,23 +1,23 @@
 <!-- translated-from README.md: {
-  "vscode-showme": "a8bfd06de5dded7c",
+  "vscode-showme": "42f683fb429fed8f",
   "What it does not do": "54fc2279eea3e95f",
-  "Requirements": "2671b44a4de69b3e",
-  "Getting started": "33dfafe2e5bed82d",
-  "1. Install the extension": "6e0dec079527c7f1",
-  "2. Register ShowMe with your agent": "cac6fb551ea1fe84",
-  "3. Turn it on in the window you want the agent to use": "d6281735fa2ed5cf",
-  "4. Ask your agent": "11e672ee91a4ab8b",
-  "What you will see": "acc48051e775b7a3",
+  "How it fits": "4c5abb5353dbc3b8",
+  "Requirements": "7ab6f66a01d391d1",
+  "Getting started": "41a61fb5a6d788b7",
+  "Quick start": "3ba7061efade0007",
+  "What to ask": "2da544e57b0cf0cc",
+  "Agent setup in detail": "dc39082df429eabd",
+  "What you will see": "0a3f91e9e362c755",
   "Commands": "b21b96b0fd1e39bd",
   "Tools": "f8e4dfd9171875e2",
   "Settings": "a674388fc1d37f0f",
   "Opening files outside the workspace": "908e3968f41fafdd",
-  "Troubleshooting": "dae156e1eb981b23",
+  "Troubleshooting": "26084671cb7eec20",
   "Uninstall": "ca746396cb15acdd",
-  "Safety, in one table": "57e256284c7f6c8c",
+  "Safety, in one table": "1a6de0e3f428c49b",
   "Packages": "548565c3d5677140",
   "Languages": "174627b9997a152c",
-  "Status": "a95219be71ef22c5",
+  "Status": "679eaa58a07efb55",
   "How this was built": "cfd7cce72c3841b1",
   "License": "1e5e273a2aae7f48"
 } -->
@@ -32,44 +32,105 @@ vscode-showme はその隙間だけを埋める。見慣れないリポジトリ
 エージェントがファイルを開き、番号付きのコメントで該当箇所を指し、2箇所を並べ、図を描いて
 メモを貼る ―― 隣に座った同僚がするように。
 
+![クーポンを使うと税が安くなる理由をエージェントが説明する。コードに番号付きのコメントの吹き出しを3つ残し、人間がそれを順にたどり、続けて図を頼むとパネルに図が開く](media/readme/showme-hero.gif)
+
+**ネットワークを使わない。** ShowMe はネットワークのポートを開かず、ネットワークへの接続もせず、
+テレメトリも持たない。エージェントが起動するブリッジと VS Code の中の拡張は、ローカルのソケット
+（Windows では名前付きパイプ）で話す。ShowMe 自身があなたのマシンの外へ送るものは何も無い。
+エージェントはいつも通り自分のモデルの提供元と通信し、ShowMe がエージェントに伝えたこと（どこに何が
+あるか、あなたが何を選択しているか）は、エージェントが読むほかのものと同じくその会話に入る。
+[仕組み](#仕組み)を参照。
+
 ## これは何ではないか
 
 - コード編集・シェル実行・診断/LSP は提供しない。エージェントが既に持っている
 - ツアーの事前生成も、独自の LLM 呼び出しもしない。教え方はエージェントが持っている
+
+## 仕組み
+
+<img src="media/readme/how-it-fits.png" width="880" alt="エージェント（VS Code 内蔵の Copilot・Claude Code・Codex CLI・Copilot CLI）は、自分が起動した ShowMe ブリッジと stdio の MCP で話す。ブリッジは VS Code の中の ShowMe 拡張とローカルのソケットか名前付きパイプで話す。拡張はエージェントのタブ・コメントの吹き出し・HTML パネル・メモをエディタに出す。すべてあなたのマシンの上で動き、ネットワークは使わない。">
+
+エージェントは、拡張に同梱された ShowMe ブリッジを自分の子プロセスとして起動し、stdio で MCP を
+話す（VS Code 内蔵の Copilot では VS Code が起動する）。ブリッジは ShowMe 拡張に Unix ソケット
+（Windows では名前付きパイプ）で繋ぎ、両側が接続のトークンを持っていることを互いに確かめる。トークンは
+あなたのアカウントだけが読めるフォルダに置く（Windows では SYSTEM と Administrators も読める）。
+HTTP サーバも TCP のポートも無い。Windows の名前付きパイプは、原理的には SMB 越しにネットワークから
+開ける（`\\<host>\pipe\…`）が、それにはあなたのアカウントの資格情報が要り、接続にはさらにトークンが要る。
+エージェントが見せる HTML は、スクリプトも外への要求も無い砂箱で動く（`connect-src 'none'`、画像は
+`data:` だけ）。詳しくは[安全性の要点](#安全性の要点)。
 
 ## 必要なもの
 
 - VS Code 1.101 以上。
 - **VS Code 内蔵の Copilot（エージェントモード）:** ほかに要るものは無い。ShowMe は VS Code 自身の
   実行環境でブリッジを起動するので、Node.js は要らない。
-- **Claude Code・Codex CLI・Copilot CLI:** ShowMe が示す設定は、どのエージェントにも同じ項目の
-  完全な形を2つ示す。どちらか1つを使う:
-  - **VS Code の実行環境**は Node.js が要らない。Node.js を入れていなければこちらを選ぶ。パスは
-    VS Code の入れ方に属するので、一部の環境（リモート・AppImage・Nix）では VS Code の更新や再起動の後に
-    設定し直す。Flatpak 版の VS Code ではこの形は出ない（その実行環境は砂箱の外のエージェントからは
-    起動できない）。
-  - **`node`** は `PATH` に Node.js 20 以上が要る。エージェントを起動する端末で `which node`（Windows では
-    `where.exe node`）を実行して確かめる。Node.js を入れた後は、VS Code とその端末を完全に終了して
-    起動し直す。Node.js が入っていればこちらを選ぶ。VS Code の場所に依らないので VS Code を更新しても
-    動き続け、Windows では VS Code の更新の仕組みにも止められない。
+- **Claude Code・Codex CLI・Copilot CLI:** こちらもほかに要るものは無い。Node.js 20 以上は任意で、
+  ShowMe が示す設定には、Node.js を使う形と使わない形がある（[エージェントの設定の詳細](#エージェントの設定の詳細)）。
 
 ## 使い始める
 
-要るものは2つ。拡張（VS Code の中の「手」）と、エージェント側への一度だけの登録（エージェントが
-拡張と話せるようにする）。エージェントが起動するブリッジは拡張に同梱されているので、npm から
-入れるものは無い。
+| エージェント | すること |
+|---|---|
+| VS Code 内蔵の Copilot（エージェントモード） | 拡張を入れる。それだけで、拡張が VS Code に自分を登録する。 |
+| Claude Code・Codex CLI・Copilot CLI | 拡張を入れ、**ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を実行し、使っているエージェントの1行か1ブロックを貼り、エージェントを起動し直す。 |
 
-### 1. 拡張を入れる
+あとはどのエージェントでも同じ。ステータスバーの **`ShowMe: オフ`**（`ShowMe: Off`）をクリックして
+**`ShowMe: オン`**（`ShowMe: On`）にし、エージェントに「ShowMe を使って……」と頼む。
 
-VS Code Marketplace か Open VSX から入れる（`zvxbase.vscode-showme`）。または
-[Releases](https://github.com/zvxbase/vscode-showme/releases) から VSIX を取ってきて
-`code --install-extension vscode-showme-<版>.vsix`。
+### すぐ始める
 
-### 2. エージェントに登録する
+1. **拡張を入れる。** VS Code Marketplace か Open VSX から入れる（`zvxbase.vscode-showme`）。または
+   [Releases](https://github.com/zvxbase/vscode-showme/releases) から VSIX を取ってきて
+   `code --install-extension vscode-showme-<版>.vsix`。エージェントが話すブリッジは拡張に同梱
+   されているので、npm から入れるものは無い。
+2. **エージェントに登録する**（Claude Code・Codex CLI・Copilot CLI。VS Code 内蔵の Copilot はこの手順が
+   要らない）。コマンドパレットで **ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を実行する。
+   そのまま貼れる断片（実際のインストール先入り）が読み取り専用の文書で開く:
+   - **Claude Code** — `claude mcp add` の行を端末で実行し、一覧の許可ルールを `.claude/settings.json`
+     の `permissions.allow` に足す（足さないと、呼び出しのたびに Claude Code が確認を求める）
+   - **Codex CLI** — `~/.codex/config.toml` に `[mcp_servers.showme]` の節を足す
+   - **Copilot CLI** — `~/.copilot/mcp-config.json` に `"showme"` の項目を足し、起動時に
+     `--allow-tool 'showme'` を付ける
 
-コマンドパレットで **ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を実行する。Claude Code / Codex CLI /
-Copilot CLI 向けの、そのまま貼れる断片（実際のインストール先入り）が読み取り専用の文書で開くので、
-使っているエージェントの分を写す。ShowMe が他のツールの設定ファイルを書き換えることはない。
+   そのあとエージェントを起動し直す（または新しいセッションを始める）と、ShowMe が読み込まれる。
+3. **エージェントに使わせる窓でオンにする。** 許可するまで、どの窓も操作されない。
+   その窓のステータスバーの **`ShowMe: オフ`**（`ShowMe: Off`）をクリックすると **`ShowMe: オン`**（`ShowMe: On`）になり、
+   エージェントが繋がると **`ShowMe: 接続中`**（`ShowMe: Connected`）になる。もう一度クリックすればオフに戻る。
+   同じフォルダを2窓で開いて片方だけオンにすることもでき、エージェントはオンの窓を使う。
+
+   <img src="media/readme/screenshot-statusbar.png" width="342" alt="オンにした ShowMe のステータスバーの項目と、この窓で ShowMe がオンであり、クリックするとオフになることを伝える tooltip">
+4. **エージェントに頼む。** 「ShowMe を使って……」と言うと、エージェントが ShowMe を使う ―― 下を参照。
+
+### 頼み方の例
+
+「ShowMe を使って……」で始める。エージェントは見せて説明し、そこで止まる。あなたは自分のペースで
+読み、次の質問をする。
+
+- 「ShowMe を使って、このリポジトリでリクエストがどう処理されるかを順に見せて」 ―― エージェントが
+  ファイルを1つずつエージェントのタブに開き、読む順に番号の付いたコメントの吹き出しを残す。吹き出しの
+  **‹ ›** で前後の吹き出しへ移れる
+- 「ShowMe を使って、`parseConfig` の定義と使われている場所を並べて見せて」 ―― 定義と呼び出し箇所が
+  隣り合って開く
+- 「ShowMe を使って、`src/server.ts` の大事な行に注釈を付けて」 ―― その行の下に、読む順の番号
+  （`1/7 ·`、`2/7 ·`、…）の付いた吹き出しが出る
+- 「ShowMe を使って、このモジュール同士の依存関係を図にして」 ―― コードの隣のパネルに図が開く
+
+### エージェントの設定の詳細
+
+**2つの形。** Claude Code・Codex CLI・Copilot CLI について、ShowMe が示す設定は、どのエージェントにも
+同じ項目の完全な形を2つ示す。どちらか1つを使う:
+
+- **VS Code の実行環境**は Node.js が要らない。Node.js を入れていなければこちらを選ぶ。パスは
+  VS Code の入れ方に属するので、一部の環境（リモート・AppImage・Nix）では VS Code の更新や再起動の後に
+  設定し直す。Flatpak 版の VS Code ではこの形は出ない（その実行環境は砂箱の外のエージェントからは
+  起動できない）。
+- **`node`** は `PATH` に Node.js 20 以上が要る。エージェントを起動する端末で `which node`（Windows では
+  `where.exe node`）を実行して確かめる。Node.js を入れた後は、VS Code とその端末を完全に終了して
+  起動し直す。Node.js が入っていればこちらを選ぶ。VS Code の場所に依らないので VS Code を更新しても
+  動き続け、Windows では VS Code の更新の仕組みにも止められない。
+
+**エージェントごとの中身。** 使っているエージェントの断片を
+**ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）から写す。ShowMe が他のツールの設定ファイルを書き換えることはない。
 
 - **Claude Code** — 形ごとに `claude mcp add` の1行（`claude mcp add -e ELECTRON_RUN_AS_NODE=1 --transport stdio showme -- …` と `claude mcp add --transport stdio showme -- node …`）と、`.claude/settings.json` の
   `permissions.allow` に足す許可ルールの一覧。許可ルールが無いと、表示するだけのツールでも
@@ -80,8 +141,7 @@ Copilot CLI 向けの、そのまま貼れる断片（実際のインストー�
 - **VS Code 内蔵の Copilot（エージェントモード）** — 設定不要。拡張が MCP サーバとして自分を
   登録する（制限モードでは効かない）
 
-各エージェントの断片は2つの形で出る: VS Code 自身の実行環境（文書にそのパスが出る。Node.js は要らない）と
-`node`（Node.js 20 以上）。文書は実行環境の形を先に示す。VS Code の場所が変わったら、
+**VS Code の入っている場所。** 文書は実行環境の形を先に示す。VS Code の場所が変わったら、
 **ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を開き直すと今のパスが出る。
 VS Code をリモート（WSL・SSH・dev container）に繋いでいるときは、実行環境のパスは VS Code Server の
 もので、VS Code を更新するたびに変わるので、文書は `node` の形を先に示す。実行環境の形を使うなら、
@@ -111,25 +171,9 @@ Node.js 20 以上が要る）。他人の repo にある MCP の設定は、
 文書の最後には、設定をエージェントに頼むためのプロンプトがある。エージェントが行う変更の責任は
 使う人にある。先にプロンプトを読むこと。
 
-エージェントと VS Code は同じマシンの同じ環境で動いている必要がある。devcontainer なら両方
-コンテナの中、Remote-SSH なら両方リモート側、WSL に繋いだ VS Code ならエージェントも WSL の中。
-Windows で動くエージェントは WSL に繋いだ VS Code の窓に届かず、その逆も届かない。
-
-### 3. エージェントに使わせる窓でオンにする
-
-許可するまで、どの窓も操作されない。その窓のステータスバーの **`ShowMe: オフ`**（`ShowMe: Off`）を
-クリックすると **`ShowMe: オン`**（`ShowMe: On`）になり、エージェントが繋がると
-**`ShowMe: 接続中`**（`ShowMe: Connected`）になる。もう一度クリックすればオフに戻る。同じフォルダを2窓で開いて片方だけ
-オンにすることもでき、エージェントはオンの窓を使う。
-
-### 4. エージェントに頼む
-
-いつも通りエージェントと話し、見せてほしいものを頼む。例えば:
-
-- 「このリポジトリでリクエストがどう処理されるか、エディタで順に見せながら説明して」
-- 「`parseConfig` の定義と使われている場所を並べて見せて」
-- 「`src/server.ts` の大事な行に、読む順で注釈を付けて」
-- 「このモジュール同士の依存関係を図にして」
+**同じマシン、同じ環境。** エージェントと VS Code は同じマシンの同じ環境で動いている必要がある。
+devcontainer なら両方コンテナの中、Remote-SSH なら両方リモート側、WSL に繋いだ VS Code ならエージェントも
+WSL の中。Windows で動くエージェントは WSL に繋いだ VS Code の窓に届かず、その逆も届かない。
 
 ## 画面に出るもの
 
@@ -149,6 +193,10 @@ Windows で動くエージェントは WSL に繋いだ VS Code の窓に届か�
 - **HTML パネル** — 表や図。スクリプトは動かない
 - **メモ** — untitled のエディタ。保存するかどうかはあなたが決める
 - **片づけ** — **ShowMe: 注釈を消す**（`ShowMe: Clear annotations`）。吹き出しと塗りが一緒に消える
+
+<img src="media/readme/screenshot-bubbles-comments.png" width="880" alt="src/cart.ts のエージェントのタブ。塗られた行の下に番号付きのコメントの吹き出しが2つあり、同じ3つの注釈が VS Code のコメントパネルにも並ぶ">
+
+<img src="media/readme/screenshot-show-html.png" width="880" alt="エージェントが描いた図の HTML パネル。subtotal・applyDiscount・addTax・total が横に並び、クーポンの有無で税を比べる棒が下にある">
 
 ## コマンド
 
@@ -267,7 +315,7 @@ Windows では、`NAME~1` のような部分（8.3 形式の短い名前の形�
 | `ShowMe: 回数制限 …`（`ShowMe: rate limited …`） | エージェントが同じ要求を短時間に繰り返した |
 
 **エージェントが「VS Code ウィンドウが見つからない」と言う。** どこかの窓で ShowMe がオンか、
-エージェントが VS Code と同じ環境で動いているか（手順2）、両方が同じ `$TMPDIR`（Windows では同じ
+エージェントが VS Code と同じ環境で動いているか（[エージェントの設定の詳細](#エージェントの設定の詳細)）、両方が同じ `$TMPDIR`（Windows では同じ
 `TEMP`）を見ているかを確かめる。
 
 **VS Code の Copilot で ShowMe に `spawn node ENOENT` が出る。** ShowMe 0.1.5 以前は、VS Code が
@@ -317,7 +365,7 @@ ShowMe を更新した後も、同じように一覧が取り直される。
 
 | 性質 | 仕組み |
 |---|---|
-| ネットワークリスナーを持たない | Unix socket / 名前付きパイプのみ。HTTP サーバは決して立てない。 |
+| ネットワークリスナーを持たず、テレメトリも無い | Unix socket / 名前付きパイプのみ。HTTP サーバも TCP のポートも決して立てず、ShowMe が自分からネットワークに繋ぐことも、テレメトリを送ることもない。Windows の名前付きパイプを SMB 越しに開けるのはあなたのアカウントの資格情報を持つ相手だけで、接続にはさらにトークンが要る。 |
 | どのツールもファイルの中身を返さない | `show_code` が返すのは解決した位置と、どう解決したかだけ。テキストは返さない。 |
 | 選択を動かさない | 注釈の塗りは装飾、位置合わせは `revealRange`。選択を動かすと `get_editor_state` を通してテキストが漏れる。 |
 | エージェントの HTML はスクリプトを持たない | 二重の iframe で、内側は `sandbox=""`、`connect-src 'none'`、`img-src data:`（egress ゼロ）。 |
@@ -357,7 +405,7 @@ VS Code の表示言語が日本語なら日本語になる。
 `D:\Temp` のようなシステムドライブ以外のフォルダ（そのドライブの既定の権限のままで、他の利用者も中に
 作れる）。直すには、`TEMP` と `TMP` を自分だけが書けるフォルダ（既定の `%LOCALAPPDATA%\Temp` など）に
 向けて、VS Code を起動し直す。WSL や dev container の VS Code も今までどおり使える。エージェントと
-VS Code は同じ環境で動いている必要がある（手順2）。
+VS Code は同じ環境で動いている必要がある（[エージェントの設定の詳細](#エージェントの設定の詳細)）。
 
 GitHub の公開 repo は**リリースのミラー**である。開発は private の repo で行い、リリースごとに
 1 コミットとしてそこに載せる（`CONTRIBUTING.md`）。個人のプロジェクトで、対応の期限の約束は無い。

@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="440" viewBox="0 0 880 440" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <title>How ShowMe fits: your agent, the ShowMe bridge, a local socket, the ShowMe extension and your editor, all on your machine</title>
+  <!-- Source of media/readme/how-it-fits.png (the README shows the PNG: the Marketplace does not accept SVG images).
+       Regenerate the PNG with scripts/media/render-diagram.sh. The solid card keeps it readable on light and dark pages. -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#424a53"/>
+    </marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/>
+    </marker>
+  </defs>
+
+  <!-- card -->
+  <rect x="0.5" y="0.5" width="879" height="439" rx="14" fill="#ffffff" stroke="#d0d7de"/>
+
+  <text x="32" y="44" font-size="22" font-weight="700" fill="#1f2328">How ShowMe fits</text>
+  <text x="32" y="70" font-size="15" fill="#57606a">Your agent asks; ShowMe acts inside VS Code. Every ShowMe hop stays on your machine.</text>
+
+  <!-- your machine boundary -->
+  <rect x="20" y="92" width="840" height="266" rx="12" fill="#f6fff8" stroke="#1a7f37" stroke-width="2" stroke-dasharray="8 6"/>
+  <rect x="36" y="80" width="252" height="26" rx="13" fill="#1a7f37"/>
+  <text x="162" y="98" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">Your machine · no network</text>
+
+  <!-- 1. agent -->
+  <rect x="40" y="128" width="172" height="152" rx="10" fill="#ffffff" stroke="#8c959f" stroke-width="1.5"/>
+  <text x="126" y="158" font-size="17" font-weight="700" fill="#1f2328" text-anchor="middle">Your agent</text>
+  <g font-size="14" fill="#424a53" text-anchor="middle">
+    <text x="126" y="188">Copilot in VS Code</text>
+    <text x="126" y="210">Claude Code</text>
+    <text x="126" y="232">Codex CLI</text>
+    <text x="126" y="254">Copilot CLI</text>
+  </g>
+
+  <!-- 2. bridge -->
+  <rect x="262" y="128" width="160" height="152" rx="10" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="342" y="158" font-size="17" font-weight="700" fill="#0a3069" text-anchor="middle">ShowMe bridge</text>
+  <g font-size="14" fill="#424a53" text-anchor="middle">
+    <text x="342" y="188">bundled with</text>
+    <text x="342" y="208">the extension;</text>
+    <text x="342" y="234">your agent</text>
+    <text x="342" y="254">starts it</text>
+  </g>
+
+  <!-- 3. extension -->
+  <rect x="472" y="128" width="160" height="152" rx="10" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="552" y="158" font-size="17" font-weight="700" fill="#0a3069" text-anchor="middle">ShowMe</text>
+  <text x="552" y="180" font-size="17" font-weight="700" fill="#0a3069" text-anchor="middle">extension</text>
+  <g font-size="14" fill="#424a53" text-anchor="middle">
+    <text x="552" y="210">runs in VS Code,</text>
+    <text x="552" y="230">only in a window</text>
+    <text x="552" y="250">you turned on</text>
+  </g>
+
+  <!-- 4. editor -->
+  <rect x="682" y="128" width="158" height="152" rx="10" fill="#ffffff" stroke="#8c959f" stroke-width="1.5"/>
+  <text x="761" y="158" font-size="17" font-weight="700" fill="#1f2328" text-anchor="middle">Your editor</text>
+  <g font-size="14" fill="#424a53" text-anchor="middle">
+    <text x="761" y="188">the agent's tabs</text>
+    <text x="761" y="210">comment bubbles</text>
+    <text x="761" y="232">HTML panel</text>
+    <text x="761" y="254">notes</text>
+  </g>
+
+  <!-- arrows; each connection is labelled under the row, joined to its arrow by a dotted line -->
+  <g stroke="#424a53" stroke-width="2.5" fill="none">
+    <line x1="215" y1="200" x2="259" y2="200" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+    <line x1="425" y1="200" x2="469" y2="200" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+    <line x1="635" y1="200" x2="679" y2="200" marker-end="url(#arrow)"/>
+  </g>
+  <g stroke="#8c959f" stroke-width="1.5" stroke-dasharray="2 4" fill="none">
+    <line x1="237" y1="210" x2="237" y2="300"/>
+    <line x1="447" y1="210" x2="447" y2="300"/>
+    <line x1="657" y1="210" x2="657" y2="300"/>
+  </g>
+  <g font-size="14" font-weight="700" fill="#1f2328" text-anchor="middle">
+    <text x="237" y="320">stdio (MCP)</text>
+    <text x="447" y="320">local socket</text>
+    <text x="657" y="320">VS Code API</text>
+  </g>
+  <g font-size="13" fill="#57606a" text-anchor="middle">
+    <text x="237" y="338">agent's child process</text>
+    <text x="447" y="338">named pipe on Windows</text>
+    <text x="657" y="338">inside VS Code</text>
+  </g>
+
+  <!-- footer -->
+  <g font-size="14" fill="#1f2328">
+    <text x="32" y="384"><tspan font-weight="700">ShowMe opens no network port, makes no network connections and has no telemetry.</tspan></text>
+    <text x="32" y="408" fill="#57606a">Agent HTML runs in a sandbox with no scripts and no outside requests.</text>
+    <text x="32" y="428" fill="#57606a" font-size="13">Your agent still talks to its own model provider; what ShowMe tells it joins that conversation like anything else it reads.</text>
+  </g>
+</svg>

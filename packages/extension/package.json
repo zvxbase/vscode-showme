@@ -3,7 +3,7 @@
   "private": true,
   "displayName": "ShowMe",
   "description": "Give AI agents hands in VS Code: show, annotate and diagram code alongside a human reader.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "preview": true,
   "license": "MIT",
   "publisher": "zvxbase",
@@ -312,7 +312,7 @@
   "scripts": {
     "build": "tsc --build && node esbuild.mjs",
     "vscode:prepublish": "npm run build",
-    "package": "node ../../scripts/release/sync-extension-docs.mjs && vsce package --no-dependencies",
+    "package": "node ../../scripts/release/sync-extension-docs.mjs && vsce package --no-dependencies --baseImagesUrl https://raw.githubusercontent.com/zvxbase/vscode-showme/main/",
     "compile:integration": "tsc --build ../bridge && tsc -p test/integration/tsconfig.json",
     "test:integration": "npm run build && npm run compile:integration && node out-test/runTest.js",
     "test:integration:xvfb": "npm run build && npm run compile:integration && xvfb-run -a --server-args=\"-screen 0 1600x1200x24\" node out-test/runTest.js",

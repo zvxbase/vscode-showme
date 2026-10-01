@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8 — preview
+
+- README: a short demo, a diagram of how ShowMe fits together, a simpler getting-started table (Copilot in VS Code needs only the extension; Claude Code, Codex CLI and Copilot CLI need one pasted line), example requests in the form "Use ShowMe to …", and a clear statement that ShowMe opens no network port and makes no network connections.
+- **Security:** the bundled bridge now includes fast-uri 3.1.8 (used by the MCP SDK's JSON Schema validator), which fixes inconsistent normalization of host names written with percent-encoded characters ([GHSA-hrr3-gc8f-f4qj](https://github.com/advisories/GHSA-hrr3-gc8f-f4qj)).
+
 ## 0.1.7 — preview
 
 - **Behavior change: `show_code` no longer highlights.** It still opens the file (in the agent's tab or, with `realFile: true`, the real file), scrolls to the location and lays out columns as before, but paints nothing. To point at code the agent uses `annotate`, so every painted spot comes with a comment you can follow in the bubbles and the Comments panel. `show_code` no longer accepts `color` on a location (it is refused instead of being ignored).

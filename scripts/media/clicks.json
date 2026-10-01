@@ -1,0 +1,9 @@
+{
+  "next1": [1183, 411],
+  "next2": [1183, 479],
+  "terminal": [300, 560],
+  "rest": [360, 450],
+  "panelSash": [640, 449, 515],
+  "stillScroll": 7,
+  "statusItem": [1180, 698]
+}
