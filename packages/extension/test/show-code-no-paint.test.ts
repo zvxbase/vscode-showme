@@ -66,6 +66,8 @@ vi.mock("vscode", () => {
       createTextEditorDecorationType: vi.fn(() => ({ dispose: vi.fn() })),
       onDidChangeVisibleTextEditors: vi.fn(() => ({ dispose: vi.fn() })),
     },
+    // 観測面（`highlightRanges`）が開いている文書を引く。
+    workspace: { textDocuments: [] },
   };
 });
 

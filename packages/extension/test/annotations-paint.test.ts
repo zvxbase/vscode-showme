@@ -119,6 +119,25 @@ describe("Annotations は色つきの注釈を注釈層に登録する（D65）"
     });
   });
 
+  /**
+   * `text` で指した注釈は、探した文字列を塗りと一緒に画家へ預ける。列を文書の上で
+   * 決め直すのは画家で、ストアは預けるだけ。渡されなければ鍵ごと無い（行・列の指定のまま）。
+   */
+  it("探した文字列を渡せば塗りに載り、渡さなければ鍵ごと無い", () => {
+    const h = painter();
+    const store = new Annotations(h);
+    store.add(
+      A,
+      { startLine: 3, endLine: 3, startColumn: 2, endColumn: 8 },
+      "why",
+      "blue",
+      "needle",
+    );
+    store.add(A, { startLine: 4, endLine: 4 }, "why", "blue");
+    expect(h.setAnnotation.mock.calls[0]?.[2]).toMatchObject({ matchText: "needle" });
+    expect(h.setAnnotation.mock.calls[1]?.[2]).not.toHaveProperty("matchText");
+  });
+
   it("無印（color 省略）は灰で塗る。作者名は ShowMe のまま（増分6.1 D78）", () => {
     // D65 の「無印は塗らない」は実機で目立たなすぎたので撤回。塗る色は protocol の
     // `UNMARKED_ANNOTATION_PAINT` 1つが決め、注釈の語彙（作者名の表）には灰を戻さない。

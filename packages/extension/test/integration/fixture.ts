@@ -341,6 +341,10 @@ export const REAL_FILE_RELS = {
   annotate: "tabs/real-file-annotate.md",
   // `annotate` の `reveal: true`（増分13 D117。`show_code` と同じ開き方）。
   reveal: "tabs/real-file-reveal.md",
+  // `text` の塗りの列を VS Code の文書の行で決め直す。未保存の編集で目印を動かす・2つにする。
+  columns: "tabs/real-file-columns.md",
+  // 同じく、先頭に BOM のあるファイル（目印は1行目の先頭）。映し（`showme-ro:`）で開いて塗る。
+  bom: "tabs/real-file-bom.md",
 } as const;
 export const REAL_FILE_DEEP_LINE = 300;
 
@@ -589,9 +593,12 @@ export function createFixtureWorkspace(label: string): FixtureWorkspace {
     REAL_FILE_RELS.legacyOwn,
     REAL_FILE_RELS.annotate,
     REAL_FILE_RELS.reveal,
+    REAL_FILE_RELS.columns,
   ]) {
     fs.writeFileSync(path.join(root, rel), `# tabs\n\n${STAGE_TABS_MARKER}\n`, "utf8");
   }
+  // BOM は生で打たない（エスケープで書く）。
+  fs.writeFileSync(path.join(root, REAL_FILE_RELS.bom), `\uFEFF${STAGE_TABS_MARKER} = 1\n`, "utf8");
 
   fs.writeFileSync(path.join(root, LANG_DEF_REL), LANG_DEF_TEXT.join("\n"), "utf8");
   fs.writeFileSync(path.join(root, LANG_USE_REL), LANG_USE_TEXT.join("\n"), "utf8");

@@ -72,6 +72,11 @@ interface Spy {
   liveIds: number[];
   /** 一度でも出した吹き出し（消えたものも含む）。 */
   added: Bubble[];
+  /**
+   * `added` と同じ並びの、塗りを文書で確かめ直すための文字列（`text` で指したときだけ。
+   * 他は `undefined`）。列はディスクの読みで決まるので、塗る直前に画家が文書の行で確かめ直す。
+   */
+  anchors: (string | undefined)[];
   cleared: number;
   miss: { path: string; needle: string }[];
   many: { path: string; needle: string }[];
@@ -96,6 +101,7 @@ function spy(
   const live: Bubble[] = [];
   const liveIds: number[] = [];
   const added: Bubble[] = [];
+  const anchors: (string | undefined)[] = [];
   const miss: Spy["miss"] = [];
   const many: Spy["many"] = [];
   const limited: string[] = [];
@@ -109,6 +115,7 @@ function spy(
     live,
     liveIds,
     added,
+    anchors,
     get cleared() {
       return cleared;
     },
@@ -137,11 +144,12 @@ function spy(
           live.length = 0;
           liveIds.length = 0;
         },
-        add: (relPath, range, body, color) => {
+        add: (relPath, range, body, color, matchText) => {
           const bubble: Bubble =
             color === undefined ? { relPath, range, body } : { relPath, range, body, color };
           live.push(bubble);
           added.push(bubble);
+          anchors.push(matchText);
           // 本物のストアと同じ約束: id は窓内で単調増加、上限を超えたら古いものから捨てる。
           const id = added.length;
           liveIds.push(id);
@@ -209,6 +217,34 @@ describe("handleAnnotate", () => {
     // "  // " = 5, "日本語" = 3, 絵文字 = 2, " " = 1 → 11
     expect(line.indexOf("needle")).toBe(11);
     expect(s.live[0]?.range).toEqual({ startLine: 2, endLine: 2, startColumn: 11, endColumn: 17 });
+  });
+
+  /**
+   * 列はディスクの読みで決まり、人間が見るのは VS Code の文書（BOM なし・未保存の編集込み）。
+   * 塗る側が文書の行で確かめ直せるように、`text` で指したときだけ探した文字列を面に渡す。
+   * `symbol` / `lines` は渡さない（確かめ直すものが無い。行全体・指定の列のまま）。
+   */
+  it("text で指した項目だけ、探した文字列を面に渡す（塗る直前の確かめ直し用）", async () => {
+    const root = workspace({ "src/a.ts": SOURCE });
+    const s = spy(root, {
+      symbols: {
+        lookup: async () => ({ kind: "resolved", ranges: [{ startLine: 2, endLine: 3 }] }),
+      },
+    });
+    await handleAnnotate(
+      {
+        items: [
+          { location: { path: "src/a.ts", text: "const target" }, text: "t" },
+          // `occurrence` で選んだ行でも渡す。
+          { location: { path: "src/a.ts", text: "repeated", occurrence: 2 }, text: "t2" },
+          { location: { path: "src/a.ts", symbol: "target" }, text: "s" },
+          { location: { path: "src/a.ts", lines: { start: 1, end: 1 } }, text: "l" },
+        ],
+        mode: "add",
+      },
+      s.deps,
+    );
+    expect(s.anchors).toEqual(["const target", "repeated", undefined, undefined]);
   });
 
   it("symbol と列なしの lines は行全体のまま（列を付けない。D118）", async () => {

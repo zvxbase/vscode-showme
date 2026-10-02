@@ -1,4 +1,4 @@
-import type { HighlightColor } from "@zvx/vscode-showme-protocol";
+import { type HighlightColor, columnsOfUniqueMatch } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
 import type { HighlightRange } from "./decorations.js";
 import { type LineRange, hasColumns } from "./line-range.js";
@@ -44,10 +44,52 @@ export function toRange(range: LineRange): vscode.Range {
  * 色は必ず受け取る。塗るのは注釈だけで（増分13 D116）、無印の色（灰）は注釈ストアが
  * `UNMARKED_ANNOTATION_PAINT` に倒して渡す ―― ここに既定を持つと既定が2箇所になる（不変条件14）。
  */
-export function toHighlightRange(range: LineRange, color: HighlightColor): HighlightRange {
-  return {
+export function toHighlightRange(
+  range: LineRange,
+  color: HighlightColor,
+  matchText?: string,
+): HighlightRange {
+  const out: HighlightRange = {
     range: toRange(range),
     wholeLine: !hasColumns(range),
     color,
+  };
+  // 鍵ごと省く（`exactOptionalPropertyTypes`）。
+  return matchText === undefined ? out : { ...out, matchText };
+}
+
+/**
+ * 文書の上で貼る範囲と種類。**画家（`decorations.ts`）が貼るときと、観測面
+ * （`highlightRanges`）が言うときの両方がこれを通る**（貼ったものと観測が別の量にならないように）。
+ *
+ * `matchText` が無い（`symbol` / `lines`）なら、登録された範囲と種類のまま。
+ *
+ * `matchText` がある（`text` で指した）なら、登録された範囲の開始行を**文書の行**で確かめ直す。
+ * 範囲の列は解決（`resolveLocation`）がディスクの読みで決めたもので、人間が見る文書とは違いうる
+ * （BOM は VS Code が外す・`realFile` の未保存の編集・読んだ後の編集）。文書のその行にちょうど
+ * 1回あればその列、0回・2回以上・行が無いなら行全体。「1回なら列、それ以外は行全体」を決めるのは
+ * 解決と同じ `columnsOfUniqueMatch` 1つ（不変条件14）。行そのものは動かさない ―― 行まで文書で
+ * 探し直すと、吹き出し（ディスクの行に付く）と塗りが別の行に割れる。
+ *
+ * `document` が無い（開いていない）なら、登録された範囲のまま（観測面だけが通る経路）。
+ */
+export function paintedOn(
+  item: HighlightRange,
+  document: Pick<vscode.TextDocument, "lineCount" | "lineAt"> | undefined,
+): HighlightRange {
+  if (item.matchText === undefined || document === undefined) return item;
+  const line = item.range.start.line;
+  const columns =
+    line < document.lineCount
+      ? columnsOfUniqueMatch(document.lineAt(line).text, item.matchText)
+      : undefined;
+  // `text` の位置は常に1行に解決する（一致は行ごとに探す）ので、ここで1行の範囲に組み直してよい
+  return {
+    ...item,
+    ...toHighlightRange(
+      { startLine: line + 1, endLine: line + 1, ...columns },
+      item.color,
+      item.matchText,
+    ),
   };
 }

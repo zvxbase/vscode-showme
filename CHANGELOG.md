@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.9 — preview
+
+- README: the Requirements section now says plainly that ShowMe itself needs only VS Code (plus the agent you already use), and that Node.js is not required.
+- A **Get started with ShowMe** walkthrough on VS Code's Get Started page: turn ShowMe on in a window, connect your agent, and what to ask. VS Code opens it when you install the extension; **ShowMe: Get started** opens it again.
+- New command **ShowMe: Copy agent setup command**: choose Claude Code, Codex CLI or Copilot CLI (and, where there are two, which form), and ShowMe copies that one line or block to the clipboard — the same text as in **ShowMe: Show agent configuration** — and tells you where to paste it. It still never edits your agent's files.
+- The Marketplace description now says what ShowMe is in the words people search for (an MCP server for Copilot, Claude Code and Codex that walks you through code in VS Code), with the keywords `mcp server`, `walkthrough` and `code tour`.
+- An annotation located by `text` now paints the matched text where it is in the editor you see, not where it was in the file on disk. If the open file has unsaved edits (for example with `realFile: true`) or changed after it was read, the paint is placed on the text in the current line of the editor; if that line no longer contains the text exactly once, the whole line is painted. The location returned to the agent is unchanged.
+
 ## 0.1.8 — preview
 
 - README: a short demo, a diagram of how ShowMe fits together, a simpler getting-started table (Copilot in VS Code needs only the extension; Claude Code, Codex CLI and Copilot CLI need one pasted line), example requests in the form "Use ShowMe to …", and a clear statement that ShowMe opens no network port and makes no network connections.

@@ -5,6 +5,7 @@ import {
 } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
 import { HighlightLayers, type LayerRange } from "./highlight-layers.js";
+import { paintedOn } from "./line-range-vscode.js";
 
 /**
  * ハイライトの保持と貼り直し。**画家はこの1つだけ**（増分6 §C2）。
@@ -152,16 +153,24 @@ export class Highlights implements vscode.Disposable {
     wholeLine: boolean;
     color: HighlightColor;
   }[] {
-    return this.layers.entries().map(({ uri, item }) => ({
-      uri,
-      startLine: item.range.start.line,
-      startColumn: item.range.start.character,
-      // 行全体のときは `Number.MAX_SAFE_INTEGER` が入る。丸めずにそのまま出す
-      // ―― 丸めると「行全体」と「たまたま長い範囲」が観測できなくなる。
-      endColumn: item.range.end.character,
-      wholeLine: item.wholeLine,
-      color: item.color,
-    }));
+    // 貼ったものと同じ範囲を言う: `text` で指したものは、開いている文書で決め直す（
+    // `apply` と同じ `paintedOn`）。開いていなければ登録された範囲。
+    const documents = new Map(
+      vscode.workspace.textDocuments.map((document) => [document.uri.toString(), document]),
+    );
+    return this.layers.entries().map(({ uri, item: registered }) => {
+      const item = paintedOn(registered, documents.get(uri));
+      return {
+        uri,
+        startLine: item.range.start.line,
+        startColumn: item.range.start.character,
+        // 行全体のときは `Number.MAX_SAFE_INTEGER` が入る。丸めずにそのまま出す
+        // ―― 丸めると「行全体」と「たまたま長い範囲」が観測できなくなる。
+        endColumn: item.range.end.character,
+        wholeLine: item.wholeLine,
+        color: item.color,
+      };
+    });
   }
 
   /**
@@ -191,7 +200,10 @@ export class Highlights implements vscode.Disposable {
     // ハイライトが二重に見える。
     this.clearEditor(editor);
     const byType = new Map<vscode.TextEditorDecorationType, vscode.Range[]>();
-    for (const item of ranges) {
+    for (const registered of ranges) {
+      // `text` で指したものは、このエディタの文書の行で列を決め直す（種類もここで決まる ――
+      // 範囲の形から推測するのではなく、`paintedOn` が作る）。
+      const item = paintedOn(registered, editor.document);
       const type = this.typeFor(item.color, item.wholeLine);
       const list = byType.get(type) ?? [];
       list.push(item.range);

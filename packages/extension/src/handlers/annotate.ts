@@ -45,8 +45,19 @@ export interface AnnotationSurface {
    * 名乗る吹き出しが描ける（設計書 §5.4）。省略すると無印（`ShowMe`）。
    *
    * 返すのは `id`（窓内で単調増加）**だけ**。`index` は `indices()` で、全部足した後に読む。
+   *
+   * `matchText` は `text` で指したときだけ渡す、探した文字列。`range` の列はディスクの
+   * 読みで決まったもので、人間が見る VS Code の文書（BOM なし・未保存の編集込み）とは違いうる。
+   * 塗る側（画家）は塗る直前に文書のその行で確かめ直し、ちょうど1回ならその列、それ以外なら
+   * 行全体を塗る。エージェントに返す結果は変えない（新しい情報を返さない。不変条件4）。
    */
-  add(relPath: string, range: LineRange, body: string, color?: AnnotationColor): { id: number };
+  add(
+    relPath: string,
+    range: LineRange,
+    body: string,
+    color?: AnnotationColor,
+    matchText?: string,
+  ): { id: number };
   /**
    * いま出ている注釈の `id → index`（1始まりの読む順）。**ストアの一覧1回から作る。**
    *
@@ -281,11 +292,14 @@ export async function handleAnnotate(
       });
       // 色は**そのまま渡す**。ここで既定に倒さない ―― 無印は
       // 「色を持たない固定名」という別の状態であって、既定色ではない。
+      // `text` で指したときは探した文字列も渡す。塗る列は画家が塗る直前に VS Code の文書の行で
+      // 決め直す（列を決める関数は protocol の `columnsOfUniqueMatch` 1つ）。
       const { id } = deps.annotations.add(
         resolution.normalizedPath,
         resolution.range,
         body,
         item.color,
+        resolution.resolvedBy === "text" ? loc.text : undefined,
       );
       // 番号が載るのは**出た項目だけ**。出せなかった項目に番号を付けると
       // 「出た」と読める（D71）。`index` はここでは読まない（下）。

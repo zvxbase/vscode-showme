@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { MAX_CANDIDATES } from "./location.js";
-import { MAX_RESOLVE_BYTES, type ResolveDeps, resolveLocation } from "./resolve-location.js";
+import {
+  MAX_RESOLVE_BYTES,
+  type ResolveDeps,
+  columnsOfUniqueMatch,
+  resolveLocation,
+} from "./resolve-location.js";
 
 const FILE = [
   "const a = 1;",
@@ -392,5 +397,32 @@ describe("text の一致の列（D118）", () => {
     const r = one("needle\n  needle\n", "needle");
     expect(r.match).toBe("many");
     expect(r.candidates).toEqual([{ line: 1 }, { line: 2 }]);
+  });
+});
+
+/**
+ * **「1行にちょうど1回なら列、それ以外は行全体」を決める関数は1つ**。
+ * 解決（ディスクの読み）と塗り（VS Code の文書。拡張の画家）の両方がこれを呼ぶ。
+ */
+describe("columnsOfUniqueMatch（1行の中の一致の列）", () => {
+  it("1回だけなら、その列（終端は含まない。UTF-16 の単位）", () => {
+    expect(columnsOfUniqueMatch("f(a).g(b)", "a")).toEqual({ startColumn: 2, endColumn: 3 });
+    expect(columnsOfUniqueMatch(`${"\u{1F600}"}名 needle`, "needle")).toEqual({
+      startColumn: 4,
+      endColumn: 10,
+    });
+  });
+
+  it("無ければ undefined", () => {
+    expect(columnsOfUniqueMatch("f(b)", "a")).toBeUndefined();
+  });
+
+  it("2回以上（重なる一致も数える）なら undefined", () => {
+    expect(columnsOfUniqueMatch("f(a).g(a)", "a")).toBeUndefined();
+    expect(columnsOfUniqueMatch("xaaay", "aa")).toBeUndefined();
+  });
+
+  it("空の文字列は列を名乗らない", () => {
+    expect(columnsOfUniqueMatch("abc", "")).toBeUndefined();
   });
 });

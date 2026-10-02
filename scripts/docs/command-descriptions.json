@@ -11,6 +11,14 @@
     "en": "Open ready-to-paste configuration for Claude Code, Codex CLI and Copilot CLI, filled in with the real install path.",
     "ja": "Claude Code / Codex CLI / Copilot CLI にそのまま貼れる設定を、実際のインストール先入りで開く。"
   },
+  "showme.copySetupCommand": {
+    "en": "Copy the setup command for one agent (Claude Code, Codex CLI or Copilot CLI) to the clipboard and say where to paste it. ShowMe does not edit the agent's files.",
+    "ja": "1つのエージェント（Claude Code / Codex CLI / Copilot CLI）の設定の1行（またはブロック）をクリップボードに写し、どこへ貼るかを伝える。エージェントのファイルは書き換えない。"
+  },
+  "showme.getStarted": {
+    "en": "Open the Get Started walkthrough: turn ShowMe on, connect your agent, and what to ask.",
+    "ja": "Get Started の案内を開く（ShowMe をオンにする・エージェントを繋ぐ・何を頼むか）。"
+  },
   "showme.showLog": {
     "en": "Open the log of every tool call (selected text is not recorded).",
     "ja": "ツール呼び出しの記録を開く（選択テキストは記録しない）。"

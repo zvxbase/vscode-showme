@@ -121,7 +121,13 @@ export class Annotations implements vscode.Disposable {
    * `index: 64` と答える）。読む順は**全部足した後に `list()` を1回**読んで決める
    * （`handlers/annotate.ts`。同じ量を2回決めない ―― 不変条件14）。
    */
-  add(uri: vscode.Uri, range: LineRange, body: string, color?: AnnotationColor): { id: number } {
+  add(
+    uri: vscode.Uri,
+    range: LineRange,
+    body: string,
+    color?: AnnotationColor,
+    matchText?: string,
+  ): { id: number } {
     const controller = this.ensureController();
     // 作者名は `renumber()` が総数から付け直すので、ここでは仮に「1件だけ」の名前を
     // 置く（表の**値**はリテラルだけ。エージェントの文字列は鍵の照合にしか使われない。D57）。
@@ -160,11 +166,12 @@ export class Annotations implements vscode.Disposable {
     // `UNMARKED_ANNOTATION_PAINT` 1つが決め、ここはそれに倒すだけ。塗る色はハイライトの
     // 語彙・表（`HIGHLIGHT_RGBA`）で、注釈の色（灰無し）はその部分集合なのでそのまま通る。
     // `text` で指した位置は一致した文字列の列を持つので、塗りもその列だけになる（増分13 D118）。
+    // 探した文字列（`matchText`）も預け、画家が塗る直前に VS Code の文書の行で列を決め直す。
     // `entry.color` は `undefined` のまま ―― 作者名も観測面も無印のまま（灰はエージェントの色ではない）。
     this.highlights.setAnnotation(
       entry.key,
       uri,
-      toHighlightRange(range, color ?? UNMARKED_ANNOTATION_PAINT),
+      toHighlightRange(range, color ?? UNMARKED_ANNOTATION_PAINT, matchText),
     );
 
     this.entries.push(entry);

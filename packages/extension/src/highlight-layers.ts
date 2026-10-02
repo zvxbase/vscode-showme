@@ -19,6 +19,13 @@ export interface LayerRange<R> {
   range: R;
   wholeLine: boolean;
   color: HighlightColor;
+  /**
+   * `text` で指した注釈の、探した文字列。あれば画家は塗る直前に文書の
+   * `range` の開始行で確かめ直し、ちょうど1回ならその列、それ以外なら行全体を塗る
+   * （`line-range-vscode.ts` の `paintedOn`）。`range` / `wholeLine` はディスクの読みで決まった値で、
+   * 文書が無いときだけそのまま使う。
+   */
+  matchText?: string;
 }
 
 export class HighlightLayers<R> {

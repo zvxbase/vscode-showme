@@ -222,7 +222,13 @@ export function createAnnotationSurface(
     clearAll(): void {
       annotations.clearAll();
     },
-    add(relPath: string, range: LineRange, body: string, color?: AnnotationColor): { id: number } {
+    add(
+      relPath: string,
+      range: LineRange,
+      body: string,
+      color?: AnnotationColor,
+      matchText?: string,
+    ): { id: number } {
       if (root === undefined) throw new Error("no workspace folder");
       // 行範囲は**そのまま**渡す。吹き出しの位置と塗りの範囲を同じ1つの `LineRange` から
       // 作るのは注釈ストアの仕事で、ここで vscode の Range に直すと塗りの種類
@@ -231,7 +237,7 @@ export function createAnnotationSurface(
       // 吹き出しは舞台と**同じ URI**に付ける（D84）。`scheme` は `createEditorSurface` と
       // 同じく呼び出し側が1回だけ決めたもの。映しが開いていなくてもスレッドは作られ、
       // 開けばそこに出る。
-      return annotations.add(stageUriFor(root, relPath, scheme), range, body, color);
+      return annotations.add(stageUriFor(root, relPath, scheme), range, body, color, matchText);
     },
     indices(): ReadonlyMap<number, number> {
       // **`list()` 1回から作る**（`get_editor_state.annotations` と同じ観測。不変条件14）。

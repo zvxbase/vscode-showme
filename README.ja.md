@@ -2,9 +2,9 @@
   "vscode-showme": "42f683fb429fed8f",
   "What it does not do": "54fc2279eea3e95f",
   "How it fits": "4c5abb5353dbc3b8",
-  "Requirements": "7ab6f66a01d391d1",
-  "Getting started": "41a61fb5a6d788b7",
-  "Quick start": "3ba7061efade0007",
+  "Requirements": "f99888a273cbeb71",
+  "Getting started": "586126971a8607d2",
+  "Quick start": "5b13abbc3811d176",
   "What to ask": "2da544e57b0cf0cc",
   "Agent setup in detail": "dc39082df429eabd",
   "What you will see": "0a3f91e9e362c755",
@@ -61,21 +61,26 @@ HTTP サーバも TCP のポートも無い。Windows の名前付きパイプ�
 
 ## 必要なもの
 
-- VS Code 1.101 以上。
-- **VS Code 内蔵の Copilot（エージェントモード）:** ほかに要るものは無い。ShowMe は VS Code 自身の
-  実行環境でブリッジを起動するので、Node.js は要らない。
-- **Claude Code・Codex CLI・Copilot CLI:** こちらもほかに要るものは無い。Node.js 20 以上は任意で、
-  ShowMe が示す設定には、Node.js を使う形と使わない形がある（[エージェントの設定の詳細](#エージェントの設定の詳細)）。
+- **VS Code 1.101 以上。** ShowMe 自身に要るのはこれだけ。
+- **いま使っている AI エージェント** ―― VS Code 内蔵の Copilot（エージェントモード）・Claude Code・
+  Codex CLI・Copilot CLI のどれか1つ。ShowMe はそのエージェントに VS Code の手足を与えるもので、
+  エージェントそのものは含まない。
+
+Node.js は**要らない**。ShowMe は VS Code 自身の実行環境でブリッジを起動する。望むなら、Claude Code・
+Codex CLI・Copilot CLI では Node.js 20 以上で起動する形も選べる（[エージェントの設定の詳細](#エージェントの設定の詳細)）。
 
 ## 使い始める
 
 | エージェント | すること |
 |---|---|
 | VS Code 内蔵の Copilot（エージェントモード） | 拡張を入れる。それだけで、拡張が VS Code に自分を登録する。 |
-| Claude Code・Codex CLI・Copilot CLI | 拡張を入れ、**ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を実行し、使っているエージェントの1行か1ブロックを貼り、エージェントを起動し直す。 |
+| Claude Code・Codex CLI・Copilot CLI | 拡張を入れ、**ShowMe: エージェントの設定の1行をコピー**（`ShowMe: Copy agent setup command`）を実行してエージェントを選び、写した1行か1ブロックをメッセージが言う場所に貼り、エージェントを起動し直す。 |
 
 あとはどのエージェントでも同じ。ステータスバーの **`ShowMe: オフ`**（`ShowMe: Off`）をクリックして
 **`ShowMe: オン`**（`ShowMe: On`）にし、エージェントに「ShowMe を使って……」と頼む。
+
+拡張を入れると、VS Code の Get Started のページに、この3つの手順を案内する **ShowMe をはじめる**
+（`Get started with ShowMe`）が出る。**ShowMe: はじめに**（`ShowMe: Get started`）でいつでも開き直せる。
 
 ### すぐ始める
 
@@ -84,8 +89,11 @@ HTTP サーバも TCP のポートも無い。Windows の名前付きパイプ�
    `code --install-extension vscode-showme-<版>.vsix`。エージェントが話すブリッジは拡張に同梱
    されているので、npm から入れるものは無い。
 2. **エージェントに登録する**（Claude Code・Codex CLI・Copilot CLI。VS Code 内蔵の Copilot はこの手順が
-   要らない）。コマンドパレットで **ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を実行する。
-   そのまま貼れる断片（実際のインストール先入り）が読み取り専用の文書で開く:
+   要らない）。いちばん早いのは、コマンドパレットの
+   **ShowMe: エージェントの設定の1行をコピー**（`ShowMe: Copy agent setup command`）を使うこと。
+   エージェントを選ぶと、その1行か1ブロックがクリップボードに写り、どこへ貼るかが表示される。
+   設定の全体を見るときは **ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`）を実行する。
+   実際のインストール先が入った、そのまま貼れる断片が、読み取り専用の文書で開く:
    - **Claude Code** — `claude mcp add` の行を端末で実行し、一覧の許可ルールを `.claude/settings.json`
      の `permissions.allow` に足す（足さないと、呼び出しのたびに Claude Code が確認を求める）
    - **Codex CLI** — `~/.codex/config.toml` に `[mcp_servers.showme]` の節を足す
@@ -209,6 +217,8 @@ VS Code では英語名で出る。
 | **ShowMe: この窓でオン／オフ**（`ShowMe: Turn on / off for this window`） | この窓をエージェントに預ける、または預けるのをやめる。ステータスバーの ShowMe をクリックするのと同じ。 |
 | **ShowMe: 拡張を停止する／再開する**（`ShowMe: Stop / Resume the extension`） | すべての窓で ShowMe を止める、または再開する。再開するまで止まったまま（ユーザー設定の showme.enabled に保存される）。 |
 | **ShowMe: エージェント設定を表示**（`ShowMe: Show agent configuration`） | Claude Code / Codex CLI / Copilot CLI にそのまま貼れる設定を、実際のインストール先入りで開く。 |
+| **ShowMe: エージェントの設定の1行をコピー**（`ShowMe: Copy agent setup command`） | 1つのエージェント（Claude Code / Codex CLI / Copilot CLI）の設定の1行（またはブロック）をクリップボードに写し、どこへ貼るかを伝える。エージェントのファイルは書き換えない。 |
+| **ShowMe: はじめに**（`ShowMe: Get started`） | Get Started の案内を開く（ShowMe をオンにする・エージェントを繋ぐ・何を頼むか）。 |
 | **ShowMe: 操作ログを表示**（`ShowMe: Show the operations log`） | ツール呼び出しの記録を開く（選択テキストは記録しない）。 |
 | **ShowMe: 撤去手順と設定の削除方法を表示**（`ShowMe: Show teardown steps and how to remove the configuration`） | エージェントから ShowMe の登録を消し、拡張を撤去する手順を開く。 |
 | **ShowMe: 注釈を消す**（`ShowMe: Clear annotations`） | エージェントの注釈をすべて消す。 |

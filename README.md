@@ -38,22 +38,26 @@ shows runs in a sandbox with no scripts and no outside requests (`connect-src 'n
 
 ## Requirements
 
-- VS Code 1.101 or later.
-- **Copilot in VS Code (agent mode):** nothing else. ShowMe starts its bridge with VS Code's own
-  runtime, so you do not need Node.js.
-- **Claude Code, Codex CLI and Copilot CLI:** nothing else either. Node.js 20 or later is optional:
-  the configuration ShowMe shows you has a form that uses it and a form that does not (see
-  [Agent setup in detail](#agent-setup-in-detail)).
+- **VS Code 1.101 or later.** This is the only thing ShowMe itself needs.
+- **An AI agent you already use** — any one of Copilot in VS Code (agent mode), Claude Code,
+  Codex CLI or Copilot CLI. ShowMe gives that agent hands in VS Code; it does not include an agent.
+
+Node.js is **not** required: ShowMe starts its bridge with VS Code's own runtime. If you prefer,
+Claude Code, Codex CLI and Copilot CLI can start it with Node.js 20 or later instead (see
+[Agent setup in detail](#agent-setup-in-detail)).
 
 ## Getting started
 
 | Your agent | What to do |
 |---|---|
 | Copilot in VS Code (agent mode) | Install the extension. That is all: it registers itself with VS Code. |
-| Claude Code, Codex CLI, Copilot CLI | Install the extension, run **ShowMe: Show agent configuration**, paste the line or block for your agent, and restart the agent. |
+| Claude Code, Codex CLI, Copilot CLI | Install the extension, run **ShowMe: Copy agent setup command**, choose your agent, paste the copied line or block where the message says, and restart the agent. |
 
 Then, with any agent: click **`ShowMe: Off`** in the status bar so that it says **`ShowMe: On`**,
 and ask your agent "Use ShowMe to …".
+
+When you install the extension, VS Code's Get Started page shows a **Get started with ShowMe**
+walkthrough with these three steps. Open it again any time with **ShowMe: Get started**.
 
 ### Quick start
 
@@ -62,7 +66,9 @@ and ask your agent "Use ShowMe to …".
    `code --install-extension vscode-showme-<version>.vsix`. The bridge your agent talks to is
    bundled with the extension — there is nothing to install from npm.
 2. **Register ShowMe with your agent** (Claude Code, Codex CLI and Copilot CLI; Copilot in VS Code
-   skips this step). Run **ShowMe: Show agent configuration** from the Command Palette. It opens a
+   skips this step). The quickest way is **ShowMe: Copy agent setup command** in the Command Palette:
+   choose your agent, and ShowMe copies its line or block to the clipboard and tells you where to
+   paste it. For everything else, run **ShowMe: Show agent configuration**. It opens a
    read-only document with ready-to-paste snippets, filled in with the real install path:
    - **Claude Code** — run the `claude mcp add` line in a terminal, and add the listed rules to
      `permissions.allow` in `.claude/settings.json` (without them, Claude Code asks before every call).
@@ -193,6 +199,8 @@ These are in the Command Palette (Ctrl+Shift+P, or Cmd+Shift+P on macOS).
 | **ShowMe: Turn on / off for this window** | Lend this window to the agent, or take it back. The same as clicking ShowMe in the status bar. |
 | **ShowMe: Stop / Resume the extension** | Stop ShowMe in every window, or resume it. It stays stopped until you resume it (saved as showme.enabled in your user settings). |
 | **ShowMe: Show agent configuration** | Open ready-to-paste configuration for Claude Code, Codex CLI and Copilot CLI, filled in with the real install path. |
+| **ShowMe: Copy agent setup command** | Copy the setup command for one agent (Claude Code, Codex CLI or Copilot CLI) to the clipboard and say where to paste it. ShowMe does not edit the agent's files. |
+| **ShowMe: Get started** | Open the Get Started walkthrough: turn ShowMe on, connect your agent, and what to ask. |
 | **ShowMe: Show the operations log** | Open the log of every tool call (selected text is not recorded). |
 | **ShowMe: Show teardown steps and how to remove the configuration** | Open the steps to remove ShowMe from your agent and uninstall it. |
 | **ShowMe: Clear annotations** | Remove all of the agent's annotations. |

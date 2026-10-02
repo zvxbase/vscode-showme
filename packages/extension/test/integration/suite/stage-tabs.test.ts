@@ -1075,6 +1075,131 @@ suite("show_code の realFile: true（D87）", () => {
       }
     });
   });
+  /**
+   * **`text` の塗りの列は、人間が見ている文書の上で決める**。一致はディスクの読みで探すが、
+   * `realFile` の本物のファイルは未保存の編集を持ちうる。画家は塗る直前に文書のその行で確かめ直し、
+   * ちょうど1回ならその列、2回以上なら行全体を塗る。エージェントへの結果はディスクの読みのまま
+   * （新しい情報を返さない）。
+   */
+  test("realFile の未保存の編集で目印が動いても、塗りは文書の上の目印に付く。2つになれば行全体", async () => {
+    const rel = REAL_FILE_RELS.columns;
+    const file = fileUri(rel);
+    await withSettings({ "stage.agentTabs": true }, async () => {
+      await humanOpens(STAGE_TABS_RELS.human);
+      await showRealFile(rel);
+      const editor = await visibleEditorEventually("本物のファイルの編集器が見える", file);
+      const line = 2; // 目印は3行目（0始まりで2）。
+      assert.strictEqual(editor.document.lineAt(line).text, STAGE_TABS_MARKER, "前提が崩れている");
+
+      // 保存しない編集で、目印を同じ行の右へ動かす。ディスクの目印は列0のまま。
+      const prefix = "moved: ";
+      assert.ok(
+        await editor.edit((b) => b.insert(new vscode.Position(line, 0), prefix)),
+        "編集できない",
+      );
+      assert.ok(editor.document.isDirty, "前提が崩れている（未保存になっていない）");
+
+      const annotateOnFile = async (): Promise<Record<string, unknown>> => {
+        const raw = (await vscode.commands.executeCommand("showme.test.annotate", {
+          items: [{ location: { path: rel, text: STAGE_TABS_MARKER }, text: "here", color: "red" }],
+          realFile: true,
+        })) as { resolutions?: Array<Record<string, unknown>> };
+        const [resolution] = raw.resolutions ?? [];
+        assert.ok(resolution && typeof resolution.id === "number", JSON.stringify(raw));
+        return resolution;
+      };
+      const paintedOnFile = async () =>
+        (await inspectVisuals()).highlightRanges
+          .filter((r) => r.uri === file.toString())
+          .map(({ startLine, startColumn, endColumn, wholeLine }) => ({
+            startLine,
+            startColumn,
+            endColumn,
+            wholeLine,
+          }));
+
+      const moved = await annotateOnFile();
+      // 結果はディスクの読みのまま（列0）。文書の未保存の内容はエージェントに返らない。
+      assert.deepStrictEqual(
+        moved.range,
+        {
+          startLine: line + 1,
+          endLine: line + 1,
+          startColumn: 0,
+          endColumn: STAGE_TABS_MARKER.length,
+        },
+        JSON.stringify(moved),
+      );
+      const column = editor.document.lineAt(line).text.indexOf(STAGE_TABS_MARKER);
+      assert.strictEqual(column, prefix.length, "前提が崩れている");
+      assert.deepStrictEqual(await paintedOnFile(), [
+        {
+          startLine: line,
+          startColumn: column,
+          endColumn: column + STAGE_TABS_MARKER.length,
+          wholeLine: false,
+        },
+      ]);
+
+      // 同じ行に目印をもう1つ足す（未保存のまま）。どちらか決められないので行全体。
+      const end = editor.document.lineAt(line).text.length;
+      assert.ok(
+        await editor.edit((b) => b.insert(new vscode.Position(line, end), ` ${STAGE_TABS_MARKER}`)),
+        "編集できない",
+      );
+      const twice = await annotateOnFile();
+      assert.strictEqual(twice.match, "one", JSON.stringify(twice));
+      const painted = await paintedOnFile();
+      assert.strictEqual(painted.length, 1, JSON.stringify(painted));
+      assert.strictEqual(painted[0]?.startLine, line);
+      assert.strictEqual(painted[0]?.wholeLine, true, JSON.stringify(painted));
+    });
+  });
+
+  /**
+   * 先頭に BOM のあるファイルを映し（`showme-ro:`）で開いて `text` で塗る。列は文書の行で決めるので、
+   * VS Code がこの提供者でも BOM を外すか（`stripBom` が真似ていること）に依らず、塗りは文書の上の
+   * 目印に付く。外したかどうかも測って残す。
+   */
+  test("BOM のあるファイルを映しで開いても、塗りは文書の上の目印の列", async () => {
+    const rel = REAL_FILE_RELS.bom;
+    const mirror = await stageUri(rel, STAGE_SCHEME_READONLY);
+    await withSettings({ "stage.agentTabs": true }, async () => {
+      await humanOpens(STAGE_TABS_RELS.human);
+      const result = await annotateRaw({
+        items: [{ location: { path: rel, text: STAGE_TABS_MARKER }, text: "bom", color: "red" }],
+        reveal: true,
+      });
+      assert.deepStrictEqual(result.reveal, { opened: true }, JSON.stringify(result));
+      const editor = await visibleEditorEventually("映しの編集器が見える", mirror);
+      const text = editor.document.lineAt(0).text;
+      // 測定: VS Code はこの提供者の文書からも BOM を外す（解決の `stripBom` はこれを真似ている）。
+      assert.ok(
+        !text.startsWith("\uFEFF"),
+        `映しの文書に BOM が残っている: ${JSON.stringify(text)}`,
+      );
+      const column = text.indexOf(STAGE_TABS_MARKER);
+      const painted = (await inspectVisuals()).highlightRanges.filter(
+        (r) => r.uri === mirror.toString(),
+      );
+      assert.deepStrictEqual(
+        painted.map(({ startLine, startColumn, endColumn, wholeLine }) => ({
+          startLine,
+          startColumn,
+          endColumn,
+          wholeLine,
+        })),
+        [
+          {
+            startLine: 0,
+            startColumn: column,
+            endColumn: column + STAGE_TABS_MARKER.length,
+            wholeLine: false,
+          },
+        ],
+      );
+    });
+  });
 });
 
 suite("エージェントのタブの印（D89）", () => {

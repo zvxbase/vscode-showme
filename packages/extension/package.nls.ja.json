@@ -3,6 +3,8 @@
   "showme.command.toggle": "ShowMe: この窓でオン／オフ",
   "showme.command.disableExtension": "ShowMe: 拡張を停止する／再開する",
   "showme.command.showAgentConfig": "ShowMe: エージェント設定を表示",
+  "showme.command.copySetupCommand": "ShowMe: エージェントの設定の1行をコピー",
+  "showme.command.getStarted": "ShowMe: はじめに",
   "showme.command.showLog": "ShowMe: 操作ログを表示",
   "showme.command.teardown": "ShowMe: 撤去手順と設定の削除方法を表示",
   "showme.command.clearAnnotations": "ShowMe: 注釈を消す",
@@ -36,5 +38,16 @@
   "showme.config.maxSelectionChars": "get_editor_state が返す選択テキストの上限文字数。",
   "showme.config.injectTerminalEnv": "統合ターミナルに SHOWME_SOCK（ShowMe のソケットのパス）を入れる。ビルドスクリプトなど、あなたの他のプロセスにそのパスを渡したくなければオフにする。そのときエージェントは、ShowMe が登録するファイルから ShowMe を見つける。",
   "showme.config.listAllWorkspaces": "list_workspaces が、エージェントが繋がっている窓以外の VS Code の窓も返すようにする。既定はオフ。オンにすると、他の窓のフォルダのパスがエージェントに見える。",
-  "showme.mcp.label": "ShowMe（エージェントの舞台としての VS Code）"
+  "showme.mcp.label": "ShowMe（エージェントの舞台としての VS Code）",
+  "showme.walkthrough.title": "ShowMe をはじめる",
+  "showme.walkthrough.description": "この窓で、エージェントにコードを見せてもらう。",
+  "showme.walkthrough.turnOn.title": "この窓で ShowMe をオンにする",
+  "showme.walkthrough.turnOn.description": "エージェントが使えるのは、あなたが預けた窓だけ。ステータスバーの **ShowMe: オフ** をクリックして **ShowMe: オン** にする（ボタンでもよい）。もう一度クリックすれば窓を取り戻す。\n[ShowMe をオン／オフにする](command:showme.toggle)",
+  "showme.walkthrough.turnOn.altText": "オンにした ShowMe のステータスバーの項目と、この窓で ShowMe がオンであり、クリックするとオフになることを伝える tooltip",
+  "showme.walkthrough.connect.title": "エージェントを繋ぐ",
+  "showme.walkthrough.connect.description": "VS Code 内蔵の Copilot（エージェントモード）は何もしなくてよい。Claude Code・Codex CLI・Copilot CLI は、使っているエージェントの設定の1行をコピーして貼り、エージェントを起動し直す。\n[設定の1行をコピー](command:showme.copySetupCommand)\n[エージェント設定を表示](command:showme.showAgentConfig)",
+  "showme.walkthrough.connect.markdown": "media/walkthrough/connect.ja.md",
+  "showme.walkthrough.ask.title": "エージェントに頼む",
+  "showme.walkthrough.ask.description": "「ShowMe を使って……」で始める。たとえば「ShowMe を使って、このリポジトリでリクエストがどう処理されるかを順に見せて」や「ShowMe を使って、このモジュール同士の依存関係を図にして」。エージェントは見せて説明し、そこで止まる。吹き出しの **‹ ›** で前後の吹き出しへ移れる。",
+  "showme.walkthrough.ask.altText": "src/cart.ts のエージェントのタブ。塗った行の下に、番号（1/3 と 3/3）の付いたコメントの吹き出しが2つある"
 }

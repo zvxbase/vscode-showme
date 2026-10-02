@@ -72,4 +72,18 @@ suite("実 VS Code / --locale=ja / 人間向けの文字列が日本語になる
       value: nlsJa["showme.command.toggle"],
     });
   });
+
+  test("walkthrough の手順の Markdown は日本語のファイルを指す（増分14 D120）", () => {
+    const ext = vscode.extensions.getExtension(EXTENSION_ID);
+    assert.ok(ext);
+    // `media.markdown` は title / category ではないので、英語以外でも文字列のまま置き換わる
+    const manifest = ext.packageJSON as {
+      contributes: {
+        walkthroughs: { steps: { id: string; media: { markdown?: unknown } }[] }[];
+      };
+    };
+    const connect = manifest.contributes.walkthroughs[0]?.steps.find((s) => s.id === "connect");
+    assert.strictEqual(connect?.media.markdown, "media/walkthrough/connect.ja.md");
+    assert.ok(fs.existsSync(path.join(extensionPath, "media/walkthrough/connect.ja.md")));
+  });
 });

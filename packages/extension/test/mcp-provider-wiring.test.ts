@@ -37,12 +37,20 @@ describe("MCP 提供者の配線（D112）", () => {
   });
 
   it("文書にも同じ実行環境を渡す（process.execPath と remoteName、入れ方を見分ける環境変数）", () => {
-    expect(text).toMatch(
-      /buildAgentConfigDocument\([^;]*executable:\s*process\.execPath,\s*remote:\s*vscode\.env\.remoteName !== undefined/,
+    // 実行環境は1つの関数（editorRuntime）で組み、文書と写す命令（増分14 D122）の両方がそれを通す
+    const def = /const editorRuntime = \(\): EditorRuntime => \(\{[^;]*;/.exec(text)?.[0] ?? "";
+    expect(def).toMatch(
+      /executable:\s*process\.execPath,\s*remote:\s*vscode\.env\.remoteName !== undefined/,
     );
-    const call = /buildAgentConfigDocument\([^;]*;/.exec(text)?.[0] ?? "";
     for (const k of ["FLATPAK_ID", "APPIMAGE", "SNAP"]) {
-      expect(call, k).toContain(`${k}: process.env.${k}`);
+      expect(def, k).toContain(`${k}: process.env.${k}`);
     }
+    const call = /buildAgentConfigDocument\([^;]*;/.exec(text)?.[0] ?? "";
+    expect(call).toMatch(/process\.platform,\s*editorRuntime\(\),?\s*\)/);
+    expect(text).toMatch(
+      /inputs: \{ bridgePath, platform: process\.platform, runtime: editorRuntime\(\) \}/,
+    );
+    // 実行環境を組む場所はそれ1つ（もう1つ書くとずれる。不変条件14）
+    expect(text.match(/executable:\s*process\.execPath/g)).toHaveLength(1);
   });
 });

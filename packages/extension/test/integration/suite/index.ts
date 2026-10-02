@@ -123,6 +123,7 @@ export async function run(): Promise<void> {
   mocha.addFile(path.resolve(__dirname, "./stage-language.test.js"));
   // ワークスペースの外のファイル（D101 / D102）。**両方の回で走らせる**（制限モードの回は主要な2本）。
   mocha.addFile(path.resolve(__dirname, "./outside-workspace.test.js"));
+  mocha.addFile(path.resolve(__dirname, "./onboarding.test.js"));
   // 映しのタブの定義・参照が TS 自身の結果と重なるか（D88 の前提の実測）。**信頼の回だけ** ――
   // 制限モードでは TS が何も返さないので、重なりを測る対象が無い。
   if (mode === "trusted") {

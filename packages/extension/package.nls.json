@@ -3,6 +3,8 @@
   "showme.command.toggle": "ShowMe: Turn on / off for this window",
   "showme.command.disableExtension": "ShowMe: Stop / Resume the extension",
   "showme.command.showAgentConfig": "ShowMe: Show agent configuration",
+  "showme.command.copySetupCommand": "ShowMe: Copy agent setup command",
+  "showme.command.getStarted": "ShowMe: Get started",
   "showme.command.showLog": "ShowMe: Show the operations log",
   "showme.command.teardown": "ShowMe: Show teardown steps and how to remove the configuration",
   "showme.command.clearAnnotations": "ShowMe: Clear annotations",
@@ -36,5 +38,16 @@
   "showme.config.maxSelectionChars": "Maximum number of characters of selected text that get_editor_state returns.",
   "showme.config.injectTerminalEnv": "Put SHOWME_SOCK (the path of ShowMe's socket) into integrated terminals. Turn it off if you do not want other processes of yours, such as build scripts, to receive that path; agents then find ShowMe through the file it registers instead.",
   "showme.config.listAllWorkspaces": "Let list_workspaces also return VS Code windows other than the one the agent is connected to. Off by default. When on, the agent can see the folder paths of the other windows.",
-  "showme.mcp.label": "ShowMe (VS Code stage for agents)"
+  "showme.mcp.label": "ShowMe (VS Code stage for agents)",
+  "showme.walkthrough.title": "Get started with ShowMe",
+  "showme.walkthrough.description": "Let your agent show you code in this window.",
+  "showme.walkthrough.turnOn.title": "Turn ShowMe on in this window",
+  "showme.walkthrough.turnOn.description": "The agent can only use windows you lend it. Click **ShowMe: Off** in the status bar so that it says **ShowMe: On**, or use the button. Click again to take the window back.\n[Turn ShowMe on or off](command:showme.toggle)",
+  "showme.walkthrough.turnOn.altText": "The ShowMe status bar item, turned on, with its tooltip saying that ShowMe is on for this window and that a click turns it off",
+  "showme.walkthrough.connect.title": "Connect your agent",
+  "showme.walkthrough.connect.description": "Copilot in VS Code (agent mode): nothing to do. Claude Code, Codex CLI and Copilot CLI: copy the setup command for your agent, paste it, then restart the agent.\n[Copy setup command](command:showme.copySetupCommand)\n[Show agent configuration](command:showme.showAgentConfig)",
+  "showme.walkthrough.connect.markdown": "media/walkthrough/connect.md",
+  "showme.walkthrough.ask.title": "Ask your agent",
+  "showme.walkthrough.ask.description": "Start with \"Use ShowMe to …\". For example: \"Use ShowMe to walk me through how a request is handled in this repo.\" or \"Use ShowMe to draw how these modules depend on each other.\" The agent shows and explains, then stops; use **‹ ›** on a bubble to go to the previous or next one.",
+  "showme.walkthrough.ask.altText": "The agent's tab of src/cart.ts with two numbered comment bubbles, 1/3 and 3/3, under the painted lines"
 }

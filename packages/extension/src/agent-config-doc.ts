@@ -325,12 +325,7 @@ export function buildAgentConfigDocument(
   const args = bridgeLaunchArgs(bridgePath);
   const where = snippetRuntime(runtime);
   const windows = platform === "win32";
-  // 出す形と順は `snippetRuntime` の forms だけが決める（Flatpak は node だけ）
-  const snippets = where.forms.flatMap((kind): FormSnippet[] => {
-    if (kind === "node") return [formSnippet(kind, nodeLaunch(args), bridgePath, windows)];
-    if (where.executable === undefined) return [];
-    return [formSnippet(kind, editorRuntimeLaunch(where.executable, args), bridgePath, windows)];
-  });
+  const snippets = agentSetupSnippets(bridgePath, platform, runtime);
   // 他の人の機械でも動く形（D99）は `node` で起動する。エディタの実行ファイルの場所は OS と
   // インストールの仕方で人ごとに違い（macOS は /Applications、Linux は /usr/share/code、Windows は
   // ホームの下または Program Files）、実行時に求める手が無い。`${HOME}` の置き換えは使わない
@@ -353,13 +348,51 @@ export function buildAgentConfigDocument(
   return lang === "ja" ? japanese(parts) : english(parts);
 }
 
+/**
+ * **形ごとの断片を作る唯一の関数**（不変条件14）。文書（`buildAgentConfigDocument`）と、
+ * 1つだけ写す命令（**ShowMe: Copy agent setup command**。`setup-command.ts`。増分14 D122）の両方が通す。
+ * 出す形と順は `snippetRuntime` の forms だけが決める（Flatpak は node だけ）。
+ */
+export function agentSetupSnippets(
+  bridgePath: string,
+  platform: NodeJS.Platform,
+  runtime: EditorRuntime,
+): FormSnippet[] {
+  const args = bridgeLaunchArgs(bridgePath);
+  const where = snippetRuntime(runtime);
+  const windows = platform === "win32";
+  return where.forms.flatMap((kind): FormSnippet[] => {
+    if (kind === "node") return [formSnippet(kind, nodeLaunch(args), bridgePath, windows)];
+    if (where.executable === undefined) return [];
+    return [formSnippet(kind, editorRuntimeLaunch(where.executable, args), bridgePath, windows)];
+  });
+}
+
+/** 外のエージェント（断片を貼るもの）。 */
+export type SetupAgent = "claude" | "codex" | "copilot";
+
+/**
+ * 1つのエージェントの、1つの形の断片の本文（コードブロックの中身）。文書の3つの節とスコープの節、
+ * 写す命令が通す（不変条件14）。`scope` は Claude Code の `--scope X ` の部分（既定は無し ＝ local）。
+ */
+export function agentSnippetBody(agent: SetupAgent, s: FormSnippet, scope = ""): string {
+  switch (agent) {
+    case "claude":
+      return `claude mcp add ${scope}${s.claudeTail}`;
+    case "codex":
+      return s.tomlBody;
+    case "copilot":
+      return s.copilot;
+  }
+}
+
 /** `PATH` の `node` で起動する形（env は無し）。断片の node の形と共有の項目（D99）が通す */
 function nodeLaunch(args: readonly string[]): LaunchForm {
   return { command: "node", args: [...args], env: {} };
 }
 
 /** 1つの形の、3つのエージェントの断片。 */
-interface FormSnippet {
+export interface FormSnippet {
   kind: SnippetForm;
   /** `claude mcp add [--scope X] ` の後ろに続く部分（`-e …` `--transport stdio showme -- <起動>`） */
   claudeTail: string;
@@ -539,7 +572,7 @@ function englishLead(p: DocumentParts): string {
 function english(p: DocumentParts): string {
   const fence = p.windows ? "powershell" : "sh";
   const claude = (scope: string): string =>
-    formBlocks(p, EN_LABELS, fence, (s) => `claude mcp add ${scope}${s.claudeTail}`);
+    formBlocks(p, EN_LABELS, fence, (s) => agentSnippetBody("claude", s, scope));
   const either = p.snippets.length > 1 ? " (either form above)" : "";
   return `# ShowMe — agent configuration (read-only; copy from here)
 
@@ -574,13 +607,13 @@ claude mcp remove showme
 
 ## Codex CLI (\`~/.codex/config.toml\`)
 
-${formBlocks(p, EN_LABELS, "toml", (s) => s.tomlBody)}
+${formBlocks(p, EN_LABELS, "toml", (s) => agentSnippetBody("codex", s))}
 
 Removal: delete the \`[mcp_servers.showme]\` section above.
 
 ## Copilot CLI (\`~/.copilot/mcp-config.json\`)
 
-${formBlocks(p, EN_LABELS, "json", (s) => s.copilot)}
+${formBlocks(p, EN_LABELS, "json", (s) => agentSnippetBody("copilot", s))}
 
 Permission: \`--allow-tool 'showme'\`
 
@@ -684,13 +717,13 @@ function japanese(p: DocumentParts): string {
   };
   const fence = p.windows ? "powershell" : "sh";
   const claude = (scope: string): string =>
-    formBlocks(p, labels, fence, (s) => `claude mcp add ${scope}${s.claudeTail}`);
+    formBlocks(p, labels, fence, (s) => agentSnippetBody("claude", s, scope));
   return format(ja.lines.join("\n"), [
     p.bridgePath,
     claude(""),
     p.allowJson,
-    formBlocks(p, labels, "toml", (s) => s.tomlBody),
-    formBlocks(p, labels, "json", (s) => s.copilot),
+    formBlocks(p, labels, "toml", (s) => agentSnippetBody("codex", s)),
+    formBlocks(p, labels, "json", (s) => agentSnippetBody("copilot", s)),
     japaneseLead(p),
     p.portable === undefined ? "" : format(ja.portable.join("\n"), [p.portable]),
     fence,

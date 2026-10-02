@@ -18,7 +18,13 @@ import {
   showViewArgsSchema,
 } from "@zvx/vscode-showme-protocol";
 import * as vscode from "vscode";
-import { buildAgentConfigDocument, builtInServerDefinition } from "./agent-config-doc.js";
+import {
+  type EditorRuntime,
+  type SetupAgent,
+  type SnippetForm,
+  buildAgentConfigDocument,
+  builtInServerDefinition,
+} from "./agent-config-doc.js";
 import { annotationUiSurface } from "./annotation-ui-observation.js";
 import { Annotations, isCommentThreadLike } from "./annotations.js";
 import { ARRANGE_COMMANDS, createArrangeSurface } from "./arrange-surface.js";
@@ -69,6 +75,7 @@ import {
   ShowMeSocketServer,
   ToolError,
 } from "./server.js";
+import { type CopySetupDeps, type PickItem, copySetupCommand } from "./setup-command.js";
 import { registerAgentTabDecoration } from "./stage-decoration.js";
 import { registerStageLanguage } from "./stage-language.js";
 import { registerStageFileSystem } from "./stage-registration.js";
@@ -87,6 +94,7 @@ import { recordFrontChanges, registerFrontObservers } from "./tool-call-recorder
 import { checkToolGate } from "./tool-gate.js";
 import { sharedToolCallWindow, sharedToolShownSelection } from "./tool-shown-selection.js";
 import { VIEW_COMMANDS, createViewSurface } from "./view-surface.js";
+import { openWalkthroughArgs } from "./walkthrough.js";
 import { ShowMePanel } from "./webview/panel.js";
 import { WindowRoleState } from "./window-role-state.js";
 import {
@@ -740,6 +748,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * そのまま使う（不変条件14: 同じ量を2箇所で決めない）。
      */
     const docContentChanged = new vscode.EventEmitter<vscode.Uri>();
+    /**
+     * 断片に入れる実行環境。文書と、1つだけ写す命令（増分14 D122）の両方がこれを通す
+     * （同じ入力を2箇所で組まない。不変条件14）。
+     */
+    const editorRuntime = (): EditorRuntime => ({
+      executable: process.execPath,
+      remote: vscode.env.remoteName !== undefined,
+      // 入れ方の見分け（Snap の版のフォルダ・Flatpak の砂箱・AppImage。snippetRuntime）
+      env: {
+        FLATPAK_ID: process.env.FLATPAK_ID,
+        APPIMAGE: process.env.APPIMAGE,
+        SNAP: process.env.SNAP,
+      },
+    });
     const buildDocContent = (id: ShowMeDocId): string => {
       switch (id) {
         case "agent-configuration":
@@ -748,16 +770,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             uiLanguage(),
             os.homedir(),
             process.platform,
-            {
-              executable: process.execPath,
-              remote: vscode.env.remoteName !== undefined,
-              // 入れ方の見分け（Snap の版のフォルダ・Flatpak の砂箱・AppImage。snippetRuntime）
-              env: {
-                FLATPAK_ID: process.env.FLATPAK_ID,
-                APPIMAGE: process.env.APPIMAGE,
-                SNAP: process.env.SNAP,
-              },
-            },
+            editorRuntime(),
           );
         case "teardown":
           return buildTeardownDocument(
@@ -788,6 +801,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       docContentChanged.fire(uri);
       await vscode.window.showTextDocument(uri, { preview: false });
     }
+
+    /** QuickPick で1つ選ばせる（取り消しは undefined）。 */
+    const quickPick = async <T>(
+      items: readonly PickItem<T>[],
+      placeHolder: string,
+    ): Promise<T | undefined> =>
+      (await vscode.window.showQuickPick(items, { placeHolder, ignoreFocusOut: true }))?.value;
+    /** 写す命令の I/O。選ばせ方だけを差し替えられる（統合テストの口が選択を渡す） */
+    const copySetupDeps = (pick: CopySetupDeps["pick"]): CopySetupDeps => ({
+      inputs: { bridgePath, platform: process.platform, runtime: editorRuntime() },
+      pick,
+      writeClipboard: (text) => Promise.resolve(vscode.env.clipboard.writeText(text)),
+      inform: (message, button) => vscode.window.showInformationMessage(message, button),
+      openFullConfiguration: () => showReadOnlyDoc("agent-configuration"),
+    });
 
     /**
      * VS Code 内蔵のエージェント向けの MCP 提供者（設計書 §7.2 / Y12）。
@@ -863,6 +891,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         showReadOnlyDoc("agent-configuration"),
       ),
       vscode.commands.registerCommand("showme.teardown", () => showReadOnlyDoc("teardown")),
+      // 設定の1行をクリップボードへ（増分14 D122）。書くのはクリップボードだけで、他ツールの
+      // 設定ファイルには触らない（不変条件11）。断片は文書と同じ関数から作る（`setup-command.ts`）
+      vscode.commands.registerCommand("showme.copySetupCommand", () =>
+        copySetupCommand(copySetupDeps(quickPick)),
+      ),
+      // Get Started の walkthrough を開き直す（増分14 D121）。拡張 ID は実行時の値から作る
+      vscode.commands.registerCommand("showme.getStarted", () => {
+        const [command, id] = openWalkthroughArgs(context.extension.id);
+        return vscode.commands.executeCommand(command, id);
+      }),
       // 人間向けの消す命令（増分6 D68）。**人間の操作であって、エージェントへの
       // 入力路ではない**（§C5: 設定が縛るのはエージェントであって人間ではない）ので、
       // 窓の役割でも `showme.enabled` でも縛らない ―― 消すだけで、何も開かない。
@@ -1202,6 +1240,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          * 無いので、登録したのと**同じオブジェクト**を呼ぶ。返すのは起動の形（実行ファイル・
          * ブリッジのパス・`ELECTRON_RUN_AS_NODE`）と題と版だけ（トークンもソケットのパスも含まない）。
          */
+        /**
+         * **ShowMe: Copy agent setup command** を、QuickPick の代わりに引数で選んで走らせる口
+         * （統合テスト専用。増分14 D122）。選ばせ方以外は本物の命令と同じ I/O（クリップボード・
+         * メッセージ）を通す。出した候補も返す（形を訊いたか・その順を確かめる）。
+         */
+        vscode.commands.registerCommand(
+          "showme.test.copySetupCommand",
+          async (args: { agent?: SetupAgent; form?: SnippetForm }) => {
+            const offered: unknown[][] = [];
+            const copied = await copySetupCommand(
+              copySetupDeps(async (items) => {
+                offered.push(items.map((i) => i.value));
+                const want = offered.length === 1 ? args.agent : args.form;
+                return items.find((i) => i.value === want)?.value;
+              }),
+            );
+            return { copied, offered };
+          },
+        ),
         vscode.commands.registerCommand("showme.test.mcpDefinitions", () => {
           const defs = mcpProvider.provideMcpServerDefinitions(
             new vscode.CancellationTokenSource().token,

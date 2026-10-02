@@ -49,6 +49,8 @@ vi.mock("vscode", () => ({
       return { dispose: vi.fn() };
     }),
   },
+  // 観測面（`highlightRanges`）が開いている文書を引く。ここでは開いていない。
+  workspace: { textDocuments: [] },
   ThemeColor: class {
     constructor(public readonly id: string) {}
   },
