@@ -18,14 +18,22 @@ import { activateExtension } from "./helpers.js";
  * Windows では実行時ディレクトリを DACL で確かめて立つ（D104）。ここでは**実 VS Code の上で
  * 本当に立ち、トークンを置くディレクトリが本人と trusted（SYSTEM・Administrators）だけのもの
  * であること**を確かめる。立たなかったときは、拡張の出した理由がそのまま失敗の文言になる
- * （`TEMP` の ACL で断られたのか、別の理由かが CI のログで分かるように）。
+ * （親の ACL で断られたのか、別の理由かが CI のログで分かるように）。第一候補は
+ * `%LOCALAPPDATA%\vscode-showme`（D125）で、`%TEMP%` の候補にも登録が書かれることも確かめる。
  */
 suite("実 VS Code / ネイティブの Windows で立つ", () => {
   test("実行時ディレクトリが本人と trusted だけのもので、ShowMe の名前付きパイプが立っている", async () => {
     assert.strictEqual(process.platform, "win32", "この検査は Windows でだけ走らせる");
     await activateExtension();
 
-    const [first] = runtimeDirCandidates(process.env, os.tmpdir(), processUid(process));
+    // 第一候補は `%LOCALAPPDATA%\vscode-showme`、最後が `%TEMP%` の候補（D125）。
+    const candidates = runtimeDirCandidates(
+      process.env,
+      os.tmpdir(),
+      processUid(process),
+      process.platform,
+    );
+    const [first] = candidates;
     assert.ok(first !== undefined, "実行時ディレクトリの候補が無い");
     // 立つまで待つ（activate はサーバの起動を待って返るが、念のため）。
     const deadline = Date.now() + 10_000;
@@ -33,7 +41,7 @@ suite("実 VS Code / ネイティブの Windows で立つ", () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     if (!fs.existsSync(first)) {
-      // 立たなかった理由の多くは親（TEMP）の DACL。拡張と同じ判定で、親の SDDL ごと失敗に載せる。
+      // 立たなかった理由の多くは親（`%LOCALAPPDATA%` か `%TEMP%`）の DACL。拡張と同じ判定で、親の SDDL ごと失敗に載せる。
       const parent = path.dirname(first);
       const parentSddl = await readSddl(parent).catch((e: unknown) => `(unreadable: ${String(e)})`);
       const parentVerdict = noForeignCreateVerdict(parentSddl, await currentUserSid());
@@ -47,6 +55,19 @@ suite("実 VS Code / ネイティブの Windows で立つ", () => {
 
     const registrations = fs.readdirSync(first).filter((name) => /^[0-9a-f]{16}\.json$/.test(name));
     assert.strictEqual(registrations.length, 1, `登録ファイルが1つでない: ${registrations}`);
+
+    // %TEMP% の候補（CI は自分だけが書ける showme-tmp に向けてある）にも登録が書かれる ―― 版の混ざった窓と
+    // ブリッジが互いを見つけられるように残してある後退先（D125）。
+    const last = candidates.at(-1);
+    assert.ok(last !== undefined && last !== first, `%TEMP% の候補が第一候補と別でない: ${last}`);
+    const tempRegistrations = fs
+      .readdirSync(last)
+      .filter((name) => /^[0-9a-f]{16}\.json$/.test(name));
+    assert.strictEqual(
+      tempRegistrations.length,
+      1,
+      `%TEMP% の候補の登録が1つでない: ${tempRegistrations}`,
+    );
 
     // 名前付きパイプの一覧は `\\.\pipe\` で読める。拡張が立てるパイプの名前は `vscode-showme-…`
     // （server.ts）。

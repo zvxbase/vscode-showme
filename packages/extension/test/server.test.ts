@@ -25,6 +25,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   ANSWERED_LINGER_MS,
   type ConnectionObserver,
+  RuntimeDirsUnavailableError,
   SECOND_CONNECTION_REASON,
   ShowMeSocketServer,
   ToolError,
@@ -1786,6 +1787,8 @@ describe.skipIf(onWindows)("長すぎるソケットのパス（D108）", () => 
       expect(path.dirname(info.socketPath)).toBe(short);
       // 先頭はソケットのあるディレクトリの分（`ServerInfo.registryPaths` の約束）。
       expect(info.registryPaths.map((p) => path.dirname(p))).toEqual([short, long]);
+      // 長すぎて使えないのはソケットだけ。登録は書くので「使われない候補」ではない。
+      expect(info.unprepared).toEqual([]);
       for (const reg of info.registryPaths) {
         expect(JSON.parse(fs.readFileSync(reg, "utf8")).socketPath).toBe(info.socketPath);
       }
@@ -1795,6 +1798,56 @@ describe.skipIf(onWindows)("長すぎるソケットのパス（D108）", () => 
         args: {},
       });
       expect(res.ok).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe.skipIf(onWindows)("用意できない候補（D125）: 残りで立ち、理由を残す", () => {
+  it("用意できない候補があっても残りで立ち、落ちた候補と理由を unprepared に返す（D125）", async () => {
+    const loose = path.join(tmpRoot(), "vscode-showme-1000");
+    fs.mkdirSync(loose, { mode: 0o777 });
+    fs.chmodSync(loose, 0o777);
+    const good = path.join(tmpRoot(), "rt");
+    const server = new ShowMeSocketServer([loose, good], async () => ({}));
+    const info = await server.start();
+    try {
+      expect(info.registryPaths.map((p) => path.dirname(p))).toEqual([good]);
+      expect(info.unprepared).toHaveLength(1);
+      expect(info.unprepared[0]?.dir).toBe(loose);
+      expect(info.unprepared[0]?.reason).toContain("mode");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("全部の候補が落ちたら、候補のパスを頭に置いて全部の理由を並べる（D125）", async () => {
+    const a = path.join(tmpRoot(), "vscode-showme-1000");
+    const b = path.join(tmpRoot(), "vscode-showme");
+    for (const d of [a, b]) {
+      fs.mkdirSync(d, { mode: 0o777 });
+      fs.chmodSync(d, 0o777);
+    }
+    const server = new ShowMeSocketServer([a, b], async () => ({}));
+    const err = await server.start().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    await server.stop();
+    expect(err).toBeInstanceOf(RuntimeDirsUnavailableError);
+    expect((err as RuntimeDirsUnavailableError).failures.map((f) => f.dir)).toEqual([a, b]);
+    const text = String((err as Error).message);
+    expect(text).toContain(`${a}: `);
+    expect(text).toContain(`${b}: `);
+    expect(text.indexOf(`${a}: `)).toBeLessThan(text.indexOf(`${b}: `));
+  });
+
+  it("全部用意できれば unprepared は空（D125）", async () => {
+    const server = new ShowMeSocketServer([path.join(tmpRoot(), "rt")], async () => ({}));
+    const info = await server.start();
+    try {
+      expect(info.unprepared).toEqual([]);
     } finally {
       await server.stop();
     }

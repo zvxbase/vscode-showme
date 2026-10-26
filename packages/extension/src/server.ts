@@ -220,7 +220,7 @@ function readRegistrationPid(file: string): number | undefined {
  * を通す — 共有ディレクトリでの無検査 `unlink` は任意ファイル削除になる。
  * 判断がつかないものは残す。
  *
- * **候補ごとに呼ぶこと。** 読む候補が2つなら掃除する候補も2つ、が対称である
+ * **候補ごとに呼ぶこと。** 読む候補が複数なら掃除する候補も複数、が対称である
  * （設計書 §2A.6）。呼び出し側は `start()`。
  *
  * **`prepareRuntimeDir` を通ったディレクトリにだけ呼ぶこと。** Windows では所有者（uid）の
@@ -292,13 +292,33 @@ export interface ServerInfo {
   /**
    * 登録ファイル。**候補ごとに1つ**（設計書 §2A.6）。
    *
-   * 複数形である。読むのが両候補なら書くのも両候補、が対称であり、
+   * 複数形である。読むのが候補すべてなら書くのも候補すべて、が対称であり、
    * 単数の名前を残すと「1箇所しか書いていない」という古い前提が名前として
    * 生き残る。先頭は書き込みの第一候補（＝ソケットのあるディレクトリ）。
    */
   registryPaths: readonly string[];
   /** 認証トークン。ソケットのパス名とは別の値である(設計書 D5')。 */
   token: string;
+  /**
+   * 用意できなかった候補と、その理由（D125）。全部落ちれば `start()` は投げるので、ここに載るのは
+   * 「他の候補で立てた」ときだけ。拡張はこれを出力パネルに残す ―― 黙って捨てると、たとえば `%TEMP%` が
+   * なぜ使われないのかを人間が見る場所が無い。
+   */
+  unprepared: readonly { dir: string; reason: string }[];
+}
+
+/**
+ * 実行時ディレクトリの候補が1つも使えなかった（D125）。メッセージは `dir: reason / …` のまま、
+ * 候補ごとの失敗は `failures` で構造のまま持つ ―― 拡張が候補ごとに1行ずつ出力に残すため。
+ */
+export class RuntimeDirsUnavailableError extends Error {
+  constructor(readonly failures: readonly { dir: string; reason: string }[]) {
+    super(
+      failures.length === 0
+        ? "No runtime directory candidate was given"
+        : failures.map((f) => `${f.dir}: ${f.reason}`).join(" / "),
+    );
+  }
 }
 
 export type RequestHandler = (req: WireRequest) => Promise<Record<string, unknown>>;
@@ -443,12 +463,12 @@ export class ShowMeSocketServer {
   ) {}
 
   async start(): Promise<ServerInfo> {
-    // **候補は全部用意する**（設計書 §2A.6）。読むのが両候補なら書くのも
-    // 両候補、が対称である。用意できなかった候補は黙って飛ばす ―― ここで
+    // **候補は全部用意する**（設計書 §2A.6）。読むのが候補すべてなら書くのも
+    // 候補すべて、が対称である。用意できなかった候補は黙って飛ばす ―― ここで
     // 全体を止めると、`/tmp`（1777）に後退先の名前で先回りするだけで
     // 拡張を起動不能にできる（読み取り側と同じ DoS 経路）。
     const prepared: string[] = [];
-    const failures: string[] = [];
+    const failures: { dir: string; reason: string }[] = [];
     const seen = new Set<string>();
     for (const dir of this.runtimeDirs) {
       // 同じディレクトリに2度書かない（候補が畳まれていないときの保険）。
@@ -456,8 +476,10 @@ export class ShowMeSocketServer {
       seen.add(dir);
       const result = await prepareRuntimeDir(dir);
       if (result.ok) prepared.push(dir);
-      else failures.push(result.reason);
+      else failures.push({ dir, reason: result.reason });
     }
+    // 用意できなかった候補（ソケットの長さで落ちた候補は用意はできていて、登録は書く）。
+    const unprepared = [...failures];
 
     // パス接尾辞は衝突回避のためだけ。秘密ではない(/proc/net/unix は world-readable)。
     const suffix = crypto.randomBytes(8).toString("hex");
@@ -476,20 +498,19 @@ export class ShowMeSocketServer {
         socketDir = dir;
         break;
       }
-      failures.push(
-        `socket path is ${bytes} bytes, over the ${limit}-byte limit of this OS: ${candidate}. Set TMPDIR (or XDG_RUNTIME_DIR) to a shorter directory`,
-      );
+      failures.push({
+        dir,
+        reason: `socket path is ${bytes} bytes, over the ${limit}-byte limit of this OS: ${candidate}. Set TMPDIR (or XDG_RUNTIME_DIR) to a shorter directory`,
+      });
     }
-    // **両方失敗したときだけ**投げる。理由は全部載せる ―― どちらが
+    // **全部の候補が失敗したときだけ**投げる。理由は全部載せる ―― どれが
     // どう落ちたかが分からないと、人間には直しようがない。
     if (socketDir === undefined) {
-      throw new Error(
-        failures.length === 0 ? "No runtime directory candidate was given" : failures.join(" / "),
-      );
+      throw new RuntimeDirsUnavailableError(failures);
     }
 
     // 自分の分を作る前に、死んだウィンドウが残した分を掃除する（設計書 §6.2）。
-    // **掃除も両候補**。読む候補が2つなら掃除する候補も2つ、が対称である。
+    // **掃除も候補すべて**。読む候補が複数なら掃除する候補も複数、が対称である。
     for (const dir of prepared) cleanStaleRegistrations(dir);
 
     // 登録ファイルは `socketPath` を絶対パスで持つので、どちらの候補で見つけても同じ
@@ -539,7 +560,7 @@ export class ShowMeSocketServer {
     }
 
     this.server = server;
-    this.info = { socketPath, registryPaths, token };
+    this.info = { socketPath, registryPaths, token, unprepared };
     return this.info;
   }
 
@@ -891,8 +912,8 @@ export class ShowMeSocketServer {
     this.registration = undefined;
     // **登録ファイルを先に消す**（D111）。サーバを閉じた後に消すと、その間だけ登録が死んだパイプ
     // （Windows では名前がマシン全体で共有され、誰でも同じ名前で作れる）を指す。
-    // **両方消す。** 書いたのが両候補なら消すのも両候補、が対称である。
-    // 片方だけ消すと、死んだ窓の登録が後退先に残り続ける。
+    // **全部消す。** 書いたのが候補すべてなら消すのも候補すべて、が対称である。
+    // 一部だけ消すと、死んだ窓の登録が後退先に残り続ける。
     if (info !== undefined) {
       for (const registryPath of info.registryPaths) safeUnlink(registryPath);
     }

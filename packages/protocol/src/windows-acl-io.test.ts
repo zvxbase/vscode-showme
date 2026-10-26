@@ -531,6 +531,32 @@ describe("prepareRuntimeDirWindows（拡張）", () => {
     expect(io.made).toEqual([]);
   });
 
+  it("親に他人が作れるなら、どの候補でも icacls で親を見る助言を出す", async () => {
+    const io = fakeIo({ [PARENT]: "dir" }, { [PARENT]: SHARED_PARENT });
+    const r = await prepareRuntimeDirWindows(DIR, io);
+    expect(r.ok ? "" : r.reason).toContain(`icacls "${PARENT}"`);
+  });
+
+  it("%LOCALAPPDATA% の候補では TEMP / TMP の助言を出さない（D125）", async () => {
+    const local = "C:\\Users\\me\\AppData\\Local";
+    const dir = `${local}\\vscode-showme`;
+    const io = fakeIo({ [local]: "dir" }, { [local]: SHARED_PARENT });
+    const r = await prepareRuntimeDirWindows(dir, io);
+    const reason = r.ok ? "" : r.reason;
+    expect(reason).toContain(`Other users can create or replace entries in ${local}`);
+    expect(reason).toContain(`icacls "${local}"`);
+    expect(reason).not.toMatch(/TEMP|TMP/);
+    expect(io.made).toEqual([]);
+  });
+
+  it("ドライブの根が親なら、引用の中で末尾の \\ が引用符を潰さない形にする", async () => {
+    const io = fakeIo({ "D:\\": "dir" }, { "D:\\": SHARED_PARENT });
+    const r = await prepareRuntimeDirWindows("D:\\vscode-showme-0", io);
+    const reason = r.ok ? "" : r.reason;
+    expect(reason).toContain('icacls "D:\\."');
+    expect(reason).not.toContain('icacls "D:\\"');
+  });
+
   it("親が無い・親が junction / symlink なら断る", async () => {
     const missing = fakeIo({}, {});
     expect((await prepareRuntimeDirWindows(DIR, missing)).ok).toBe(false);
@@ -642,158 +668,164 @@ describe("verifyRuntimeDirWindows（拡張とブリッジが共有。読むだ�
 
 // ---- 本物（Windows だけ） ----
 
-describe.runIf(process.platform === "win32")("本物の icacls / whoami（Windows）", () => {
-  const made: string[] = [];
-  const fresh = (prefix = "showme-acl-"): string => {
-    const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    made.push(d);
-    return d;
-  };
-  afterEach(() => {
-    for (const d of made.splice(0)) {
-      // 締めたディレクトリも本人が全部を持つので消せる
-      fs.rmSync(d, { recursive: true, force: true });
-    }
-  });
-
-  const icacls = (...args: string[]): void => {
-    execFileSync(
-      path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"),
-      args,
-      {
-        windowsHide: true,
-      },
-    );
-  };
-
-  /** 所有者の SID（検査でだけ PowerShell を使う。icacls /save は所有者を出さない）。 */
-  const ownerOf = (dir: string): string => {
-    const env: NodeJS.ProcessEnv = { ...process.env, SHOWME_ACL_TARGET: dir };
-    // Node の親が PowerShell 7 だと、その PSModulePath が Windows PowerShell 5.1 を壊す
-    for (const k of Object.keys(env)) if (k.toLowerCase() === "psmodulepath") delete env[k];
-    return execFileSync(
-      path.join(
-        process.env.SystemRoot ?? "C:\\Windows",
-        "System32",
-        "WindowsPowerShell",
-        "v1.0",
-        "powershell.exe",
-      ),
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "[IO.Directory]::GetAccessControl($env:SHOWME_ACL_TARGET).GetOwner([Security.Principal.SecurityIdentifier]).Value",
-      ],
-      { env, windowsHide: true, encoding: "utf8" },
-    ).trim();
-  };
-
-  it("os.tmpdir() の SDDL は D: で始まる", async () => {
-    await expect(readSddl(os.tmpdir())).resolves.toMatch(/^D:/);
-  });
-
-  it("存在しないパスは読めない（閉じる）", async () => {
-    await expect(readSddl(path.join(fresh(), "missing"))).rejects.toThrow();
-  });
-
-  it("自分で締めた親の下に作って締めると ok、DACL は本人と SYSTEM だけ", async () => {
-    const io = createWindowsAclIo();
-    const sid = await io.currentUserSid();
-    const parent = fresh();
-    await lockPrivateDir(parent, sid);
-    const dir = path.join(parent, "vscode-showme-0");
-    await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
-    await expect(verifyRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
-
-    const sddl = await readSddl(dir);
-    expect(sddl.startsWith("D:P")).toBe(true);
-    const dacl = parseDacl(sddl);
-    const trusted = new Set([sid, "SY", "S-1-5-18"]);
-    // RID 500 の本人は icacls が LA と書く
-    if (sid.endsWith("-500")) trusted.add("LA");
-    const sids = (dacl?.aces ?? []).map((a) => a?.sid);
-    expect(sids.length).toBeGreaterThan(0);
-    for (const s of sids) expect(trusted.has(s as string), `${s} in ${sddl}`).toBe(true);
-
-    expect(ownerOf(dir)).toBe(sid);
-
-    // 2回目は在るものとして確かめる（締め直さない）
-    await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
-  });
-
-  it("在るディレクトリは DACL を変えずに所有者だけを本人にする", async () => {
-    const io = createWindowsAclIo();
-    const sid = await io.currentUserSid();
-    const parent = fresh();
-    await lockPrivateDir(parent, sid);
-    const dir = path.join(parent, "vscode-showme-0");
-    fs.mkdirSync(dir);
-    await lockPrivateDir(dir, sid);
-    // 所有者を Administrators に移しておく（runner は管理者なので移せる）
-    icacls(dir, "/setowner", "*S-1-5-32-544");
-    expect(ownerOf(dir)).toBe("S-1-5-32-544");
-    const before = await readSddl(dir);
-    await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
-    expect(ownerOf(dir)).toBe(sid);
-    expect(await readSddl(dir)).toBe(before);
-  });
-
-  it("Users に変更を許した親の下では、親の判定で断る", async () => {
-    const parent = fresh();
-    icacls(parent, "/grant", "*S-1-5-32-545:(OI)(CI)M");
-    const dir = path.join(parent, "vscode-showme-0");
-    const r = await prepareRuntimeDirWindows(dir);
-    expect(r.ok ? "" : r.reason).toMatch(/TEMP/);
-    expect(fs.existsSync(dir)).toBe(false);
-    expect((await verifyRuntimeDirWindows(dir)).ok).toBe(false);
-  });
-
-  it("junction の実行時ディレクトリは断る", async () => {
-    const io = createWindowsAclIo();
-    const sid = await io.currentUserSid();
-    const parent = fresh();
-    await lockPrivateDir(parent, sid);
-    const target = path.join(parent, "target");
-    fs.mkdirSync(target);
-    await lockPrivateDir(target, sid);
-    const junction = path.join(parent, "vscode-showme-0");
-    // 所有者を本人以外にしておく（junction の先の所有者を変えに行けば、それが見える）
-    icacls(target, "/setowner", "*S-1-5-32-544");
-    const targetSddl = await readSddl(target);
-    fs.symlinkSync(target, junction, "junction");
-    expect(fs.lstatSync(junction).isSymbolicLink()).toBe(true);
-    expect((await prepareRuntimeDirWindows(junction)).ok).toBe(false);
-    expect((await verifyRuntimeDirWindows(junction)).ok).toBe(false);
-    expect(await readSddl(target)).toBe(targetSddl);
-    expect(ownerOf(target)).toBe("S-1-5-32-544");
-  });
-
-  it("空白と日本語を含む親の下でも作って締めて ok", async () => {
-    const io = createWindowsAclIo();
-    const sid = await io.currentUserSid();
-    const parent = fresh("showme テスト ");
-    await lockPrivateDir(parent, sid);
-    const dir = path.join(parent, "vscode-showme-0");
-    await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
-    await expect(verifyRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
-    expect(ownerOf(dir)).toBe(sid);
-  });
-
-  it("icacls より先に誰かがパイプを読み取りで開いて居座っても読める", async () => {
-    let held: number | undefined;
-    const io = createWindowsAclIo({
-      // icacls を起動する直前に、同じパイプを読み取りだけで開く（Everyone が持つ FR と同じ）
-      spawn: (file, args, options) => {
-        held = fs.openSync(args[2] as string, "r");
-        return childProcess.spawn(file, [...args], options);
-      },
+// 1つの検査で icacls を何度も起動する。runner では1回が数秒かかることがあり、vitest の既定の 5 秒で
+// 切れた（2026-10-22、9.7 秒）。中の I/O は自分で 5 秒の上限を持つので、検査の枠はそれより長くする
+describe.runIf(process.platform === "win32")(
+  "本物の icacls / whoami（Windows）",
+  { timeout: 60_000 },
+  () => {
+    const made: string[] = [];
+    const fresh = (prefix = "showme-acl-"): string => {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+      made.push(d);
+      return d;
+    };
+    afterEach(() => {
+      for (const d of made.splice(0)) {
+        // 締めたディレクトリも本人が全部を持つので消せる
+        fs.rmSync(d, { recursive: true, force: true });
+      }
     });
-    try {
-      await expect(io.readSddl(os.tmpdir())).resolves.toMatch(/^D:/);
-      expect(held).toBeTypeOf("number");
-    } finally {
-      if (held !== undefined) fs.closeSync(held);
-    }
-  });
-});
+
+    const icacls = (...args: string[]): void => {
+      execFileSync(
+        path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"),
+        args,
+        {
+          windowsHide: true,
+        },
+      );
+    };
+
+    /** 所有者の SID（検査でだけ PowerShell を使う。icacls /save は所有者を出さない）。 */
+    const ownerOf = (dir: string): string => {
+      const env: NodeJS.ProcessEnv = { ...process.env, SHOWME_ACL_TARGET: dir };
+      // Node の親が PowerShell 7 だと、その PSModulePath が Windows PowerShell 5.1 を壊す
+      for (const k of Object.keys(env)) if (k.toLowerCase() === "psmodulepath") delete env[k];
+      return execFileSync(
+        path.join(
+          process.env.SystemRoot ?? "C:\\Windows",
+          "System32",
+          "WindowsPowerShell",
+          "v1.0",
+          "powershell.exe",
+        ),
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "[IO.Directory]::GetAccessControl($env:SHOWME_ACL_TARGET).GetOwner([Security.Principal.SecurityIdentifier]).Value",
+        ],
+        { env, windowsHide: true, encoding: "utf8" },
+      ).trim();
+    };
+
+    it("os.tmpdir() の SDDL は D: で始まる", async () => {
+      await expect(readSddl(os.tmpdir())).resolves.toMatch(/^D:/);
+    });
+
+    it("存在しないパスは読めない（閉じる）", async () => {
+      await expect(readSddl(path.join(fresh(), "missing"))).rejects.toThrow();
+    });
+
+    it("自分で締めた親の下に作って締めると ok、DACL は本人と SYSTEM だけ", async () => {
+      const io = createWindowsAclIo();
+      const sid = await io.currentUserSid();
+      const parent = fresh();
+      await lockPrivateDir(parent, sid);
+      const dir = path.join(parent, "vscode-showme-0");
+      await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
+      await expect(verifyRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
+
+      const sddl = await readSddl(dir);
+      expect(sddl.startsWith("D:P")).toBe(true);
+      const dacl = parseDacl(sddl);
+      const trusted = new Set([sid, "SY", "S-1-5-18"]);
+      // RID 500 の本人は icacls が LA と書く
+      if (sid.endsWith("-500")) trusted.add("LA");
+      const sids = (dacl?.aces ?? []).map((a) => a?.sid);
+      expect(sids.length).toBeGreaterThan(0);
+      for (const s of sids) expect(trusted.has(s as string), `${s} in ${sddl}`).toBe(true);
+
+      expect(ownerOf(dir)).toBe(sid);
+
+      // 2回目は在るものとして確かめる（締め直さない）
+      await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
+    });
+
+    it("在るディレクトリは DACL を変えずに所有者だけを本人にする", async () => {
+      const io = createWindowsAclIo();
+      const sid = await io.currentUserSid();
+      const parent = fresh();
+      await lockPrivateDir(parent, sid);
+      const dir = path.join(parent, "vscode-showme-0");
+      fs.mkdirSync(dir);
+      await lockPrivateDir(dir, sid);
+      // 所有者を Administrators に移しておく（runner は管理者なので移せる）
+      icacls(dir, "/setowner", "*S-1-5-32-544");
+      expect(ownerOf(dir)).toBe("S-1-5-32-544");
+      const before = await readSddl(dir);
+      await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
+      expect(ownerOf(dir)).toBe(sid);
+      expect(await readSddl(dir)).toBe(before);
+    });
+
+    it("Users に変更を許した親の下では、親の判定で断る", async () => {
+      const parent = fresh();
+      icacls(parent, "/grant", "*S-1-5-32-545:(OI)(CI)M");
+      const dir = path.join(parent, "vscode-showme-0");
+      const r = await prepareRuntimeDirWindows(dir);
+      expect(r.ok ? "" : r.reason).toMatch(/TEMP/);
+      expect(fs.existsSync(dir)).toBe(false);
+      expect((await verifyRuntimeDirWindows(dir)).ok).toBe(false);
+    });
+
+    it("junction の実行時ディレクトリは断る", async () => {
+      const io = createWindowsAclIo();
+      const sid = await io.currentUserSid();
+      const parent = fresh();
+      await lockPrivateDir(parent, sid);
+      const target = path.join(parent, "target");
+      fs.mkdirSync(target);
+      await lockPrivateDir(target, sid);
+      const junction = path.join(parent, "vscode-showme-0");
+      // 所有者を本人以外にしておく（junction の先の所有者を変えに行けば、それが見える）
+      icacls(target, "/setowner", "*S-1-5-32-544");
+      const targetSddl = await readSddl(target);
+      fs.symlinkSync(target, junction, "junction");
+      expect(fs.lstatSync(junction).isSymbolicLink()).toBe(true);
+      expect((await prepareRuntimeDirWindows(junction)).ok).toBe(false);
+      expect((await verifyRuntimeDirWindows(junction)).ok).toBe(false);
+      expect(await readSddl(target)).toBe(targetSddl);
+      expect(ownerOf(target)).toBe("S-1-5-32-544");
+    });
+
+    it("空白と日本語を含む親の下でも作って締めて ok", async () => {
+      const io = createWindowsAclIo();
+      const sid = await io.currentUserSid();
+      const parent = fresh("showme テスト ");
+      await lockPrivateDir(parent, sid);
+      const dir = path.join(parent, "vscode-showme-0");
+      await expect(prepareRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
+      await expect(verifyRuntimeDirWindows(dir)).resolves.toEqual({ ok: true });
+      expect(ownerOf(dir)).toBe(sid);
+    });
+
+    it("icacls より先に誰かがパイプを読み取りで開いて居座っても読める", async () => {
+      let held: number | undefined;
+      const io = createWindowsAclIo({
+        // icacls を起動する直前に、同じパイプを読み取りだけで開く（Everyone が持つ FR と同じ）
+        spawn: (file, args, options) => {
+          held = fs.openSync(args[2] as string, "r");
+          return childProcess.spawn(file, [...args], options);
+        },
+      });
+      try {
+        await expect(io.readSddl(os.tmpdir())).resolves.toMatch(/^D:/);
+        expect(held).toBeTypeOf("number");
+      } finally {
+        if (held !== undefined) fs.closeSync(held);
+      }
+    });
+  },
+);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10 — preview
+
+- Windows: ShowMe now starts when an agent's sandbox (for example Codex's `CodexSandboxUsers`) can write to your `%TEMP%` folder. The connection token is kept in `%LOCALAPPDATA%\vscode-showme` first, and `%TEMP%` is used only when no one else can write there; the check itself is unchanged. If a folder is skipped, the **ShowMe** output says which and why, and the error now tells you to run `icacls "<folder>"` to see who can write to it.
+- The bundled bridge now includes the MCP TypeScript SDK 1.32.1 (was 1.30.0). The tools, their descriptions and their input schemas that agents see are unchanged. The SDK advisories fixed between these versions concern its HTTP transports, OAuth and experimental tasks; ShowMe's bridge uses only the stdio transport.
+- The HTML sanitizer now uses parse5 8.0.1 (was 7.3.0) and entities 8.1.0 (was 6.0.1). What it keeps and removes is unchanged.
+
 ## 0.1.9 — preview
 
 - README: the Requirements section now says plainly that ShowMe itself needs only VS Code (plus the agent you already use), and that Node.js is not required.

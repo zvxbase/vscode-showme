@@ -15,8 +15,17 @@ import type * as vscode from "vscode";
 export class ShowMeLog {
   constructor(private readonly channel: vscode.OutputChannel) {}
 
-  info(message: string, fields: Record<string, string> = {}): void {
-    const parts = Object.entries(fields).map(([k, v]) => `${k}=${sanitizeDisplayText(v)}`);
+  /**
+   * `options.maxChars` はフィールド値の長さの上限（既定は sanitizer の既定）。無害化そのものは
+   * 変えず、同じ `sanitizeDisplayText` に上限だけを渡す（不変条件7）。
+   */
+  info(
+    message: string,
+    fields: Record<string, string> = {},
+    options: { maxChars?: number } = {},
+  ): void {
+    const target = options.maxChars === undefined ? {} : { maxChars: options.maxChars };
+    const parts = Object.entries(fields).map(([k, v]) => `${k}=${sanitizeDisplayText(v, target)}`);
     this.channel.appendLine(
       `[${new Date().toISOString()}] ${sanitizeDisplayText(message)}${parts.length > 0 ? ` ${parts.join(" ")}` : ""}`,
     );

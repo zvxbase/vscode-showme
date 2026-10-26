@@ -641,7 +641,12 @@ export function asNumber(value: unknown, label: string): number {
  * 呼び出し側が誤って印字できる場所にトークンを置かない。
  */
 export function readOwnRegistration(): Record<string, unknown> {
-  const runtimeDir = runtimeDirPath(process.env, os.tmpdir(), processUid(process));
+  const runtimeDir = runtimeDirPath(
+    process.env,
+    os.tmpdir(),
+    processUid(process),
+    process.platform,
+  );
   assert.ok(fs.existsSync(runtimeDir), `実行時ディレクトリが無い: ${runtimeDir}`);
 
   const expected = workspaceRoot().fsPath;

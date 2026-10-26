@@ -71,6 +71,7 @@ import { panelCallLimiter, sharedEditorStateLimiter, sharedFileLimiter } from ".
 import { readWorkspaceFile } from "./read-workspace-file.js";
 import {
   type ConnectionObserver,
+  RuntimeDirsUnavailableError,
   SECOND_CONNECTION_REASON,
   ShowMeSocketServer,
   ToolError,
@@ -102,6 +103,13 @@ import {
   acceptWorkspacePath,
   onRedactedLinkWalkIncomplete,
 } from "./workspace-path-gate.js";
+
+/**
+ * 起動時の失敗の理由は、既定の300文字では切れてしまう（Windows の `%TEMP%` の断り書きは
+ * 400文字を超え、icacls の案内が末尾にある）。出力パネルは人間が直す手がかりを読む場所なので広げる。
+ */
+const STARTUP_DETAIL_MAX_CHARS = 2000;
+const DETAIL_LOG = { maxChars: STARTUP_DETAIL_MAX_CHARS } as const;
 
 /** 線上のスキーマが決める show_code の引数の形。 */
 type ShowCodeWireArgs = Extract<WireRequest, { tool: "show_code" }>["args"];
@@ -712,9 +720,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // uid の導出は protocol に1つだけ置く。両端が同じ答えを出さないと、
     // 同じマシンにいても実行時ディレクトリ名がずれて互いを見つけられない。
     //
-    // **書くのも両候補である**（設計書 §2A.6）。ブリッジは自分に
+    // **書くのも候補すべてである**（設計書 §2A.6）。ブリッジは自分に
     // `$XDG_RUNTIME_DIR` が無ければ XDG 候補を構成できないので、読み取りだけを
-    // 両候補にしても「拡張に XDG があり、ブリッジには無い」向きは塞がらない。
+    // 候補すべてにしても「拡張に XDG があり、ブリッジには無い」向きは塞がらない。
     // そしてその向きこそが現実的な構成である（デスクトップ／コンテナで起動した
     // VS Code には XDG があり、`docker exec` / `ssh` / `su` で入ったシェルには無い）。
     // ソケットは1本のまま。複製するのは登録ファイルだけである。
@@ -722,7 +730,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // ここで1回だけ決める。ソケットサーバも撤去手順の文書（`showme.teardown`）も
     // この値を受け取る ―― 文書側で計算し直すと、書いた場所と書いてある場所が
     // ずれうる（不変条件14）。
-    const runtimeDirs = runtimeDirCandidates(process.env, os.tmpdir(), processUid(process));
+    const runtimeDirs = runtimeDirCandidates(
+      process.env,
+      os.tmpdir(),
+      processUid(process),
+      process.platform,
+    );
 
     // 同梱したブリッジの実体（esbuild が `bridge/index.js` に束ねる。不変条件12）。
     // **1回だけ決めて**、エージェント設定の文書と MCP 提供者の両方に渡す。
@@ -1332,13 +1345,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         socket: info.socketPath,
         registry: info.registryPaths.join(", "),
       });
+      // 一部の候補が使えなかったときも、どこがなぜかを残す（D125。たとえばエージェントのサンドボックスが
+      // %TEMP% に権利を足していると、%TEMP% の候補だけが落ちて %LOCALAPPDATA% で立つ）。
+      for (const { dir, reason } of info.unprepared) {
+        log.info("runtime directory candidate not used", { dir, reason }, DETAIL_LOG);
+      }
       applyConfig();
     } catch (e) {
       // 止まって知らせる。特に実行時ディレクトリの検証に落ちたときは
       // prepareRuntimeDir の理由をそのまま見せる — 先回りされたディレクトリを
       // 黙って迂回しない設計なので、迂回しなかったことが人間に伝わる必要がある
       // （設計書 S7 / D22）。
-      log.info("failed to start", { error: String(e) });
+      log.info("failed to start", { error: String(e) }, DETAIL_LOG);
+      // 全部落ちたときは、候補ごとの理由を1行ずつ残す（D125）。
+      if (e instanceof RuntimeDirsUnavailableError) {
+        for (const { dir, reason } of e.failures) {
+          log.info("runtime directory candidate not used", { dir, reason }, DETAIL_LOG);
+        }
+      }
       void vscode.window.showErrorMessage(t("ShowMe could not start: {0}", String(e)));
       // 通知は流れて消える。設定が有効なままだとステータスバーは
       // 「受け付けています」と描き続けるので、そこにも失敗を残す。理由は

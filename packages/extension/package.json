@@ -3,7 +3,7 @@
   "private": true,
   "displayName": "ShowMe",
   "description": "MCP server that lets AI agents (Copilot, Claude Code, Codex) walk you through code in VS Code: open files, add numbered comments, draw diagrams.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "preview": true,
   "license": "MIT",
   "publisher": "zvxbase",
@@ -389,6 +389,6 @@
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.2.0",
     "@zvx/vscode-showme-bridge": "*",
-    "mocha": "^12.0.0"
+    "mocha": "^12.0.3"
   }
 }

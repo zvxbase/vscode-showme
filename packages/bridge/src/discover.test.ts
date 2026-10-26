@@ -13,6 +13,7 @@ import {
   type RegistryFileSystem,
   createNodeRegistryFileSystem,
   defaultRuntimeDirs,
+  describeResolveFailure,
   describeSelectionFailure,
   describeUnsafeRuntimeDir,
   discoverRegistry,
@@ -677,6 +678,57 @@ describe("readRegistryEntries（両候補の走査）", () => {
     ]);
   });
 
+  it("在って衛生検査を通った候補を safe に持ち帰る（走査の結果から。確かめ直さない）", () => {
+    const io = fsOf({ [XDG]: {}, [TMP]: { kind: "unsafe", reason: "mode 777" } });
+    const read = readRegistryEntries([XDG, TMP, "/absent"], io, "linux");
+    expect(read.safe).toEqual([XDG]);
+    expect(read.unsafe.map((u) => u.dir)).toEqual([TMP]);
+    // safe を決めるのに openDir をもう一度呼ばない（不変条件14）
+    expect(io.listed).toEqual([XDG, TMP, "/absent"]);
+  });
+
+  describe("describeResolveFailure（繋げなかった理由をどれにするか）", () => {
+    it("安全な候補が空で、別の候補が危ういだけなら、窓が見つからない案内を出す", () => {
+      // 例: Codex のサンドボックスを入れる前の %TEMP%\vscode-showme-0 が残っていて危うい。
+      // %LOCALAPPDATA%\vscode-showme は安全だが、いま預けている窓が無い。
+      const read = readRegistryEntries(
+        [XDG, TMP],
+        fsOf({ [XDG]: {}, [TMP]: { kind: "unsafe", reason: "Other users can write there." } }),
+        "linux",
+      );
+      const selection = selectWindow(read.entries, {});
+      if (selection.ok) throw new Error("unreachable");
+      const message = describeResolveFailure(selection, read);
+      expect(message).toContain("No VS Code window found");
+      expect(message).toContain("ShowMe extension is enabled");
+      expect(message).not.toContain("is not safe, so it will not be used");
+      // 危うい候補は短く名指す（黙って迂回しない。D22）
+      expect(message).toContain(TMP);
+    });
+
+    it("在る候補がすべて危ういなら、危ういことを理由にする（今までどおり）", () => {
+      const read = readRegistryEntries(
+        [XDG, TMP],
+        fsOf({ [TMP]: { kind: "unsafe", reason: "Other users can write there." } }),
+        "linux",
+      );
+      const selection = selectWindow(read.entries, {});
+      if (selection.ok) throw new Error("unreachable");
+      expect(describeResolveFailure(selection, read)).toBe(
+        describeUnsafeRuntimeDir("Other users can write there.", TMP),
+      );
+    });
+
+    it("危うい候補が無ければ、選べなかった理由の言葉そのまま", () => {
+      const read = readRegistryEntries([XDG, TMP], fsOf({ [XDG]: {} }), "linux");
+      const selection = selectWindow(read.entries, {});
+      if (selection.ok) throw new Error("unreachable");
+      expect(describeResolveFailure(selection, read)).toBe(
+        describeSelectionFailure(selection, read),
+      );
+    });
+  });
+
   it("どちらの候補も無ければ present が false(拡張が居ないだけ)", () => {
     const read = readRegistryEntries([XDG, TMP], fsOf({}), "linux");
     expect(read.present).toBe(false);
@@ -688,7 +740,7 @@ describe("readRegistryEntries（両候補の走査）", () => {
 describe("defaultRuntimeDirs", () => {
   it("protocol の候補計算をそのまま使う(両端が同じ規則で計算する)", () => {
     expect(defaultRuntimeDirs()).toEqual(
-      runtimeDirCandidates(process.env, os.tmpdir(), processUid(process)),
+      runtimeDirCandidates(process.env, os.tmpdir(), processUid(process), process.platform),
     );
   });
 
@@ -1092,6 +1144,8 @@ describe("describeSelectionFailure", () => {
       // 起きる）。原因候補として名指ししないと、走査先を見せられた人間は
       // 「なぜそこを見ているのか」に辿り着けない。
       expect(message).toContain("XDG_RUNTIME_DIR");
+      // Windows では候補が LOCALAPPDATA と TEMP の下にある（README と同じ言い方）
+      expect(message).toContain("on Windows, the same LOCALAPPDATA or TEMP");
     }
   });
 
@@ -1180,5 +1234,11 @@ describe("describeUnsafeRuntimeDir", () => {
     expect(message).toContain("/tmp/vscode-showme-1000");
     expect(message).toContain("mode 777");
     expect(message).toContain("not deleted");
+  });
+
+  it("理由が句点で終わっていても句点を重ねない", () => {
+    const message = describeUnsafeRuntimeDir("Other users can write there.", "/tmp/x");
+    expect(message).toContain("Other users can write there. ");
+    expect(message).not.toContain("..");
   });
 });

@@ -16,7 +16,7 @@
     "build": "tsc --build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@zvx/vscode-showme-protocol": "*",
     "zod": "^3.24.0"
   },

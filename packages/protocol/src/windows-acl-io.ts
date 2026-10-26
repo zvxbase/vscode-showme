@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
+import { isLocalDriveAbsolutePath, isTmpdirRuntimeDirName } from "./runtime-dir.js";
 import { type AclVerdict, noForeignCreateVerdict, privateDirVerdict } from "./windows-acl.js";
 
 /**
@@ -96,16 +97,9 @@ const defaultDeps: WindowsAclDeps = {
   timeoutMs: DEFAULT_TIMEOUT_MS,
 };
 
-/**
- * ローカルのドライブの絶対パス（`C:\...`）。UNC（`\\host\...`）は SMB で外の機械に触れ、
- * `\\?\` / `\\.\` はデバイスの名前空間、`C:dir` はそのドライブの現在のディレクトリ、
- * `\dir` は現在のドライブに相対 ―― どれも「どこを確かめたか」が綴りから決まらない。
- */
-const LOCAL_DRIVE_PATH = /^[A-Za-z]:\\/;
-
 /** ローカルのドライブの絶対パスでなければ投げる。 */
 function assertLocalDrivePath(p: string): void {
-  if (!LOCAL_DRIVE_PATH.test(p)) {
+  if (!isLocalDriveAbsolutePath(p)) {
     throw new Error(
       `${JSON.stringify(p)} must be an absolute path on a local drive (like C:\\...)`,
     );
@@ -434,11 +428,16 @@ async function checkParent(io: WindowsAclIo, dir: string, sid: string): Promise<
   }
   const verdict = noForeignCreateVerdict(await io.readSddl(parent), sid);
   if (!verdict.ok) {
-    const advice =
-      "TEMP/TMP points at a folder other users can write; point TEMP and TMP at a folder only you can write.";
+    // 誰が書けるかは icacls が名前で出す（SID を名前に直すために外部コマンドを増やさない）。
+    // TEMP / TMP の向け直しは tmpdir の下の候補にだけ当てはまる（D125）。
+    const tempAdvice = isTmpdirRuntimeDirName(path.win32.basename(dir))
+      ? " TEMP/TMP points at a folder other users can write; point TEMP and TMP at a folder only you can write."
+      : "";
+    // ドライブの根（D:\）は末尾の \ が閉じ引用符を潰す（\" は引用符のエスケープ）ので D:\. にする。
+    const quoted = parent.endsWith("\\") ? `${parent}.` : parent;
     return {
       ok: false,
-      reason: `Other users can create or replace entries in ${parent} (${verdict.reason}). ${advice}`,
+      reason: `Other users can create or replace entries in ${parent} (${verdict.reason}). Run icacls "${quoted}" in Command Prompt or PowerShell to see who can write there.${tempAdvice}`,
     };
   }
   return { ok: true };
@@ -476,7 +475,7 @@ async function checkDirShape(io: WindowsAclIo, dir: string): Promise<AclVerdict>
 /** 例外を「安全でない」に変える（呼び出し側は理由を出して断るだけにする）。 */
 async function closedOnError(dir: string, step: () => Promise<AclVerdict>): Promise<AclVerdict> {
   // 形で落ちるのは TEMP の問題とは限らない（XDG_RUNTIME_DIR の綴りなど）。パスだけを名指す。
-  if (!LOCAL_DRIVE_PATH.test(dir)) {
+  if (!isLocalDriveAbsolutePath(dir)) {
     return {
       ok: false,
       reason: `The runtime directory path ${JSON.stringify(dir)} must be an absolute path on a local drive (like C:\\...)`,

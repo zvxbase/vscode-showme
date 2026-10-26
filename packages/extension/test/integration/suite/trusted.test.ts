@@ -5806,7 +5806,12 @@ suite("実 VS Code / 信頼モード / エージェント設定と撤去手順�
     assert.strictEqual(languageId, "markdown");
     // 拡張がソケットと登録ファイルを置く場所は、テスト側で同じ関数から独立に出す
     // （`readOwnRegistration` と同じ形）。**両候補とも**載っていること。
-    const dirs = runtimeDirCandidates(process.env, os.tmpdir(), processUid(process));
+    const dirs = runtimeDirCandidates(
+      process.env,
+      os.tmpdir(),
+      processUid(process),
+      process.platform,
+    );
     assert.ok(dirs.length >= 1);
     for (const dir of dirs) assert.ok(text.includes(dir), `実行時ディレクトリが無い: ${dir}`);
     assert.ok(text.includes(`code --uninstall-extension ${EXTENSION_ID}`));

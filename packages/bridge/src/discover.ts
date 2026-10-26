@@ -116,9 +116,9 @@ export type Selection =
 export type SelectionFailed = Extract<Selection, { ok: false }>;
 
 /**
- * 登録1件を指す鍵。**両候補の走査で同じ窓を2つに数えないため**に要る。
+ * 登録1件を指す鍵。**候補すべての走査で同じ窓を2つに数えないため**に要る。
  *
- * `windowId` を書かない古い拡張のために後退先を持つ。後退先では両候補にある
+ * `windowId` を書かない古い拡張のために後退先を持つ。後退先では候補すべてにある
  * 同じ窓を畳めない（ソケットは実行時ディレクトリの中にあるので、候補ごとに
  * パスが違う）が、役割を書かない拡張の窓はそもそも `idle` 扱いで選ばれない。
  * 畳み損ねの影響は「候補の数が多く見える」ことに留まる。
@@ -312,7 +312,7 @@ function memoizeOpenDir(io: RegistryFileSystem): RegistryFileSystem {
   };
 }
 
-/** 両方の候補を走査した結果。 */
+/** 全部の候補を走査した結果。 */
 export interface RegistryRead {
   /** 実際に走査したディレクトリ（重複は畳んである） */
   dirs: readonly string[];
@@ -320,6 +320,8 @@ export interface RegistryRead {
   present: boolean;
   /** 衛生検査に落ちて**読まなかった**ディレクトリと、その理由（設計書 D22） */
   unsafe: readonly { dir: string; reason: string }[];
+  /** そこにあって衛生検査を通り、中を読んだディレクトリ（`unsafe` と同じ走査から決める） */
+  safe: readonly string[];
   /** 窓ごとに1件に畳んだ登録。候補の順（先頭は書き込み先の候補） */
   entries: RegistryEntry[];
   /** `socketPath` の確かめ（D105）か pid の生死（D111）で捨てた登録（ファイルと理由だけ） */
@@ -327,15 +329,15 @@ export interface RegistryRead {
 }
 
 /**
- * 登録ファイルを**両方の候補から**読む（設計書 §2A.6）。
+ * 登録ファイルを**全部の候補から**読む（設計書 §2A.6）。
  *
  * 拡張とブリッジで `$XDG_RUNTIME_DIR` が食い違うと、同じマシンにいても別の
  * 場所を探して黙って見つからなくなる（長生きした tmux サーバが古い値を握る、
- * ログアウト後に `/run/user/<uid>` が消える）。**読むときだけ両方見る。
+ * ログアウト後に `/run/user/<uid>` が消える）。**読むときだけ全部見る。
  * 書き込みは1箇所のまま**（拡張側の `runtimeDirPath`）。
  *
- * 同じ窓が両方の候補に書いていることがある ―― というより、**普通はそうなる**。
- * 拡張は両候補に同じ内容を書くからである（設計書 §2A.6）。`windowId` で1件に
+ * 同じ窓が全部の候補に書いていることがある ―― というより、**普通はそうなる**。
+ * 拡張は候補すべてに同じ内容を書くからである（設計書 §2A.6）。`windowId` で1件に
  * 畳み、**候補の順序が先の方を残す**。
  *
  * **自己申告の `startedAt` で決めない。** 同一 uid のプロセスは 0600 の登録を
@@ -348,7 +350,7 @@ export interface RegistryRead {
  * **同じディレクトリの中の重複までは解けない**（順序が readdir 任せになる）。
  * そこは同一 uid では原理的に防げない領域で、ここで塞いだと言わない。
  * 塞いだのは「後退先に置くだけで先頭の登録を差し替えられる」という、
- * 両候補走査が持ち込んだ分だけである。
+ * 候補すべての走査が持ち込んだ分だけである。
  *
  * 衛生検査に落ちた候補は**読まずに飛ばし、理由を持ち帰る**。ここで全体を
  * 止めると、`/tmp`（1777）に後退先の名前で先回りするだけで、誰でも疎通を
@@ -363,6 +365,7 @@ export function readRegistryEntries(
   const io = memoizeOpenDir(fileSystem);
   const scanned = new Set<string>();
   const unsafe: { dir: string; reason: string }[] = [];
+  const safe: string[] = [];
   const rejected: RejectedRegistration[] = [];
   const byWindow = new Map<string, RegistryEntry>();
   const order: string[] = [];
@@ -376,6 +379,7 @@ export function readRegistryEntries(
     const scan = scanRegistry(dir, io, platform, isAlive);
     if (scan.present) present = true;
     if (scan.unsafe !== undefined) unsafe.push({ dir, reason: scan.unsafe });
+    else if (scan.present) safe.push(dir);
     rejected.push(...scan.rejected);
 
     for (const entry of scan.entries) {
@@ -391,7 +395,7 @@ export function readRegistryEntries(
     const entry = byWindow.get(key);
     if (entry !== undefined) entries.push(entry);
   }
-  return { dirs: [...scanned], present, unsafe, entries, rejected };
+  return { dirs: [...scanned], present, unsafe, safe, entries, rejected };
 }
 
 /**
@@ -564,7 +568,7 @@ export async function discoverRegistry(
  * 先頭は必ず書き込み先の候補。
  */
 export function defaultRuntimeDirs(): string[] {
-  return runtimeDirCandidates(process.env, os.tmpdir(), processUid(process));
+  return runtimeDirCandidates(process.env, os.tmpdir(), processUid(process), process.platform);
 }
 
 /**
@@ -607,7 +611,7 @@ export function describeSelectionFailure(
           : `No VS Code window found. The runtime directory (${where}) does not exist. `,
         "Check that the ShowMe extension is enabled and a window is open, and that ",
         "the agent and VS Code are in the same environment (same container / same WSL distro / ",
-        "same $TMPDIR). ",
+        "same $TMPDIR; on Windows, the same LOCALAPPDATA or TEMP). ",
         // 候補の食い違いは「同じマシンにいるのに見つからない」の主な原因である。
         // 走査先を上に出しているので、人間は両側の値を突き合わせられる。
         "Also check that $XDG_RUNTIME_DIR does not differ between the extension and here ",
@@ -645,10 +649,35 @@ export function describeSelectionFailure(
   }
 }
 
+/**
+ * 繋げなかった理由をどれにするかを決めて、言葉にする（`index.ts` の `resolveWindow` が使う）。
+ *
+ * 衛生検査に落ちた候補を理由にするのは、**在る候補がすべて落ちた**ときだけ。安全な候補が
+ * 1つでも在れば、落ちた候補は繋がらない原因ではない。たとえば Codex のサンドボックスを入れる前の
+ * `%TEMP%\vscode-showme-0` が残っていて危うく、`%LOCALAPPDATA%\vscode-showme` は安全だが
+ * 預けている窓が無いだけのとき、危うさを名指すと「TEMP を向け直せ」という見当違いの案内になる。
+ * POSIX でも、/tmp に先回りするだけで「安全ではありません」を出し続けられることになる。
+ * そのときは選べなかった理由の言葉を出し、登録が1件も無ければ落ちた候補を短く添える
+ * （黙って迂回しない。設計書 D22）。
+ */
+export function describeResolveFailure(
+  failure: SelectionFailed,
+  read: Pick<RegistryRead, "dirs" | "present" | "unsafe" | "safe" | "entries" | "rejected">,
+): string {
+  const blocked = read.entries.length === 0 && read.safe.length === 0 ? read.unsafe[0] : undefined;
+  if (blocked !== undefined) return describeUnsafeRuntimeDir(blocked.reason, blocked.dir);
+  const message = describeSelectionFailure(failure, read);
+  if (failure.reason !== "no-entries" || read.unsafe.length === 0) return message;
+  const skipped = read.unsafe.map((u) => u.dir).join(", ");
+  return `${message} (Not used because it is not safe: ${skipped}.)`;
+}
+
 /** 実行時ディレクトリが衛生検査に落ちたときの言い方。使わずに止まる。 */
 export function describeUnsafeRuntimeDir(reason: string, dir: string): string {
+  // reason が句点で終わっていることがある（プロトコル側の助言）ので重ねない。
+  const body = reason.replace(/\.$/, "");
   return [
-    `The runtime directory (${dir}) is not safe, so it will not be used: ${reason}. `,
+    `The runtime directory (${dir}) is not safe, so it will not be used: ${body}. `,
     "Another process may have got there first. Its contents are left for a human to inspect, not deleted ",
     "(unchecked deletion in a shared directory would amount to arbitrary file deletion).",
   ].join("");

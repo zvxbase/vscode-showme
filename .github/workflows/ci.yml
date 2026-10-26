@@ -24,7 +24,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0 # gitleaks が履歴を見る
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -58,15 +58,25 @@ jobs:
           (cd "$d" && find . -type f | sed 's|^\./||') > "$d.list"
           node scripts/release/scan-public-tree.mjs --root "$d" --list "$d.list"
       # クライアント非依存の1層目: 独立した MCP クライアントから 10 本のツールが見えること
+      # Inspector は npm 11 で取ってくる。ランナーの npm 10.8.2 は、Inspector の依存の peer の組
+      # を解くところで `Cannot read properties of null (reading 'edgesOut')`
+      # で落ちる（arborist の #loadPeerSet。npm のログで確かめた）。npm 11.19.0 では解ける（手元で確かめた）。
       - name: MCP Inspector smoke (tools/list = 10)
         run: |
           set -euo pipefail
-          n=$(npx --yes @modelcontextprotocol/inspector@2.6.0 --cli \
+          n=$(npx --yes npm@11.19.0 exec --yes -- @modelcontextprotocol/inspector@2.6.0 --cli \
                 node packages/extension/bridge/index.js \
                 --method tools/list --format json --connect-timeout 15000 \
               | jq '.result.tools | length')
           echo "tools/list returned $n tool(s)"
           test "$n" -eq 10
+      - name: npm のログを残す（Inspector の手順が落ちたとき）
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-logs
+          path: ~/.npm/_logs/
+          if-no-files-found: ignore
 
   integration-linux:
     # 重い。PR と手動のときだけ走らせる（push: main では PR で既に測ってある）
@@ -82,7 +92,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -103,7 +113,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -124,7 +134,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -152,6 +162,23 @@ jobs:
               if (!v.ok) process.exit(1);
             })().catch((e) => { console.error(e); process.exit(1); });
           '
+      # runner の %LOCALAPPDATA% が他人に開いていれば、統合の前に理由ごと落とす（D125）。
+      # VS Code の起動の環境で LOCALAPPDATA を差し替えると VS Code 自身の置き場所が動くので、
+      # 黙って向け直さない。
+      - name: LOCALAPPDATA の親の判定を印字する
+        shell: bash
+        run: |
+          node -e '
+            const p = require("./packages/protocol/dist/index.js");
+            (async () => {
+              const sid = await p.currentUserSid();
+              const parent = process.env.LOCALAPPDATA;
+              const sddl = await p.readSddl(parent);
+              const v = p.noForeignCreateVerdict(sddl, sid);
+              console.log(parent, sddl, JSON.stringify(v));
+              if (!v.ok) process.exit(1);
+            })().catch((e) => { console.error(e); process.exit(1); });
+          '
       - run: npm run -w packages/extension test:integration
         shell: bash
         env:
@@ -172,7 +199,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -190,7 +217,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm

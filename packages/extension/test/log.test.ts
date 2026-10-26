@@ -90,4 +90,14 @@ describe("ShowMeLog", () => {
   it("フィールドが無ければ余計な区切りを足さない", () => {
     expect(logOnce("started")).toMatch(/] started$/);
   });
+
+  it("maxChars を渡せば長い値を切らずに残し、渡さなければ既定で切る", () => {
+    const long = "x".repeat(500);
+    const { lines, channel } = fakeChannel();
+    const log = new ShowMeLog(channel as unknown as ConstructorParameters<typeof ShowMeLog>[0]);
+    log.info("wide", { reason: long }, { maxChars: 2000 });
+    log.info("narrow", { reason: long });
+    expect(lines[0]).toContain(`reason=${long}`);
+    expect(lines[1]).not.toContain(long);
+  });
 });

@@ -40,6 +40,14 @@ export const BUILTIN_PATTERNS = [
 const ALLOWED_EMAILS = new Set(["noreply@anthropic.com"]);
 
 /**
+ * メールの形に見えるが宛先ではない、束に入る第三者のデータの断片。**完全一致だけ**で外す
+ * （規則を緩めると本物のアドレスも通る）。entities 8 の HTML 実体参照の復号表
+ * （`dist/generated/decode-data-html.js` の圧縮された文字列）が偶然この形を含み、拡張とブリッジの
+ * 束に入る。依存の版が上がって断片が変わったら、また当たって止まる（それでよい ―― 見てから足す）。
+ */
+const NOT_ADDRESSES = new Set(["z@aPeb95Si.ebcpputyvjB"]);
+
+/**
  * 第三者のライセンス文を**逐語で再現する**ファイル。著作権表示に作者のメールが入っていて
  * （例: parse5）、ライセンスはそれを消さずに再現することを求める。だからメールの規則だけを
  * 外す ―― 私たちの固有名・パス・セッション参照の規則は、このファイルにも当て続ける。
@@ -76,7 +84,7 @@ function lineHits(text, patterns, rel) {
     if (p.label === "email-address") {
       if (REPRODUCED_LEGAL_TEXT.test(rel)) continue;
       const all = text.match(new RegExp(EMAIL.source, "g")) ?? [];
-      if (all.every((e) => ALLOWED_EMAILS.has(e))) continue;
+      if (all.every((e) => ALLOWED_EMAILS.has(e) || NOT_ADDRESSES.has(e))) continue;
     }
     labels.push(p.label);
   }

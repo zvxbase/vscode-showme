@@ -6,8 +6,7 @@ import { NoWindowError, callExtension } from "./client.js";
 import {
   type RegistryEntry,
   defaultRuntimeDirs,
-  describeSelectionFailure,
-  describeUnsafeRuntimeDir,
+  describeResolveFailure,
   discoverRegistry,
   selectWindow,
 } from "./discover.js";
@@ -35,14 +34,8 @@ async function resolveWindow(exclude: readonly string[]): Promise<RegistryEntry>
   });
   if (selection.ok) return selection.entry;
 
-  // 衛生検査に落ちた候補があって、なお1件も読めなかったのなら、それが理由である。
-  // 読めた候補があるなら、落ちた候補は繋がらない原因ではない（そちらを名指しすると、
-  // /tmp に先回りするだけで「安全ではありません」を出し続けられる）。
-  const blocked = read.entries.length === 0 ? read.unsafe[0] : undefined;
-  if (blocked !== undefined) {
-    throw new NoWindowError(describeUnsafeRuntimeDir(blocked.reason, blocked.dir));
-  }
-  throw new NoWindowError(describeSelectionFailure(selection, read));
+  // 衛生検査に落ちた候補を理由にするのは、在る候補がすべて落ちたときだけ（`describeResolveFailure`）。
+  throw new NoWindowError(describeResolveFailure(selection, read));
 }
 
 /**

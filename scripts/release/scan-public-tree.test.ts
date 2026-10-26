@@ -111,4 +111,15 @@ describe("scan-public-tree", () => {
     expect(scanTree(root, ["s.md"], BUILTIN_PATTERNS)).toHaveLength(1);
     expect(scanTree(root, ["t.md"], BUILTIN_PATTERNS)).toHaveLength(1);
   });
+
+  it("束に入る entities の復号表の断片はメールとして当たらないが、同じ行の本物のアドレスや似た綴りは当たる", () => {
+    const root = tmpTree({
+      "a.js": 'htmlDecodeTree = decodeTrieDict("~!J~z@aPeb95Si.ebcpputyvjB~%L");',
+      "b.js": 'decodeTrieDict("~z@aPeb95Si.ebcpputyvjB~ other@zvxbase.com");',
+      "c.js": 'decodeTrieDict("~z@aPeb95Si.ebcpputyvjC~");',
+    });
+    expect(scanTree(root, ["a.js"], BUILTIN_PATTERNS)).toEqual([]);
+    expect(scanTree(root, ["b.js"], BUILTIN_PATTERNS)).toHaveLength(1);
+    expect(scanTree(root, ["c.js"], BUILTIN_PATTERNS)).toHaveLength(1);
+  });
 });

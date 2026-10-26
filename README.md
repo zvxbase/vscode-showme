@@ -307,7 +307,7 @@ Look at the status bar first — ShowMe shows what it is doing there.
 
 **The agent says it cannot find a VS Code window.** Check that ShowMe is `On` in a window, that
 the agent runs in the same environment as VS Code (see [Agent setup in detail](#agent-setup-in-detail)), and that both see the same
-`$TMPDIR` (on Windows, the same `TEMP`).
+`$TMPDIR` (on Windows, the same `LOCALAPPDATA` or `TEMP`).
 
 **VS Code's Copilot shows `spawn node ENOENT` for ShowMe.** ShowMe 0.1.5 and earlier started the
 bridge with `node` from the `PATH` that VS Code had when it started. Update ShowMe to 0.1.6 or later,
@@ -324,8 +324,9 @@ yet, VS Code does not know its tools until it starts the server, and it starts i
 first chat message. This is how VS Code works, not an error. To see the tools right away, press
 **Update Tools**. After an update of ShowMe, the list is refreshed the same way.
 
-**Windows: ShowMe fails to start and the reason mentions TEMP/TMP.** `TEMP` or `TMP` points at a
-folder other users can write to. How to fix it is under Status below.
+**Windows: ShowMe fails to start and the reason mentions TEMP/TMP.** ShowMe could not use any of
+its candidate folders (under `%LOCALAPPDATA%` and `%TEMP%`). The reason names the folder other users
+can write to; run `icacls "<folder>"` to see who. Details are under Status below.
 
 **`.env` or a key file is "not found".** That is intended: ShowMe hides those paths and does not
 reveal where they are.
@@ -393,12 +394,12 @@ documents) are **English by default**, and Japanese when VS Code's display langu
 **Preview.** Verified on Linux, macOS and Windows (unit + integration tests in a real VS Code on
 each).
 
-**Windows runs natively.** ShowMe keeps the connection token in a folder under `%TEMP%` and checks
-that only you, SYSTEM and Administrators can read that folder. It refuses to start, and says why, if
-`TEMP` or `TMP` points at a folder other users can write to: for example a shared `C:\Temp`, or a
-folder on another drive such as `D:\Temp`, which keeps that drive's default permissions (other users
-can create files there). To fix it, point `TEMP` and `TMP` at a folder only you can write to, such
-as the default `%LOCALAPPDATA%\Temp`, and restart VS Code. VS Code with WSL or a dev container keeps
+**Windows runs natively.** ShowMe keeps the connection token in `%LOCALAPPDATA%\vscode-showme` (and
+also under `%TEMP%` when that folder is safe) and checks that only you, SYSTEM and Administrators can
+read it. It keeps working when an agent's sandbox gives its own accounts write access to `%TEMP%` (for
+example Codex's `CodexSandboxUsers`): ShowMe then leaves `%TEMP%` unused and says why in the **ShowMe**
+output. It refuses to start, and says why, only if other users can write to every candidate folder.
+To see who can write to a folder, run `icacls "<folder>"`. VS Code with WSL or a dev container keeps
 working as before; the agent and VS Code must run in the same environment (see [Agent setup in detail](#agent-setup-in-detail)).
 
 The public repository on GitHub is a **release mirror**: development happens in a private repository, and

@@ -12,12 +12,12 @@
   "Tools": "f8e4dfd9171875e2",
   "Settings": "a674388fc1d37f0f",
   "Opening files outside the workspace": "908e3968f41fafdd",
-  "Troubleshooting": "26084671cb7eec20",
+  "Troubleshooting": "e3928a84f8978ece",
   "Uninstall": "ca746396cb15acdd",
   "Safety, in one table": "1a6de0e3f428c49b",
   "Packages": "548565c3d5677140",
   "Languages": "174627b9997a152c",
-  "Status": "679eaa58a07efb55",
+  "Status": "64aaf61a434ee28e",
   "How this was built": "cfd7cce72c3841b1",
   "License": "1e5e273a2aae7f48"
 } -->
@@ -326,7 +326,7 @@ Windows では、`NAME~1` のような部分（8.3 形式の短い名前の形�
 
 **エージェントが「VS Code ウィンドウが見つからない」と言う。** どこかの窓で ShowMe がオンか、
 エージェントが VS Code と同じ環境で動いているか（[エージェントの設定の詳細](#エージェントの設定の詳細)）、両方が同じ `$TMPDIR`（Windows では同じ
-`TEMP`）を見ているかを確かめる。
+`LOCALAPPDATA` か `TEMP`）を見ているかを確かめる。
 
 **VS Code の Copilot で ShowMe に `spawn node ENOENT` が出る。** ShowMe 0.1.5 以前は、VS Code が
 起動したときの `PATH` にある `node` でブリッジを起動していた。VS Code 自身の実行環境を使う 0.1.6
@@ -343,8 +343,9 @@ ShowMe もその1つ。エージェントで ShowMe を繋ぎ直す（Claude Cod
 起動する。VS Code の仕組みどおりで、エラーではない。すぐ見たいなら **Update Tools** を押す。
 ShowMe を更新した後も、同じように一覧が取り直される。
 
-**Windows で ShowMe が起動せず、理由に TEMP/TMP が出る。** `TEMP` か `TMP` が、他の利用者も書ける
-フォルダを指している。直し方は下の「現在地と開発の場所」にある。
+**Windows で ShowMe が起動せず、理由に TEMP/TMP が出る。** ShowMe がどの候補のフォルダ
+（`%LOCALAPPDATA%` の下と `%TEMP%` の下）も使えなかった。理由に他の利用者が書けるフォルダが出るので、
+`icacls "<フォルダ>"` で誰が書けるかを見る。詳しくは下の「現在地と開発の場所」にある。
 
 **`.env` や鍵ファイルが「見つからない」と言われる。** 仕様。ShowMe はそれらのパスを隠し、
 場所も教えない。
@@ -409,12 +410,12 @@ VS Code の表示言語が日本語なら日本語になる。
 
 **プレビュー版。** Linux・macOS・Windows で確認済み（それぞれ単体テストと、実 VS Code での統合テスト）。
 
-**Windows ではネイティブで動く。** ShowMe は接続のトークンを `%TEMP%` の下のフォルダに置き、その
-フォルダを読めるのが自分・SYSTEM・Administrators だけであることを確かめる。`TEMP` か `TMP` が、他の
-利用者も書けるフォルダを指していると、理由を出して起動を断る。たとえば共有の `C:\Temp` や、
-`D:\Temp` のようなシステムドライブ以外のフォルダ（そのドライブの既定の権限のままで、他の利用者も中に
-作れる）。直すには、`TEMP` と `TMP` を自分だけが書けるフォルダ（既定の `%LOCALAPPDATA%\Temp` など）に
-向けて、VS Code を起動し直す。WSL や dev container の VS Code も今までどおり使える。エージェントと
+**Windows ではネイティブで動く。** ShowMe は接続のトークンを `%LOCALAPPDATA%\vscode-showme` に置き
+（`%TEMP%` の下も安全なら、そこにも置く）、読めるのが自分・SYSTEM・Administrators だけであることを確かめる。
+エージェントのサンドボックスが自分のアカウントに `%TEMP%` への書き込みを許していても（たとえば Codex の
+`CodexSandboxUsers`）動く。そのときは `%TEMP%` を使わず、理由を **ShowMe** の出力に残す。どの候補の
+フォルダも他の利用者が書けるときだけ、理由を出して起動を断る。誰が書けるかは `icacls "<フォルダ>"` で見られる。
+WSL や dev container の VS Code も今までどおり使える。エージェントと
 VS Code は同じ環境で動いている必要がある（[エージェントの設定の詳細](#エージェントの設定の詳細)）。
 
 GitHub の公開 repo は**リリースのミラー**である。開発は private の repo で行い、リリースごとに
